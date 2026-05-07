@@ -649,6 +649,33 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .obl-empty-icon{font-size:2.5rem;margin-bottom:8px}
 .obl-burndown-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px;margin-bottom:14px}
 .obl-burndown-title{font-weight:700;font-size:.85rem;margin-bottom:12px;color:var(--text2)}
+
+/* ── Mobile dashboard ─────────────────────────────────────── */
+#view-mobile{display:none;padding-bottom:40px}
+.mob-hdr{position:sticky;top:50px;z-index:50;background:var(--bg);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mob-month{font-size:1rem;font-weight:800;min-width:130px;text-align:center;color:var(--text1)}
+.mob-section{padding:14px 14px 0}
+.mob-section-title{font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--text3);margin-bottom:10px}
+.mob-group-hdr{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);margin:16px 0 8px;padding-bottom:5px;border-bottom:2px solid var(--border)}
+.mob-cat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:13px 14px;margin-bottom:8px}
+.mob-cat-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+.mob-cat-name{font-size:.9rem;font-weight:700;color:var(--text1)}
+.mob-cat-remain{font-size:1rem;font-weight:800}
+.mob-cat-sub{font-size:.7rem;color:var(--text3);margin-bottom:6px}
+.mob-bar-track{height:5px;background:var(--border);border-radius:99px;overflow:hidden}
+.mob-bar-fill{height:100%;border-radius:99px}
+.mob-pot-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:13px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.mob-pot-name{font-size:.9rem;font-weight:700;color:var(--text1)}
+.mob-pot-bal{font-size:1rem;font-weight:800}
+.mob-total-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+@media(max-width:767px){
+  .nav-pills{display:none!important}
+  .hdr-space{display:none!important}
+  .save-info{display:none!important}
+  main>div:not(#view-mobile){display:none!important}
+  #view-mobile{display:block!important}
+  #file-overlay .fo-card{width:92vw;max-width:420px}
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
@@ -844,6 +871,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       <div class="txn-right" id="txn-right"></div>
     </div>
   </div>
+  <div id="view-mobile"></div>
 </main>
 
 <!-- Budget Income Modal -->
@@ -1219,6 +1247,7 @@ async function ghConnect() {
     _applyData(data);
     _hideFileOverlay();
     renderMonthly();
+    renderMobileView();
     refreshSaveUI();
     toast('Connected to GitHub ✓', 'ok');
   } catch(e) {
@@ -1296,6 +1325,7 @@ async function loadState() {
     _applyData(data);
     _hideFileOverlay();
     renderMonthly();
+    renderMobileView();
     refreshSaveUI();
   } catch(e) {
     console.error('Could not load from GitHub', e);
@@ -6577,7 +6607,133 @@ function oblMergeImportedData(data) {
 }
 
 // ── BA object: Budget & Annual actions ──────────────────────
+
+// ════════════════════════════════════════════════════════════
+// MOBILE DASHBOARD
+// ════════════════════════════════════════════════════════════
+function renderMobileView() {
+  const wrap = id('view-mobile');
+  if (!wrap) return;
+
+  const month  = UI.budgetMonth || ymNow();
+  const [y, m] = month.split('-').map(Number);
+  const monthLabel = new Date(y, m - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+
+  const groups = D.budget?.groups     || [];
+  const cats   = D.budget?.categories || [];
+
+  // ── Budget section ─────────────────────────────────────────
+  let budgetHTML = '';
+  let hasAnyBudget = false;
+  for (const group of groups) {
+    const gcats = cats.filter(c => c.groupId === group.id);
+    if (!gcats.length) continue;
+    hasAnyBudget = true;
+    budgetHTML += `<div class="mob-group-hdr">${esc(group.name)}</div>`;
+    for (const cat of gcats) {
+      const budget = budgetGetAdjustedPlan(cat.id, month);
+      const spent  = budgetGetCatActuals(cat.id, month);
+      const remain = Math.round((budget - spent) * 100) / 100;
+      const pct    = budget > 0 ? Math.min(100, spent / budget * 100) : (spent > 0 ? 100 : 0);
+      const isOver = remain < -0.005;
+      const isWarn = !isOver && pct >= 80;
+      const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : 'var(--ok)';
+      const borderColor = isOver
+        ? 'color-mix(in srgb,var(--danger) 35%,transparent)'
+        : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)'
+        : 'var(--border)';
+      const remainLabel = isOver
+        ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
+        : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
+      budgetHTML += `
+        <div class="mob-cat-card" style="border-color:${borderColor}">
+          <div class="mob-cat-row">
+            <span class="mob-cat-name">${esc(cat.name)}</span>
+            ${remainLabel}
+          </div>
+          <div class="mob-cat-sub">${fmtC(spent)} spent of ${fmtC(budget)} planned</div>
+          <div class="mob-bar-track">
+            <div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div>
+          </div>
+        </div>`;
+    }
+  }
+  if (!hasAnyBudget) budgetHTML = `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.88rem">No budget categories set up yet</div>`;
+
+  // ── Savings Pots section ───────────────────────────────────
+  const sp = D.savingsPots || {};
+  let potsHTML = '';
+  if (sp.growthAccountId && sp.trackedGroupId) {
+    const growthAcctId  = sp.growthAccountId;
+    const trackedCats   = cats.filter(c => c.groupId === sp.trackedGroupId);
+    const trackedCatIds = new Set(trackedCats.map(c => c.id));
+    const pots = {};
+    trackedCats.forEach(c => { pots[c.id] = { deposited: 0, drawn: 0 }; });
+    (D.transactions || []).forEach(t => {
+      if (!t.isTransfer || !(t.splits && t.splits.length)) return;
+      const isDeposit = t.debit > 0 && t.transferToAcctId === growthAcctId;
+      const isDraw    = t.debit > 0 && t.accountId === growthAcctId;
+      if (!isDeposit && !isDraw) return;
+      t.splits.forEach(s => {
+        if (!trackedCatIds.has(s.categoryId)) return;
+        const amt = parseFloat(s.amount) || 0;
+        if (amt <= 0 || !pots[s.categoryId]) return;
+        if (isDeposit) pots[s.categoryId].deposited += amt;
+        else           pots[s.categoryId].drawn     += amt;
+      });
+    });
+    const totalBal = trackedCats.reduce((s, c) => {
+      const p = pots[c.id] || { deposited:0, drawn:0 };
+      return s + p.deposited - p.drawn;
+    }, 0);
+    const potCards = trackedCats.map(c => {
+      const p   = pots[c.id] || { deposited:0, drawn:0 };
+      const bal = p.deposited - p.drawn;
+      const clr = bal > 0 ? 'var(--ok)' : bal < 0 ? 'var(--danger)' : 'var(--text3)';
+      return `
+        <div class="mob-pot-card">
+          <span class="mob-pot-name">${esc(c.name)}</span>
+          <span class="mob-pot-bal" style="color:${clr}">${fmtCurrency(bal)}</span>
+        </div>`;
+    }).join('');
+    potsHTML = `
+      <div class="mob-section" style="margin-top:8px">
+        <div class="mob-section-title">💰 Savings Pots</div>
+        <div class="mob-total-card">
+          <span style="font-size:.82rem;font-weight:700;color:var(--text2)">Total</span>
+          <span style="font-size:1rem;font-weight:800;color:${totalBal>=0?'var(--ok)':'var(--danger)'}">${fmtCurrency(totalBal)}</span>
+        </div>
+        ${potCards || '<div style="color:var(--text3);font-size:.85rem;padding:8px 0">No pots found</div>'}
+      </div>`;
+  }
+
+  wrap.innerHTML = `
+    <div class="mob-hdr">
+      <button class="arrow-btn" onclick="BA.mobilePrevMonth()">&#8249;</button>
+      <div class="mob-month">${monthLabel}</div>
+      <button class="arrow-btn" onclick="BA.mobileNextMonth()">&#8250;</button>
+    </div>
+    <div class="mob-section">
+      <div class="mob-section-title">📊 Budget Remaining</div>
+      ${budgetHTML}
+    </div>
+    ${potsHTML}
+    <div style="height:32px"></div>
+  `;
+}
+
 const BA = {
+
+  mobilePrevMonth() {
+    const { y, m } = parseYM(UI.budgetMonth || ymNow());
+    UI.budgetMonth = m === 1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`;
+    renderMobileView();
+  },
+  mobileNextMonth() {
+    const { y, m } = parseYM(UI.budgetMonth || ymNow());
+    UI.budgetMonth = m === 12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
+    renderMobileView();
+  },
   budgetPrevMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth,-1);    renderBudget(); },
   budgetNextMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth, 1);    renderBudget(); },
   breakdownPrevMonth() { UI.breakdownMonth = bShiftMonth(UI.breakdownMonth,-1); renderBreakdown(); },
