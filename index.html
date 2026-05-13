@@ -668,7 +668,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-pot-name{font-size:.9rem;font-weight:700;color:var(--text1)}
 .mob-pot-bal{font-size:1rem;font-weight:800}
 .mob-total-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
-@media(max-width:639px){
+@media(max-width:767px){
   .nav-pills{display:none!important}
   .hdr-space{display:none!important}
   .save-info{display:none!important}
@@ -3958,35 +3958,18 @@ function ccGetAutoData(cardId, month) {
   // Linked template — needed for billing-cycle dates (interest) AND outstanding lookup
   const linkedTpl = (D.templates||[]).find(t => t.ccCardId === cardId);
 
-  // ── Interest: sum transactions in billing period for this statement month ──
-  // If the card's template has a statementDay, use the real billing window
-  // (prevStmtDate+1 .. curStmtDate) so transactions dated in the NEXT calendar
-  // month but before the statement date are included correctly.
-  // Falls back to simple calendar-month range when statementDay is not configured.
+  // ── Interest: sum transactions posted in the same calendar month ──
+  // Match by the calendar month the transaction is dated in the Transactions tab
+  // for the linked account. Statement day is irrelevant — if the interest posts
+  // on the 11th instead of the 9th, it still belongs to that calendar month.
   let interest = null, interestSource = null;
   if (card.linkedTxnAccountId && card.interestCategoryId) {
-    let dateFrom, dateTo;
-    const [yrStr, moStr] = month.split('-');
-    const yr = parseInt(yrStr), mo = parseInt(moStr); // mo is 1-indexed
-    const sd = linkedTpl?.statementDay ? parseInt(linkedTpl.statementDay) : null;
-    if (sd) {
-      // clampDay uses 0-indexed month: mo-1 = current month, mo-2 = previous month
-      const prevStmt = isoDate(clampDay(mo === 1 ? yr - 1 : yr, mo === 1 ? 11 : mo - 2, sd));
-      const curStmt  = isoDate(clampDay(yr, mo - 1, sd));
-      dateFrom = prevStmt; // exclusive (transactions strictly AFTER prevStmt)
-      dateTo   = curStmt;  // inclusive (transactions on or before curStmt)
-    } else {
-      // Calendar-month fallback: YYYY-MM-00 is strictly before YYYY-MM-01
-      dateFrom = `${month}-00`;
-      dateTo   = `${month}-31`;
-    }
     const sum = (D.transactions||[])
       .filter(t =>
         t.accountId   === card.linkedTxnAccountId &&
         t.categoryId  === card.interestCategoryId &&
         (!t.status || t.status === 'approved') &&
-        (t.date||'') > dateFrom &&
-        (t.date||'') <= dateTo
+        (t.date||'').slice(0, 7) === month
       )
       .reduce((s, t) => s + (parseFloat(t.debit)||0), 0);
     interest = Math.round(sum * 100) / 100;
