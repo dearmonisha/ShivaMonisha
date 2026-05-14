@@ -5366,7 +5366,7 @@ function renderCCRepaySection(month) {
         const name   = (D.budget.categories || []).find(c => c.id === catId)?.name || catId;
         return { catId, name, plan, actual, over };
       })
-      .filter(c => c.plan > 0 && c.over > 0.005); // half-cent epsilon — matches individual row isOver guard
+      .filter(c => c.over > 0.005); // half-cent epsilon; plan=0 categories included — any spend against $0 plan is over budget
 
     return { card, charged, cardPayments, totalPaid, remaining, tbdCount: tbdTxns.length, overBudgetCats };
   });
