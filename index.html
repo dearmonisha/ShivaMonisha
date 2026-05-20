@@ -3977,20 +3977,18 @@ function ccGetAutoData(cardId, month) {
   }
 
   // ── Outstanding: pull from Monthly payment entry via linked template ──
-  // Use the payment's statementDate month (not the bucket month it was entered under),
-  // because the user's billing cycle spans mid-prev-month to mid-current-month.
+  // Match by calendar month only — the actual statement date moves around within the month.
+  // If statementDate is set on the payment row, use its month.
+  // If statementDate is blank/null, fall back to the cycle bucket month (ym).
   let outstanding = null, outstandingSource = null;
   if (linkedTpl) {
     let payment = null;
-    const today = centralToday();
-    // Search every monthly bucket for a payment whose statementDate falls in `month`
-    // AND has already occurred (statementDate <= today) — don't pull future statements
     for (const ym of Object.keys(D.cycles || {})) {
-      const p = (D.cycles[ym].payments || []).find(p =>
-        p.templateId === linkedTpl.id &&
-        (p.statementDate || '').slice(0, 7) === month &&
-        (p.statementDate || '') <= today
-      );
+      const p = (D.cycles[ym].payments || []).find(p => {
+        if (p.templateId !== linkedTpl.id) return false;
+        const effectiveMonth = p.statementDate ? p.statementDate.slice(0, 7) : ym;
+        return effectiveMonth === month;
+      });
       if (p) { payment = p; break; }
     }
     if (payment && payment.outstandingBalance != null && payment.outstandingBalance !== '') {
