@@ -3031,29 +3031,23 @@ function renderCCBalances() {
   const thS = 'padding:7px 14px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text3);border-bottom:1px solid var(--border)';
   let totLim = 0, totOS = 0;
   const rows = cards.map(card => {
-    // Latest synced outstanding across all months (most recent non-null value)
-    const cardData = cct.data[card.id] || {};
-    const sorted   = Object.keys(cardData).sort().reverse();
-    let os = null, dataMonth = null;
-    for (const m of sorted) {
-      const v = cardData[m]?.outstanding;
-      if (v !== null && v !== undefined && v !== '') { os = parseFloat(v); dataMonth = m; break; }
-    }
-    const lim   = parseFloat(card.limit) || 0;
-    const osVal = os !== null ? os : 0;
-    const avail = lim > 0 ? Math.max(0, lim - osVal) : null;
-    const util  = lim > 0 && os !== null ? Math.round(osVal / lim * 100) : null;
+    // Source: live running balance from the linked CC transaction account
+    const txnAcct = (D.txnAccounts || []).find(a => a.ccCardId === card.id);
+    const os      = txnAcct ? txnCurrentBalance(txnAcct) : null;
+    const lim     = parseFloat(card.limit) || 0;
+    const osVal   = os !== null ? Math.max(0, os) : 0;
+    const avail   = lim > 0 ? Math.max(0, lim - osVal) : null;
+    const util    = lim > 0 && os !== null ? Math.round(osVal / lim * 100) : null;
     if (lim > 0) totLim += lim;
-    totOS += osVal;
+    if (os !== null) totOS += osVal;
     const chip = util === null ? 'background:color-mix(in srgb,var(--border) 60%,transparent);color:var(--text3)'
                : util >= 75   ? 'background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)'
                : util >= 40   ? 'background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)'
                :                'background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)';
-    const syncNote = dataMonth ? `<span style="font-size:.7rem;color:var(--text3);margin-left:5px">${_ymFmt(dataMonth)}</span>` : '';
     return `<tr style="border-bottom:1px solid var(--border-light)">
       <td style="padding:9px 14px;font-size:.82rem;color:var(--text)">${esc(card.name)}</td>
       <td style="padding:9px 14px;text-align:right;font-size:.82rem;color:var(--text3)">${lim > 0 ? fmtCurrency(lim) : '—'}</td>
-      <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--text)">${os !== null ? fmtCurrency(osVal) : '<span style="color:var(--text3)">—</span>'}${syncNote}</td>
+      <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--text)">${os !== null ? fmtCurrency(osVal) : '<span style="color:var(--text3)">—</span>'}</td>
       <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--ok)">${avail !== null ? fmtCurrency(avail) : '<span style="color:var(--text3)">—</span>'}</td>
       <td style="padding:9px 14px;text-align:center"><span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:.72rem;font-weight:600;${chip}">${util !== null ? util+'%' : '—'}</span></td>
     </tr>`;
@@ -3068,7 +3062,7 @@ function renderCCBalances() {
     <div class="tab-sticky-top">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 6px">
         <span style="font-size:1.05rem;font-weight:700;color:var(--text)">💳 Card Balances</span>
-        <span style="font-size:.75rem;color:var(--text3)">Outstanding &amp; available — latest synced data per card</span>
+        <span style="font-size:.75rem;color:var(--text3)">Live balance from CC transaction accounts</span>
       </div>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
