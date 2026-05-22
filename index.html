@@ -713,8 +713,9 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
         Insights <span class="nav-dd-caret">▾</span>
       </button>
       <div class="nav-dropdown-menu" id="nav-dd-menu-insights">
-        <button class="nav-dd-item" id="tab-cc"           onclick="switchView('cc');closeNavDropdowns()">Credit Card</button>
-        <button class="nav-dd-item" id="tab-breakdown"    onclick="switchView('breakdown');closeNavDropdowns()">Spending Analysis</button>
+        <button class="nav-dd-item" id="tab-cc"              onclick="switchView('cc');closeNavDropdowns()">Credit Card</button>
+        <button class="nav-dd-item" id="tab-cc-balances"   onclick="switchView('cc-balances');closeNavDropdowns()">💳 Card Balances</button>
+        <button class="nav-dd-item" id="tab-breakdown"     onclick="switchView('breakdown');closeNavDropdowns()">Spending Analysis</button>
         <button class="nav-dd-item" id="tab-reports"      onclick="switchView('reports');closeNavDropdowns()">📊 Reports</button>
         <button class="nav-dd-item" id="tab-savings-pots" onclick="switchView('savings-pots');closeNavDropdowns()">💰 Savings Pots</button>
         <button class="nav-dd-item" id="tab-debt-payoff"  onclick="switchView('debt-payoff');closeNavDropdowns()">🏁 Debt Payoff</button>
@@ -762,6 +763,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-monthly"></div>
   <div id="view-family" style="display:none"></div>
   <div id="view-cc" style="display:none"></div>
+  <div id="view-cc-balances" style="display:none"></div>
   <div id="view-obligations" style="display:none">
     <!-- Obligations sticky nav — sub-tabs + import button stay visible while scrolling -->
     <div class="budget-sticky-bar" style="flex-wrap:wrap;gap:6px;padding:6px 14px;align-items:center;">
@@ -1554,13 +1556,13 @@ function buildDates(t, cycleYM) {
 // ════════════════════════════════════════════════════════════
 function switchView(v) {
   UI.view = v;
-  ['monthly','family','cc','budget','breakdown','annual','setup','obligations','transactions','reports','savings-pots','debt-payoff'].forEach(k => {
+  ['monthly','family','cc','cc-balances','budget','breakdown','annual','setup','obligations','transactions','reports','savings-pots','debt-payoff'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual'];
-  const _insightsViews = ['cc','breakdown','reports','savings-pots','debt-payoff'];
+  const _insightsViews = ['cc','cc-balances','breakdown','reports','savings-pots','debt-payoff'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -1569,6 +1571,7 @@ function switchView(v) {
   if (v==='monthly')      renderMonthly();
   if (v==='family')       renderFamily();
   if (v==='cc')           renderCCTracker();
+  if (v==='cc-balances')  renderCCBalances();
   if (v==='budget')       renderBudget();
   if (v==='breakdown')    renderBreakdown();
   if (v==='annual')       renderAnnual();
@@ -3014,6 +3017,81 @@ function toggleCCCharts() {
   if (chev) chev.style.transform = _ccChartsCollapsed ? 'rotate(-90deg)' : '';
 }
 
+// ── Card Balances view — standalone, current-state snapshot ────────────────
+function renderCCBalances() {
+  const wrap = id('view-cc-balances');
+  if (!wrap) return;
+  const cct    = D.ccTracker || { cards: [], data: {} };
+  const cards  = (cct.cards || []).filter(c => c.active !== false);
+  const _ymFmt = ym => { const [y, m] = ym.split('-'); return new Date(+y, +m-1, 1).toLocaleDateString('en-US', {month:'short', year:'2-digit'}); };
+  if (!cards.length) {
+    wrap.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text3);font-size:.85rem">No credit cards configured. Add cards in <button class="btn btn-sm" onclick="switchView('cc')">CC Tracker</button>.</div>`;
+    return;
+  }
+  const thS = 'padding:7px 14px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text3);border-bottom:1px solid var(--border)';
+  let totLim = 0, totOS = 0;
+  const rows = cards.map(card => {
+    // Latest synced outstanding across all months (most recent non-null value)
+    const cardData = cct.data[card.id] || {};
+    const sorted   = Object.keys(cardData).sort().reverse();
+    let os = null, dataMonth = null;
+    for (const m of sorted) {
+      const v = cardData[m]?.outstanding;
+      if (v !== null && v !== undefined && v !== '') { os = parseFloat(v); dataMonth = m; break; }
+    }
+    const lim   = parseFloat(card.limit) || 0;
+    const osVal = os !== null ? os : 0;
+    const avail = lim > 0 ? Math.max(0, lim - osVal) : null;
+    const util  = lim > 0 && os !== null ? Math.round(osVal / lim * 100) : null;
+    if (lim > 0) totLim += lim;
+    totOS += osVal;
+    const chip = util === null ? 'background:color-mix(in srgb,var(--border) 60%,transparent);color:var(--text3)'
+               : util >= 75   ? 'background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)'
+               : util >= 40   ? 'background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)'
+               :                'background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)';
+    const syncNote = dataMonth ? `<span style="font-size:.7rem;color:var(--text3);margin-left:5px">${_ymFmt(dataMonth)}</span>` : '';
+    return `<tr style="border-bottom:1px solid var(--border-light)">
+      <td style="padding:9px 14px;font-size:.82rem;color:var(--text)">${esc(card.name)}</td>
+      <td style="padding:9px 14px;text-align:right;font-size:.82rem;color:var(--text3)">${lim > 0 ? fmtCurrency(lim) : '—'}</td>
+      <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--text)">${os !== null ? fmtCurrency(osVal) : '<span style="color:var(--text3)">—</span>'}${syncNote}</td>
+      <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--ok)">${avail !== null ? fmtCurrency(avail) : '<span style="color:var(--text3)">—</span>'}</td>
+      <td style="padding:9px 14px;text-align:center"><span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:.72rem;font-weight:600;${chip}">${util !== null ? util+'%' : '—'}</span></td>
+    </tr>`;
+  }).join('');
+  const totAvail = totLim > 0 ? Math.max(0, totLim - totOS) : null;
+  const totUtil  = totLim > 0 ? Math.round(totOS / totLim * 100) : null;
+  const totChip  = totUtil === null ? 'background:color-mix(in srgb,var(--border) 60%,transparent);color:var(--text3)'
+                 : totUtil >= 75    ? 'background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)'
+                 : totUtil >= 40    ? 'background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)'
+                 :                   'background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)';
+  wrap.innerHTML = `
+    <div class="tab-sticky-top">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 6px">
+        <span style="font-size:1.05rem;font-weight:700;color:var(--text)">💳 Card Balances</span>
+        <span style="font-size:.75rem;color:var(--text3)">Outstanding &amp; available — latest synced data per card</span>
+      </div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+        <thead><tr style="background:var(--surface2)">
+          <th style="${thS};text-align:left">Card</th>
+          <th style="${thS};text-align:right">Limit</th>
+          <th style="${thS};text-align:right">Outstanding</th>
+          <th style="${thS};text-align:right">Available</th>
+          <th style="${thS};text-align:center">Used</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr style="background:var(--surface2)">
+          <td style="padding:9px 14px;font-size:.78rem;font-weight:600;color:var(--text2);border-top:1px solid var(--border)">Total</td>
+          <td style="padding:9px 14px;text-align:right;font-size:.78rem;color:var(--text2);border-top:1px solid var(--border)">${totLim > 0 ? fmtCurrency(totLim) : '—'}</td>
+          <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--text);border-top:1px solid var(--border)">${fmtCurrency(totOS)}</td>
+          <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--ok);border-top:1px solid var(--border)">${totAvail !== null ? fmtCurrency(totAvail) : '—'}</td>
+          <td style="padding:9px 14px;text-align:center;border-top:1px solid var(--border)">${totUtil !== null ? `<span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:.72rem;font-weight:600;${totChip}">${totUtil}%</span>` : '—'}</td>
+        </tr></tfoot>
+      </table>
+    </div>`;
+}
+
 function buildCardHealthPanel() {
   const cct = D.ccTracker;
   const months = (cct.months || []).slice().sort();
@@ -3513,35 +3591,6 @@ function renderCCTracker() {
   // Chart header also notes the selected card
   const cardLabel = UI.ccCardSel ? ` · ${esc((cct.cards.find(c=>c.id===UI.ccCardSel)||{}).name||'')}` : '';
 
-  // ── Quick Balance table ────────────────────────────────────────
-  const _activeCards = cct.cards.filter(c => c.active !== false);
-  const _qbRows = _activeCards.map(card => {
-    const entry = (cct.data[card.id] || {})[latestMonth] || {};
-    const os    = parseFloat(entry.outstanding) || 0;
-    const lim   = parseFloat(card.limit) || 0;
-    const avail = lim > 0 ? Math.max(0, lim - os) : null;
-    const util  = lim > 0 ? Math.round(os / lim * 100) : null;
-    const chip  = util === null ? 'background:color-mix(in srgb,var(--border) 60%,transparent);color:var(--text3)'
-                : util >= 75   ? 'background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)'
-                : util >= 40   ? 'background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)'
-                :                'background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)';
-    return `<tr style="border-bottom:1px solid var(--border-light)">
-      <td style="padding:8px 14px;font-size:.82rem;color:var(--text)">${esc(card.name)}</td>
-      <td style="padding:8px 14px;text-align:right;font-size:.82rem;color:var(--text3)">${lim > 0 ? fmtCurrency(lim) : '—'}</td>
-      <td style="padding:8px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--text)">${fmtCurrency(os)}</td>
-      <td style="padding:8px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--ok)">${avail !== null ? fmtCurrency(avail) : '—'}</td>
-      <td style="padding:8px 14px;text-align:center"><span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:.72rem;font-weight:600;${chip}">${util !== null ? util + '%' : '—'}</span></td>
-    </tr>`;
-  }).join('');
-  const _qbTotLim   = _activeCards.reduce((s, c) => s + (parseFloat(c.limit)||0), 0);
-  const _qbTotAvail = _qbTotLim > 0 ? Math.max(0, _qbTotLim - totalOS) : null;
-  const _qbTotUtil  = _qbTotLim > 0 ? Math.round(totalOS / _qbTotLim * 100) : null;
-  const _qbTotChip  = _qbTotUtil === null ? 'background:color-mix(in srgb,var(--border) 60%,transparent);color:var(--text3)'
-                    : _qbTotUtil >= 75    ? 'background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)'
-                    : _qbTotUtil >= 40    ? 'background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)'
-                    :                      'background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)';
-  const _qbTh = 'padding:7px 14px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text3);border-bottom:1px solid var(--border)';
-
   c.innerHTML = `
     <div class="tab-sticky-top">
       <div class="cc-header" style="margin-bottom:0">
@@ -3562,28 +3611,6 @@ function renderCCTracker() {
           <div class="sum-sub">Total across all cards</div>
         </div>
       </div>
-    </div>
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:12px;overflow:hidden">
-      <div style="padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
-        <span style="font-weight:600;font-size:.85rem;color:var(--text)">💳 Balance &amp; Availability — ${ymFmt(latestMonth)}</span>
-      </div>
-      <table style="width:100%;border-collapse:collapse;table-layout:fixed">
-        <thead><tr style="background:var(--surface2)">
-          <th style="${_qbTh};text-align:left">Card</th>
-          <th style="${_qbTh};text-align:right">Limit</th>
-          <th style="${_qbTh};text-align:right">Outstanding</th>
-          <th style="${_qbTh};text-align:right">Available</th>
-          <th style="${_qbTh};text-align:center">Used</th>
-        </tr></thead>
-        <tbody>${_qbRows || '<tr><td colspan="5" style="padding:18px 14px;text-align:center;color:var(--text3);font-size:.82rem">No active cards</td></tr>'}</tbody>
-        <tfoot><tr style="background:var(--surface2)">
-          <td style="padding:8px 14px;font-size:.78rem;font-weight:600;color:var(--text2);border-top:1px solid var(--border)">Total</td>
-          <td style="padding:8px 14px;text-align:right;font-size:.78rem;color:var(--text2);border-top:1px solid var(--border)">${_qbTotLim > 0 ? fmtCurrency(_qbTotLim) : '—'}</td>
-          <td style="padding:8px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--text);border-top:1px solid var(--border)">${fmtCurrency(totalOS)}</td>
-          <td style="padding:8px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--ok);border-top:1px solid var(--border)">${_qbTotAvail !== null ? fmtCurrency(_qbTotAvail) : '—'}</td>
-          <td style="padding:8px 14px;text-align:center;border-top:1px solid var(--border)">${_qbTotUtil !== null ? `<span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:.72rem;font-weight:600;${_qbTotChip}">${_qbTotUtil}%</span>` : '—'}</td>
-        </tr></tfoot>
-      </table>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:12px;overflow:hidden">
       <div onclick="BA.toggleCCHealth()" style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;user-select:none;border-bottom:${_ccHealthCollapsed?'none':'1px solid var(--border)'};background:var(--surface2)">
