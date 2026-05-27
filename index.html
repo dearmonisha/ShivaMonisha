@@ -6776,11 +6776,50 @@ function renderMobileView() {
   // ── Transactions section ───────────────────────────────────
   let txnHTML = '';
   if (tab === 'transactions') {
+    const selAcctId  = UI.mobileTxnAcct || '';
+    const txnAccts   = (D.txnAccounts || []).filter(a => a.active !== false);
+    const selAcct    = selAcctId ? txnAccts.find(a => a.id === selAcctId) : null;
+
+    // Account selector dropdown
+    const acctOpts = txnAccts.map(a =>
+      `<option value="${esc(a.id)}"${a.id === selAcctId ? ' selected' : ''}>${esc(a.name)}</option>`
+    ).join('');
+    const selectorHTML = `<select onchange="BA.setMobileTxnAcct(this.value)"
+      style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;margin-bottom:10px">
+      <option value="">All Accounts</option>
+      ${acctOpts}
+    </select>`;
+
+    // Balance pill for selected account
+    let pillHTML = '';
+    if (selAcct) {
+      const bal     = txnCurrentBalance(selAcct);
+      const isCC    = !!selAcct.ccCardId;
+      const dispBal = isCC ? Math.max(0, bal) : bal;
+      const label   = isCC
+        ? (bal > 0 ? 'Amount Owed' : 'No Balance')
+        : 'Current Balance';
+      const pillClr = isCC
+        ? (bal > 0 ? 'var(--danger)' : 'var(--ok)')
+        : (bal >= 0 ? 'var(--ok)' : 'var(--danger)');
+      pillHTML = `<div style="display:flex;align-items:center;justify-content:space-between;
+        background:var(--surface);border:1px solid var(--border);border-radius:50px;
+        padding:7px 16px;margin-bottom:12px">
+        <span style="font-size:.78rem;color:var(--text3);font-weight:600">${label}</span>
+        <span style="font-size:1rem;font-weight:800;color:${pillClr}">${fmtCurrency(Math.abs(dispBal))}</span>
+      </div>`;
+    }
+
+    // Filter transactions
     const txns = (D.transactions || [])
-      .filter(t => (t.date || '').slice(0, 7) === month && (!t.status || t.status === 'approved'))
+      .filter(t => (t.date || '').slice(0, 7) === month
+        && (!t.status || t.status === 'approved')
+        && (!selAcctId || t.accountId === selAcctId))
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    let listHTML;
     if (!txns.length) {
-      txnHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No transactions for ${monthLabel}</div>`;
+      listHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No transactions for ${monthLabel}</div>`;
     } else {
       const rows = txns.map(t => {
         const acct   = (D.txnAccounts || []).find(a => a.id === t.accountId);
@@ -6788,7 +6827,11 @@ function renderMobileView() {
         const amt    = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
         const isNeg  = amt < 0;
         const color  = isNeg ? 'var(--ok)' : 'var(--text)';
-        const meta   = [fmtDate(t.date), acct?.name, cat].filter(Boolean).join(' · ');
+        // When filtering by account, omit account name from meta (redundant)
+        const metaParts = selAcctId
+          ? [fmtDate(t.date), cat].filter(Boolean)
+          : [fmtDate(t.date), acct?.name, cat].filter(Boolean);
+        const meta = metaParts.join(' · ');
         return `<div class="mob-txn-row">
           <div class="mob-txn-left">
             <div class="mob-txn-payee">${esc(t.payee || '(no payee)')}</div>
@@ -6797,9 +6840,10 @@ function renderMobileView() {
           <div class="mob-txn-amt" style="color:${color}">${isNeg ? '+' : ''}${fmtC(Math.abs(amt))}</div>
         </div>`;
       }).join('');
-      txnHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:0 14px">${rows}</div>
+      listHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:0 14px">${rows}</div>
         <div style="font-size:.72rem;color:var(--text3);text-align:center;margin-top:10px">${txns.length} transaction${txns.length!==1?'s':''}</div>`;
     }
+    txnHTML = selectorHTML + pillHTML + listHTML;
   }
 
   // ── CC Cards section ───────────────────────────────────────
@@ -6862,6 +6906,7 @@ function renderMobileView() {
 const BA = {
 
   setMobileTab(tab) { UI.mobileTab = tab; renderMobileView(); },
+  setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; renderMobileView(); },
 
   mobilePrevMonth() {
     const { y, m } = parseYM(UI.budgetMonth || ymNow());
