@@ -668,6 +668,15 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-pot-name{font-size:.9rem;font-weight:700;color:var(--text1)}
 .mob-pot-bal{font-size:1rem;font-weight:800}
 .mob-total-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.mob-tabs{display:flex;border-bottom:2px solid var(--border);background:var(--bg);position:sticky;top:97px;z-index:49}
+.mob-tab{flex:1;padding:9px 4px;font-size:.78rem;font-weight:700;color:var(--text3);background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;transition:color .15s}
+.mob-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+.mob-txn-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-light)}
+.mob-txn-row:last-child{border-bottom:none}
+.mob-txn-left{flex:1;min-width:0;padding-right:10px}
+.mob-txn-payee{font-size:.85rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mob-txn-meta{font-size:.7rem;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mob-txn-amt{font-size:.9rem;font-weight:700;white-space:nowrap}
 @media(max-width:767px){
   .nav-pills{display:none!important}
   .hdr-space{display:none!important}
@@ -6669,55 +6678,65 @@ function renderMobileView() {
   const wrap = id('view-mobile');
   if (!wrap) return;
 
+  const tab    = UI.mobileTab || 'budget';
   const month  = UI.budgetMonth || ymNow();
   const [y, m] = month.split('-').map(Number);
   const monthLabel = new Date(y, m - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
-
   const groups = D.budget?.groups     || [];
   const cats   = D.budget?.categories || [];
 
+  // ── Tab bar ────────────────────────────────────────────────
+  const tabBar = `
+    <div class="mob-tabs">
+      <button class="mob-tab${tab==='budget'?' active':''}"       onclick="BA.setMobileTab('budget')">📊 Budget</button>
+      <button class="mob-tab${tab==='transactions'?' active':''}" onclick="BA.setMobileTab('transactions')">💸 Transactions</button>
+      <button class="mob-tab${tab==='cards'?' active':''}"        onclick="BA.setMobileTab('cards')">💳 Cards</button>
+    </div>`;
+
+  // ── Month nav (hidden on Cards tab) ───────────────────────
+  const monthNav = tab === 'cards' ? '' : `
+    <div class="mob-hdr">
+      <button class="arrow-btn" onclick="BA.mobilePrevMonth()">&#8249;</button>
+      <div class="mob-month">${monthLabel}</div>
+      <button class="arrow-btn" onclick="BA.mobileNextMonth()">&#8250;</button>
+    </div>`;
+
   // ── Budget section ─────────────────────────────────────────
-  let budgetHTML = '';
-  let hasAnyBudget = false;
-  for (const group of groups) {
-    const gcats = cats.filter(c => c.groupId === group.id);
-    if (!gcats.length) continue;
-    hasAnyBudget = true;
-    budgetHTML += `<div class="mob-group-hdr">${esc(group.name)}</div>`;
-    for (const cat of gcats) {
-      const budget = budgetGetAdjustedPlan(cat.id, month);
-      const spent  = budgetGetCatActuals(cat.id, month);
-      const remain = Math.round((budget - spent) * 100) / 100;
-      const pct    = budget > 0 ? Math.min(100, spent / budget * 100) : (spent > 0 ? 100 : 0);
-      const isOver = remain < -0.005;
-      const isWarn = !isOver && pct >= 80;
-      const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : 'var(--ok)';
-      const borderColor = isOver
-        ? 'color-mix(in srgb,var(--danger) 35%,transparent)'
-        : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)'
-        : 'var(--border)';
-      const remainLabel = isOver
-        ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
-        : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
-      budgetHTML += `
-        <div class="mob-cat-card" style="border-color:${borderColor}">
-          <div class="mob-cat-row">
-            <span class="mob-cat-name">${esc(cat.name)}</span>
-            ${remainLabel}
-          </div>
-          <div class="mob-cat-sub">${fmtC(spent)} spent of ${fmtC(budget)} planned</div>
-          <div class="mob-bar-track">
-            <div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div>
-          </div>
-        </div>`;
+  let budgetHTML = '', hasAnyBudget = false;
+  if (tab === 'budget') {
+    for (const group of groups) {
+      const gcats = cats.filter(c => c.groupId === group.id);
+      if (!gcats.length) continue;
+      hasAnyBudget = true;
+      budgetHTML += `<div class="mob-group-hdr">${esc(group.name)}</div>`;
+      for (const cat of gcats) {
+        const budget = budgetGetAdjustedPlan(cat.id, month);
+        const spent  = budgetGetCatActuals(cat.id, month);
+        const remain = Math.round((budget - spent) * 100) / 100;
+        const pct    = budget > 0 ? Math.min(100, spent / budget * 100) : (spent > 0 ? 100 : 0);
+        const isOver = remain < -0.005;
+        const isWarn = !isOver && pct >= 80;
+        const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : 'var(--ok)';
+        const borderColor = isOver ? 'color-mix(in srgb,var(--danger) 35%,transparent)'
+                          : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)' : 'var(--border)';
+        const remainLabel = isOver
+          ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
+          : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
+        budgetHTML += `
+          <div class="mob-cat-card" style="border-color:${borderColor}">
+            <div class="mob-cat-row"><span class="mob-cat-name">${esc(cat.name)}</span>${remainLabel}</div>
+            <div class="mob-cat-sub">${fmtC(spent)} spent of ${fmtC(budget)} planned</div>
+            <div class="mob-bar-track"><div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+          </div>`;
+      }
     }
+    if (!hasAnyBudget) budgetHTML = `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.88rem">No budget categories set up yet</div>`;
   }
-  if (!hasAnyBudget) budgetHTML = `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.88rem">No budget categories set up yet</div>`;
 
   // ── Savings Pots section ───────────────────────────────────
   const sp = D.savingsPots || {};
   let potsHTML = '';
-  if (sp.growthAccountId && sp.trackedGroupId) {
+  if (tab === 'budget' && sp.growthAccountId && sp.trackedGroupId) {
     const growthAcctId  = sp.growthAccountId;
     const trackedCats   = cats.filter(c => c.groupId === sp.trackedGroupId);
     const trackedCatIds = new Set(trackedCats.map(c => c.id));
@@ -6736,19 +6755,12 @@ function renderMobileView() {
         else           pots[s.categoryId].drawn     += amt;
       });
     });
-    const totalBal = trackedCats.reduce((s, c) => {
-      const p = pots[c.id] || { deposited:0, drawn:0 };
-      return s + p.deposited - p.drawn;
-    }, 0);
+    const totalBal = trackedCats.reduce((s, c) => { const p = pots[c.id]||{deposited:0,drawn:0}; return s + p.deposited - p.drawn; }, 0);
     const potCards = trackedCats.map(c => {
-      const p   = pots[c.id] || { deposited:0, drawn:0 };
+      const p = pots[c.id] || { deposited:0, drawn:0 };
       const bal = p.deposited - p.drawn;
       const clr = bal > 0 ? 'var(--ok)' : bal < 0 ? 'var(--danger)' : 'var(--text3)';
-      return `
-        <div class="mob-pot-card">
-          <span class="mob-pot-name">${esc(c.name)}</span>
-          <span class="mob-pot-bal" style="color:${clr}">${fmtCurrency(bal)}</span>
-        </div>`;
+      return `<div class="mob-pot-card"><span class="mob-pot-name">${esc(c.name)}</span><span class="mob-pot-bal" style="color:${clr}">${fmtCurrency(bal)}</span></div>`;
     }).join('');
     potsHTML = `
       <div class="mob-section" style="margin-top:8px">
@@ -6761,22 +6773,95 @@ function renderMobileView() {
       </div>`;
   }
 
+  // ── Transactions section ───────────────────────────────────
+  let txnHTML = '';
+  if (tab === 'transactions') {
+    const txns = (D.transactions || [])
+      .filter(t => (t.date || '').slice(0, 7) === month && (!t.status || t.status === 'approved'))
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    if (!txns.length) {
+      txnHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No transactions for ${monthLabel}</div>`;
+    } else {
+      const rows = txns.map(t => {
+        const acct   = (D.txnAccounts || []).find(a => a.id === t.accountId);
+        const cat    = txnCatLabel ? txnCatLabel(t.categoryId) : '';
+        const amt    = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+        const isNeg  = amt < 0;
+        const color  = isNeg ? 'var(--ok)' : 'var(--text)';
+        const meta   = [fmtDate(t.date), acct?.name, cat].filter(Boolean).join(' · ');
+        return `<div class="mob-txn-row">
+          <div class="mob-txn-left">
+            <div class="mob-txn-payee">${esc(t.payee || '(no payee)')}</div>
+            <div class="mob-txn-meta">${esc(meta)}</div>
+          </div>
+          <div class="mob-txn-amt" style="color:${color}">${isNeg ? '+' : ''}${fmtC(Math.abs(amt))}</div>
+        </div>`;
+      }).join('');
+      txnHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:0 14px">${rows}</div>
+        <div style="font-size:.72rem;color:var(--text3);text-align:center;margin-top:10px">${txns.length} transaction${txns.length!==1?'s':''}</div>`;
+    }
+  }
+
+  // ── CC Cards section ───────────────────────────────────────
+  let cardsHTML = '';
+  if (tab === 'cards') {
+    const ccCards = (D.ccTracker?.cards || []).filter(c => c.active !== false);
+    if (!ccCards.length) {
+      cardsHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No credit cards configured</div>`;
+    } else {
+      let totLim = 0, totOS = 0;
+      const cardItems = ccCards.map(card => {
+        const txnAcct = (D.txnAccounts || []).find(a => a.ccCardId === card.id);
+        const os      = txnAcct ? txnCurrentBalance(txnAcct) : null;
+        const lim     = parseFloat(card.limit) || 0;
+        const osVal   = os !== null ? Math.max(0, os) : 0;
+        const avail   = lim > 0 ? Math.max(0, lim - osVal) : null;
+        const util    = lim > 0 && os !== null ? Math.round(osVal / lim * 100) : null;
+        if (lim > 0) totLim += lim;
+        if (os !== null) totOS += osVal;
+        const color = util === null ? 'var(--text3)' : util >= 75 ? 'var(--danger)' : util >= 40 ? '#d97706' : 'var(--ok)';
+        return `<div class="mob-cat-card">
+          <div class="mob-cat-row">
+            <span class="mob-cat-name">${esc(card.name)}</span>
+            <span style="font-size:.92rem;font-weight:800;color:${color}">${util !== null ? util+'%' : '—'}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--text3);margin-bottom:6px">
+            <span>Outstanding: <strong style="color:var(--text)">${os !== null ? fmtCurrency(osVal) : '—'}</strong></span>
+            <span>Available: <strong style="color:var(--ok)">${avail !== null ? fmtCurrency(avail) : '—'}</strong></span>
+          </div>
+          ${lim > 0 ? `<div class="mob-bar-track"><div class="mob-bar-fill" style="width:${Math.min(100,util||0)}%;background:${color}"></div></div>` : ''}
+        </div>`;
+      }).join('');
+      const totAvail = totLim > 0 ? Math.max(0, totLim - totOS) : null;
+      cardsHTML = `
+        <div class="mob-total-card">
+          <span style="font-size:.82rem;font-weight:700;color:var(--text2)">Total Outstanding</span>
+          <span style="font-size:1rem;font-weight:800;color:var(--text)">${fmtCurrency(totOS)}</span>
+        </div>
+        ${totAvail !== null ? `<div class="mob-total-card" style="margin-bottom:14px">
+          <span style="font-size:.82rem;font-weight:700;color:var(--text2)">Total Available</span>
+          <span style="font-size:1rem;font-weight:800;color:var(--ok)">${fmtCurrency(totAvail)}</span>
+        </div>` : ''}
+        ${cardItems}`;
+    }
+  }
+
   wrap.innerHTML = `
-    <div class="mob-hdr">
-      <button class="arrow-btn" onclick="BA.mobilePrevMonth()">&#8249;</button>
-      <div class="mob-month">${monthLabel}</div>
-      <button class="arrow-btn" onclick="BA.mobileNextMonth()">&#8250;</button>
-    </div>
+    ${monthNav}
+    ${tabBar}
     <div class="mob-section">
-      <div class="mob-section-title">📊 Budget Remaining</div>
-      ${budgetHTML}
+      ${tab === 'budget'       ? `<div class="mob-section-title">📊 Budget Remaining</div>${budgetHTML}` : ''}
+      ${tab === 'transactions' ? txnHTML : ''}
+      ${tab === 'cards'        ? `<div class="mob-section-title" style="margin-top:14px">💳 Card Balances</div>${cardsHTML}` : ''}
     </div>
     ${potsHTML}
-    <div style="height:32px"></div>
+    <div style="height:40px"></div>
   `;
 }
 
 const BA = {
+
+  setMobileTab(tab) { UI.mobileTab = tab; renderMobileView(); },
 
   mobilePrevMonth() {
     const { y, m } = parseYM(UI.budgetMonth || ymNow());
