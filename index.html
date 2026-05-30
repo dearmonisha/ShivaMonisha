@@ -3034,6 +3034,103 @@ function toggleCCCharts() {
 
 // ── Card Balances view — standalone, current-state snapshot ────────────────
 // ════════════════════════════════════════════════════════════
+// EXPORT FOR AI
+// ════════════════════════════════════════════════════════════
+function generateAIExport(month) {
+  const [yr, mo] = month.split('-').map(Number);
+  const monthLabel = new Date(yr, mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const groups = D.budget.groups || [];
+  const cats   = D.budget.categories || [];
+
+  // Current month data
+  const income = txnGetIncomeForMonth(month);
+  const groupRows = groups.map(g => {
+    const gCats = cats.filter(c => c.groupId === g.id);
+    const gTotal = gCats.reduce((s, c) => s + budgetGetCatActuals(c.id, month), 0);
+    const catLines = gCats
+      .map(c => ({ name: c.name, actual: budgetGetCatActuals(c.id, month), budget: budgetGetAdjustedPlan(c.id, month) }))
+      .filter(c => c.actual > 0.01)
+      .sort((a, b) => b.actual - a.actual);
+    return { name: g.name, total: gTotal, cats: catLines };
+  }).filter(g => g.total > 0.01).sort((a, b) => b.total - a.total);
+
+  const totalSpend = groupRows.reduce((s, g) => s + g.total, 0);
+  const savings    = income - totalSpend;
+
+  // Last 3 months for trend
+  const trendMonths = [-2, -1, 0].map(d => shiftYM(month, d));
+  const trendLines  = trendMonths.map(m => {
+    const [y2, m2] = m.split('-').map(Number);
+    const lbl = new Date(y2, m2 - 1, 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    const inc = txnGetIncomeForMonth(m) || budgetGetIncome(m);
+    const spd = groups.reduce((s, g) => s + cats.filter(c => c.groupId === g.id).reduce((ss, c) => ss + budgetGetCatActuals(c.id, m), 0), 0);
+    return `  ${lbl}: Income ${fmtCurrency(inc)}, Spending ${fmtCurrency(spd)}, Net ${fmtCurrency(inc - spd)}`;
+  });
+
+  // Per-category trend (highlight growing categories)
+  const prevMonth = shiftYM(month, -1);
+  const growingCats = cats.map(c => {
+    const cur  = budgetGetCatActuals(c.id, month);
+    const prev = budgetGetCatActuals(c.id, prevMonth);
+    return { name: c.name, cur, prev, delta: cur - prev };
+  }).filter(c => c.cur > 10 && c.delta > 20).sort((a, b) => b.delta - a.delta).slice(0, 5);
+
+  // Top payees across all categories
+  const payeeMap = {};
+  (D.transactions || []).filter(t =>
+    t.date && t.date.slice(0, 7) === month && !t.isTransfer &&
+    t.status !== 'pending' && t.status !== 'rejected' && t.categoryId !== '__income__'
+  ).forEach(t => {
+    const k = (t.payee || '(no payee)').trim();
+    const a = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+    if (a > 0.01) payeeMap[k] = (payeeMap[k] || 0) + a;
+  });
+  const topPayees = Object.entries(payeeMap).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  // Build text
+  const lines = [];
+  lines.push(`# My Spending Report — ${monthLabel}`);
+  lines.push('');
+  lines.push('## Summary');
+  lines.push(`- Total Income:   ${fmtCurrency(income)}`);
+  lines.push(`- Total Spending: ${fmtCurrency(totalSpend)}`);
+  lines.push(`- Net Savings:    ${fmtCurrency(savings)} (${income > 0 ? Math.round(savings / income * 100) : 0}% of income)`);
+  lines.push(`- Spend Rate:     ${income > 0 ? Math.round(totalSpend / income * 100) : 0}% of income`);
+  lines.push('');
+  lines.push('## Spending by Category Group');
+  groupRows.forEach(g => {
+    const pct = income > 0 ? Math.round(g.total / income * 100) : 0;
+    lines.push(`\n### ${g.name} — ${fmtCurrency(g.total)} (${pct}% of income)`);
+    g.cats.forEach(c => {
+      const over = c.budget > 0 && c.actual > c.budget;
+      const budStr = c.budget > 0 ? ` / budgeted ${fmtCurrency(c.budget)}${over ? ' ⚠ OVER BUDGET' : ''}` : '';
+      lines.push(`  - ${c.name}: ${fmtCurrency(c.actual)}${budStr}`);
+    });
+  });
+  lines.push('');
+  lines.push('## Top 10 Payees This Month');
+  topPayees.forEach(([name, amt], i) =>
+    lines.push(`  ${i + 1}. ${name}: ${fmtCurrency(amt)}`)
+  );
+  lines.push('');
+  lines.push('## 3-Month Trend');
+  lines.push(...trendLines);
+  if (growingCats.length) {
+    lines.push('');
+    lines.push('## Categories Growing vs Last Month');
+    growingCats.forEach(c =>
+      lines.push(`  - ${c.name}: ${fmtCurrency(c.cur)} (up ${fmtCurrency(c.delta)} from last month)`)
+    );
+  }
+  lines.push('');
+  lines.push('---');
+  lines.push('Please analyse this data and tell me: (1) where my biggest opportunities to reduce spending are, (2) which categories are trending in the wrong direction, and (3) any patterns or habits worth addressing.');
+
+  return lines.join('\n');
+}
+
+// ════════════════════════════════════════════════════════════
 // SPENDING TREEMAP
 // ════════════════════════════════════════════════════════════
 function renderTreemap() {
@@ -3222,6 +3319,7 @@ function renderTreemap() {
           <button class="btn btn-sm" onclick="UI.treemapMonth='${prevM}';UI.treemapLevel=0;renderTreemap()">&#8249;</button>
           <span style="font-size:.92rem;font-weight:600;color:var(--text);min-width:120px;text-align:center">${monthLabel}</span>
           <button class="btn btn-sm" onclick="UI.treemapMonth='${nextM}';UI.treemapLevel=0;renderTreemap()">&#8250;</button>
+          <button class="btn btn-sm btn-primary" id="ai-export-btn" onclick="BA.exportForAI('${month}')" title="Copy a spending summary to paste into Claude or any AI chat">🤖 Export for AI</button>
         </div>
       </div>
 
@@ -6048,7 +6146,8 @@ function renderAnnual() {
   const isFuture = i  => year > curY || (year===curY && i > curM);
   const isToday  = i  => year===curY && i===curM;
 
-  const getIncome = m => budgetGetIncome(m);
+  // Use actual transaction income when available; fall back to planned for future months
+  const getIncome = m => { const txn = txnGetIncomeForMonth(m); return txn > 0 ? txn : budgetGetIncome(m); };
   const getBudget = (catId, m) => {
     const p = (D.budget.plans||[]).find(p => p.categoryId===catId && p.month===m);
     return p ? parseFloat(p.amount)||0 : 0;
@@ -7316,6 +7415,26 @@ function renderMobileView() {
 
 const BA = {
 
+  exportForAI(month) {
+    const text = generateAIExport(month || UI.treemapMonth || UI.budgetMonth || ymNow());
+    navigator.clipboard.writeText(text).then(() => {
+      const btn = id('ai-export-btn');
+      if (btn) { btn.textContent = '✅ Copied!'; setTimeout(() => { btn.textContent = '🤖 Export for AI'; }, 2500); }
+    }).catch(() => {
+      // Fallback: open in a textarea modal the user can copy from
+      const modal = document.createElement('div');
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+      modal.innerHTML = `<div style="background:var(--bg);border-radius:var(--r2);padding:20px;width:90%;max-width:600px;max-height:80vh;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <strong style="color:var(--text)">Copy this into your AI chat</strong>
+          <button class="btn btn-sm" onclick="this.closest('div[style*=fixed]').remove()">✕ Close</button>
+        </div>
+        <textarea style="flex:1;min-height:300px;font-size:.78rem;font-family:monospace;resize:vertical;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--r1);padding:10px">${text.replace(/</g,'&lt;')}</textarea>
+        <button class="btn btn-primary" onclick="this.previousElementSibling.select();document.execCommand('copy');this.textContent='✅ Copied!'">Copy All</button>
+      </div>`;
+      document.body.appendChild(modal);
+    });
+  },
   treemapDrill(idx) {
     const node = (UI._tmNodes || [])[idx];
     if (!node || node.isLeaf) return;
