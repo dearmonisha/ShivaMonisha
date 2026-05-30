@@ -724,6 +724,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       <div class="nav-dropdown-menu" id="nav-dd-menu-insights">
         <button class="nav-dd-item" id="tab-cc"              onclick="switchView('cc');closeNavDropdowns()">Credit Card</button>
         <button class="nav-dd-item" id="tab-cc-balances"   onclick="switchView('cc-balances');closeNavDropdowns()">💳 Card Balances</button>
+        <button class="nav-dd-item" id="tab-treemap"       onclick="switchView('treemap');closeNavDropdowns()">🗂️ Spending Breakdown</button>
         <button class="nav-dd-item" id="tab-sankey"        onclick="switchView('sankey');closeNavDropdowns()">🔀 Money Flow</button>
         <button class="nav-dd-item" id="tab-breakdown"     onclick="switchView('breakdown');closeNavDropdowns()">Spending Analysis</button>
         <button class="nav-dd-item" id="tab-reports"      onclick="switchView('reports');closeNavDropdowns()">📊 Reports</button>
@@ -774,6 +775,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-family" style="display:none"></div>
   <div id="view-cc" style="display:none"></div>
   <div id="view-cc-balances" style="display:none"></div>
+  <div id="view-treemap"     style="display:none"></div>
   <div id="view-sankey"      style="display:none"></div>
   <div id="view-obligations" style="display:none">
     <!-- Obligations sticky nav — sub-tabs + import button stay visible while scrolling -->
@@ -1567,13 +1569,13 @@ function buildDates(t, cycleYM) {
 // ════════════════════════════════════════════════════════════
 function switchView(v) {
   UI.view = v;
-  ['monthly','family','cc','cc-balances','sankey','budget','breakdown','annual','setup','obligations','transactions','reports','savings-pots','debt-payoff'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','setup','obligations','transactions','reports','savings-pots','debt-payoff'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual'];
-  const _insightsViews = ['cc','cc-balances','sankey','breakdown','reports','savings-pots','debt-payoff'];
+  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','savings-pots','debt-payoff'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -1583,6 +1585,7 @@ function switchView(v) {
   if (v==='family')       renderFamily();
   if (v==='cc')           renderCCTracker();
   if (v==='cc-balances')  renderCCBalances();
+  if (v==='treemap')      renderTreemap();
   if (v==='sankey')       renderSankey();
   if (v==='budget')       renderBudget();
   if (v==='breakdown')    renderBreakdown();
@@ -3030,6 +3033,213 @@ function toggleCCCharts() {
 }
 
 // ── Card Balances view — standalone, current-state snapshot ────────────────
+// ════════════════════════════════════════════════════════════
+// SPENDING TREEMAP
+// ════════════════════════════════════════════════════════════
+function renderTreemap() {
+  const wrap = id('view-treemap');
+  if (!wrap) return;
+
+  if (!UI.treemapMonth) UI.treemapMonth = UI.budgetMonth || ymNow();
+  const month = UI.treemapMonth;
+  const [yr, mo] = month.split('-').map(Number);
+  const monthLabel = new Date(yr, mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const level    = UI.treemapLevel   || 0;
+  const selGroup = UI.treemapGroupId || null;
+  const selCat   = UI.treemapCatId   || null;
+
+  const COLORS = ['#6366f1','#f59e0b','#10b981','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f97316','#84cc16','#94a3b8'];
+
+  let nodes = [], crumbs = [];
+
+  if (level === 0) {
+    const grps = D.budget.groups || [];
+    const cats = D.budget.categories || [];
+    grps.forEach((g, gi) => {
+      const v = cats.filter(c => c.groupId === g.id).reduce((s, c) => s + budgetGetCatActuals(c.id, month), 0);
+      if (v > 0.01) nodes.push({ id: g.id, name: g.name, value: v, ci: gi % COLORS.length, nextLevel: 1 });
+    });
+    crumbs = [{ label: 'All spending' }];
+  } else if (level === 1) {
+    const grp = (D.budget.groups || []).find(g => g.id === selGroup);
+    const gi  = (D.budget.groups || []).findIndex(g => g.id === selGroup);
+    (D.budget.categories || []).filter(c => c.groupId === selGroup).forEach(c => {
+      const v = budgetGetCatActuals(c.id, month);
+      if (v > 0.01) nodes.push({ id: c.id, name: c.name, value: v, ci: gi % COLORS.length, nextLevel: 2 });
+    });
+    crumbs = [
+      { label: 'All spending', nav: `BA.treemapNav(0)` },
+      { label: grp ? grp.name : 'Group' }
+    ];
+  } else if (level === 2) {
+    const cat = (D.budget.categories || []).find(c => c.id === selCat);
+    const grp = (D.budget.groups || []).find(g => g.id === cat?.groupId);
+    const gi  = (D.budget.groups || []).findIndex(g => g.id === cat?.groupId);
+    const txns = (D.transactions || []).filter(t =>
+      t.date && t.date.slice(0, 7) === month && !t.isTransfer &&
+      t.status !== 'pending' && t.status !== 'rejected' &&
+      t.categoryId === selCat
+    );
+    const pm = {};
+    txns.forEach(t => {
+      const k = (t.payee || '(no payee)').trim();
+      const a = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+      if (a > 0.01) pm[k] = (pm[k] || 0) + a;
+    });
+    Object.entries(pm).forEach(([name, value]) =>
+      nodes.push({ id: name, name, value, ci: gi % COLORS.length, isLeaf: true })
+    );
+    crumbs = [
+      { label: 'All spending',          nav: `BA.treemapNav(0)` },
+      { label: grp ? grp.name : 'Group', nav: `BA.treemapNav(1)` },
+      { label: cat ? cat.name : 'Category' }
+    ];
+  }
+
+  nodes.sort((a, b) => b.value - a.value);
+  const total = nodes.reduce((s, n) => s + n.value, 0);
+
+  // Store for click handler reference
+  UI._tmNodes = nodes;
+
+  if (!nodes.length || !total) {
+    wrap.innerHTML = `<div style="padding:60px;text-align:center;color:var(--text3);font-size:.9rem">No spending data for ${monthLabel}</div>`;
+    return;
+  }
+
+  // ── Squarified treemap layout ──────────────────────────────
+  const W = 700, H = 400;
+
+  function worstAR(row, side, remTotal, area) {
+    const s = row.reduce((a, n) => a + n.value, 0);
+    if (!s || !side) return Infinity;
+    const rw = (s / remTotal) * area / side;
+    if (!rw) return Infinity;
+    return Math.max(...row.map(n => {
+      const ns = (n.value / remTotal) * area / rw;
+      return ns > 0 ? Math.max(rw / ns, ns / rw) : Infinity;
+    }));
+  }
+
+  function pickRow(rem, side, remTotal, area) {
+    let row = [], best = Infinity;
+    for (let i = 0; i < rem.length; i++) {
+      const cand = [...row, rem[i]];
+      const r = worstAR(cand, side, remTotal, area);
+      if (r <= best || !row.length) { row = cand; best = r; }
+      else break;
+    }
+    return row;
+  }
+
+  function tmLayout(nodes, x, y, w, h) {
+    if (!nodes.length) return [];
+    if (nodes.length === 1) return [{ ...nodes[0], x, y, w, h }];
+    const res = [];
+    let rem = nodes.slice(), cx = x, cy = y, cw = w, ch = h;
+    while (rem.length > 0) {
+      const rt = rem.reduce((s, n) => s + n.value, 0);
+      const area = cw * ch;
+      if (!area || !rt) break;
+      let row;
+      if (cw >= ch) {
+        row = pickRow(rem, ch, rt, area);
+        const rs = row.reduce((s, n) => s + n.value, 0);
+        const rw = (rs / rt) * cw;
+        let ry = cy;
+        row.forEach(n => { const nh = (n.value / rs) * ch; res.push({ ...n, x: cx, y: ry, w: rw, h: nh }); ry += nh; });
+        cx += rw; cw -= rw;
+      } else {
+        row = pickRow(rem, cw, rt, area);
+        const rs = row.reduce((s, n) => s + n.value, 0);
+        const rh = (rs / rt) * ch;
+        let rx = cx;
+        row.forEach(n => { const nw = (n.value / rs) * cw; res.push({ ...n, x: rx, y: cy, w: nw, h: rh }); rx += nw; });
+        cy += rh; ch -= rh;
+      }
+      rem = rem.slice(row.length);
+    }
+    return res;
+  }
+
+  const PAD = 2;
+  const rects = tmLayout(nodes, 0, 0, W, H);
+
+  // ── Render cells ───────────────────────────────────────────
+  const cells = rects.map((r, idx) => {
+    const x = r.x + PAD, y = r.y + PAD, w = r.w - PAD * 2, h = r.h - PAD * 2;
+    if (w < 6 || h < 6) return '';
+    const color   = COLORS[r.ci];
+    const pct     = Math.round(r.value / total * 100);
+    const clickable = !r.isLeaf;
+    const cStyle  = clickable ? 'cursor:pointer' : '';
+
+    const maxChars = Math.max(3, Math.floor(w / 7.5));
+    const label   = r.name.length > maxChars ? r.name.slice(0, maxChars - 1) + '…' : r.name;
+    const fSize   = w > 120 ? 13 : w > 70 ? 11 : 10;
+
+    let txt = '';
+    if (w > 36 && h > 22) {
+      const midX = x + w / 2;
+      const showAmt = w > 80 && h > 40;
+      const showPct = w > 80 && h > 55;
+      const baseY = showAmt ? y + h / 2 - (showPct ? 14 : 8) : y + h / 2 + 4;
+      txt += `<text x="${midX}" y="${baseY}" text-anchor="middle" style="font-size:${fSize}px;fill:#fff;font-weight:600;font-family:inherit;pointer-events:none">${esc(label)}</text>`;
+      if (showAmt)
+        txt += `<text x="${midX}" y="${baseY + fSize + 3}" text-anchor="middle" style="font-size:10px;fill:rgba(255,255,255,.8);font-family:inherit;pointer-events:none">${fmtCurrency(r.value)}</text>`;
+      if (showPct)
+        txt += `<text x="${midX}" y="${baseY + fSize + 17}" text-anchor="middle" style="font-size:10px;fill:rgba(255,255,255,.6);font-family:inherit;pointer-events:none">${pct}%</text>`;
+    }
+
+    const onclick = clickable ? `onclick="BA.treemapDrill(${idx})"` : '';
+    return `<g style="${cStyle}">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="${color}" ${onclick}>
+        <title>${esc(r.name)}: ${fmtCurrency(r.value)} (${pct}%)${clickable ? ' — click to drill down' : ''}</title>
+      </rect>
+      ${txt}
+    </g>`;
+  }).join('');
+
+  // ── Breadcrumb ─────────────────────────────────────────────
+  const crumbHTML = crumbs.map((c, i) => {
+    const sep = i > 0 ? `<span style="color:var(--text3);margin:0 5px;font-size:.9rem">›</span>` : '';
+    if (c.nav)
+      return `${sep}<button class="btn btn-sm" onclick="${c.nav}" style="padding:2px 8px;font-size:.8rem">${esc(c.label)}</button>`;
+    return `${sep}<span style="font-size:.85rem;font-weight:700;color:var(--text)">${esc(c.label)}</span>`;
+  }).join('');
+
+  const prevM = shiftYM(month, -1);
+  const nextM = shiftYM(month,  1);
+
+  wrap.innerHTML = `
+    <div style="padding:18px 20px 20px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <h2 style="margin:0;font-size:1.1rem;font-weight:700;color:var(--text);flex:1">🗂️ Spending Breakdown</h2>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button class="btn btn-sm" onclick="UI.treemapMonth='${prevM}';UI.treemapLevel=0;renderTreemap()">&#8249;</button>
+          <span style="font-size:.92rem;font-weight:600;color:var(--text);min-width:120px;text-align:center">${monthLabel}</span>
+          <button class="btn btn-sm" onclick="UI.treemapMonth='${nextM}';UI.treemapLevel=0;renderTreemap()">&#8250;</button>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:14px">
+        ${crumbHTML}
+      </div>
+
+      <div style="overflow-x:auto">
+        <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block;border-radius:8px;overflow:hidden">
+          ${cells}
+        </svg>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+        <span style="font-size:.82rem;color:var(--text3)">Total: <strong style="color:var(--text)">${fmtCurrency(total)}</strong></span>
+        ${level < 2 ? `<span style="font-size:.72rem;color:var(--text3)">Click any box to drill down</span>` : `<span style="font-size:.72rem;color:var(--text3)">Payee level — use breadcrumb to go back</span>`}
+      </div>
+    </div>`;
+}
+
 // ════════════════════════════════════════════════════════════
 // MONEY FLOW — SANKEY DIAGRAM
 // ════════════════════════════════════════════════════════════
@@ -7104,6 +7314,17 @@ function renderMobileView() {
 
 const BA = {
 
+  treemapDrill(idx) {
+    const node = (UI._tmNodes || [])[idx];
+    if (!node || node.isLeaf) return;
+    if (node.nextLevel === 1) { UI.treemapGroupId = node.id; UI.treemapLevel = 1; }
+    if (node.nextLevel === 2) { UI.treemapCatId   = node.id; UI.treemapLevel = 2; }
+    renderTreemap();
+  },
+  treemapNav(level) {
+    UI.treemapLevel = level;
+    renderTreemap();
+  },
   setMobileTab(tab) { UI.mobileTab = tab; renderMobileView(); },
   setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; renderMobileView(); },
 
