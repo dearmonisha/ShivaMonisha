@@ -7792,16 +7792,8 @@ const BA = {
     renderCCBalances();
   },
 
-  mobilePrevMonth() {
-    const { y, m } = parseYM(UI.budgetMonth || ymNow());
-    UI.budgetMonth = m === 1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`;
-    renderMobileView();
-  },
-  mobileNextMonth() {
-    const { y, m } = parseYM(UI.budgetMonth || ymNow());
-    UI.budgetMonth = m === 12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
-    renderMobileView();
-  },
+  mobilePrevMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(), -1); renderMobileView(); },
+  mobileNextMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(),  1); renderMobileView(); },
   budgetPrevMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth,-1);    renderBudget(); },
   budgetNextMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth, 1);    renderBudget(); },
   breakdownPrevMonth() { UI.breakdownMonth = bShiftMonth(UI.breakdownMonth,-1); renderBreakdown(); },
