@@ -809,6 +809,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
         <span style="width:1px;height:18px;background:var(--border);display:inline-block;margin:0 2px;"></span>
         <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.expandAllBudgetGroups()">⊞ Expand All</button>
         <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.collapseAllBudgetGroups()">⊟ Collapse All</button>
+        <button class="btn btn-sm" id="xl-export-btn" onclick="BA.exportToExcel()" title="Download full-year Budget vs Actual as Excel">📊 Export to Excel</button>
         <button class="btn btn-sm btn-primary" id="ai-export-btn" onclick="BA.exportForAI()" title="Copy full-year spending data to paste into Claude or any AI chat">🤖 Export Year for AI</button>
         <button id="budgetDeleteSelBtn" class="btn btn-sm" onclick="BA.budgetDeleteSelected()" style="display:none;background:color-mix(in srgb,var(--danger) 10%,transparent);border-color:color-mix(in srgb,var(--danger) 40%,transparent);color:var(--danger);font-weight:600">🗑 Delete Selected</button>
       </div>
@@ -3034,6 +3035,174 @@ function toggleCCCharts() {
 }
 
 // ── Card Balances view — standalone, current-state snapshot ────────────────
+// ════════════════════════════════════════════════════════════
+// EXPORT TO EXCEL  (full-year Budget vs Actual)
+// ════════════════════════════════════════════════════════════
+async function exportBudgetToExcel() {
+  const xlBtn = id('xl-export-btn');
+  if (!window.XLSX) {
+    if (xlBtn) xlBtn.textContent = '⏳ Loading…';
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+  if (xlBtn) xlBtn.textContent = '⏳ Building…';
+
+  const year   = parseInt((UI.budgetMonth || ymNow()).slice(0, 4));
+  const months = Array.from({length:12}, (_,i) => `${year}-${String(i+1).padStart(2,'0')}`);
+  const MN     = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const groups = D.budget.groups || [];
+  const cats   = D.budget.categories || [];
+  const r2     = v => Math.round((v||0)*100)/100;
+
+  // ── Helpers ──────────────────────────────────────────────
+  // Returns a full row: [label, m1Bud, m1Act, m1Rem, m2Bud, … , fyBud, fyAct, fyRem]
+  // remFn(bud, act) = remaining/variance expression — caller decides sign convention
+  const buildRow = (label, getBudFn, getActFn, remFn = (b,a) => r2(b-a)) => {
+    const row = [label];
+    let fyB = 0, fyA = 0;
+    months.forEach(m => {
+      const b = r2(getBudFn(m)), a = r2(getActFn(m));
+      row.push(b, a, remFn(b, a));
+      fyB += b; fyA += a;
+    });
+    row.push(r2(fyB), r2(fyA), remFn(r2(fyB), r2(fyA)));
+    return row;
+  };
+
+  const rows = [];
+
+  // ── Title & column headers ────────────────────────────────
+  rows.push([`Budget vs Actual — ${year}`]);
+  // Month span labels (merged visually by blank cells)
+  const spanRow = [''];
+  months.forEach((_,i) => spanRow.push(MN[i], '', ''));
+  spanRow.push('Full Year', '', '');
+  rows.push(spanRow);
+  // Sub-headers
+  const subHdr = ['Category'];
+  for (let i = 0; i < 13; i++) subHdr.push('Budget', 'Actual', 'Remaining');
+  rows.push(subHdr);
+  rows.push([]); // blank spacer
+
+  // ── INCOME ───────────────────────────────────────────────
+  rows.push(['INCOME']);
+  // Scheduled / planned income (pay schedule)
+  const scheduledRow = buildRow(
+    '  Scheduled & Planned Pay',
+    m => budgetGetIncome(m),
+    m => txnGetIncomeForMonth(m),
+    (b,a) => r2(a-b)  // for income: positive = earned MORE than planned
+  );
+  rows.push(scheduledRow);
+  // Manual "Add Income" entries as separate row (if any exist for the year)
+  const manualIncome = (D.budget.income||[]).filter(i => {
+    const m = i.date ? i.date.slice(0,4) : (i.month||'').slice(0,4);
+    return m === String(year);
+  });
+  if (manualIncome.length) {
+    const manRow = buildRow(
+      '  Other Income (manually added)',
+      m => (D.budget.income||[]).filter(i=>(i.date?i.date.slice(0,7):i.month)===m).reduce((s,i)=>s+(parseFloat(i.amount)||0),0),
+      m => (D.budget.income||[]).filter(i=>(i.date?i.date.slice(0,7):i.month)===m).reduce((s,i)=>s+(parseFloat(i.amount)||0),0),
+      () => 0
+    );
+    rows.push(manRow);
+  }
+  const totalIncRow = buildRow('Total Income',
+    m => budgetGetIncome(m),
+    m => getTotalActualIncome(m),
+    (b,a) => r2(a-b)
+  );
+  rows.push(totalIncRow);
+  rows.push([]);
+
+  // ── EXPENSES ─────────────────────────────────────────────
+  rows.push(['EXPENSES']);
+
+  // Track monthly expense totals for Total Expenses and Net rows
+  const mTotBud = months.map(() => 0);
+  const mTotAct = months.map(() => 0);
+  let fyTotBud = 0, fyTotAct = 0;
+
+  for (const g of groups) {
+    const gCats = cats.filter(c => c.groupId === g.id);
+    if (!gCats.length) continue;
+    const hasAny = gCats.some(c => months.some(m =>
+      budgetGetAdjustedPlan(c.id,m)>0 || budgetGetCatActuals(c.id,m)>0));
+    if (!hasAny) continue;
+
+    // Group subtotal row (bold label style with no indent)
+    const gRow = buildRow(
+      g.name,
+      m => r2(gCats.reduce((s,c)=>s+budgetGetAdjustedPlan(c.id,m),0)),
+      m => r2(gCats.reduce((s,c)=>s+budgetGetCatActuals(c.id,m),0))
+    );
+    rows.push(gRow);
+
+    // Accumulate totals
+    months.forEach((m,i) => {
+      const b = r2(gCats.reduce((s,c)=>s+budgetGetAdjustedPlan(c.id,m),0));
+      const a = r2(gCats.reduce((s,c)=>s+budgetGetCatActuals(c.id,m),0));
+      mTotBud[i]+=b; mTotAct[i]+=a;
+    });
+    fyTotBud += r2(gRow[gRow.length-3]);
+    fyTotAct += r2(gRow[gRow.length-2]);
+
+    // Category rows (indented)
+    for (const c of gCats) {
+      const hasData = months.some(m =>
+        budgetGetAdjustedPlan(c.id,m)>0 || budgetGetCatActuals(c.id,m)>0);
+      if (!hasData) continue;
+      rows.push(buildRow(
+        `  ${c.name}`,
+        m => budgetGetAdjustedPlan(c.id,m),
+        m => budgetGetCatActuals(c.id,m)
+      ));
+    }
+    rows.push([]); // blank between groups
+  }
+
+  // Total Expenses row
+  const totExpRow = ['Total Expenses'];
+  months.forEach((_,i) => totExpRow.push(r2(mTotBud[i]), r2(mTotAct[i]), r2(mTotBud[i]-mTotAct[i])));
+  totExpRow.push(r2(fyTotBud), r2(fyTotAct), r2(fyTotBud-fyTotAct));
+  rows.push(totExpRow);
+
+  // Net Savings row
+  const netRow = ['Net Savings'];
+  months.forEach((m,i) => {
+    const incB = r2(budgetGetIncome(m)), incA = r2(getTotalActualIncome(m));
+    const netB = r2(incB - mTotBud[i]), netA = r2(incA - mTotAct[i]);
+    netRow.push(netB, netA, r2(netA - netB));
+  });
+  const fyIncBud = r2(months.reduce((s,m)=>s+budgetGetIncome(m),0));
+  const fyIncAct = r2(months.reduce((s,m)=>s+getTotalActualIncome(m),0));
+  const fyNetB = r2(fyIncBud - fyTotBud), fyNetA = r2(fyIncAct - fyTotAct);
+  netRow.push(fyNetB, fyNetA, r2(fyNetA - fyNetB));
+  rows.push(netRow);
+
+  // ── Build worksheet ───────────────────────────────────────
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  // Column widths: label col wide, data cols uniform
+  const nCols = 1 + 13*3;
+  ws['!cols'] = [{ wch: 32 }];
+  for (let i=1; i<nCols; i++) ws['!cols'].push({ wch: 11 });
+
+  // Freeze header rows and label column
+  ws['!freeze'] = { xSplit:1, ySplit:3 };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Budget vs Actual');
+  XLSX.writeFile(wb, `budget-${year}.xlsx`);
+
+  if (xlBtn) { xlBtn.textContent = '✅ Downloaded!'; setTimeout(()=>xlBtn.textContent='📊 Export to Excel', 2500); }
+}
+
 // ════════════════════════════════════════════════════════════
 // EXPORT FOR AI  (full-year)
 // ════════════════════════════════════════════════════════════
@@ -6542,27 +6711,35 @@ function oblTxnAcctOptions(selectedName) {
 }
 
 function renderOblSubscriptions() {
-  const subs  = (D.obligations.subscriptions || []).filter(s => s.status !== 'Cancelled');
-  const all   = D.obligations.subscriptions || [];
-  const pane  = id('obl-pane-subscriptions');
-  const monthlyTotal = subs.reduce((s, sub) => s + oblToMonthly(+sub.cost, sub.billingCycle), 0);
-  const annualTotal  = monthlyTotal * 12;
-  const upcomingSoon = subs.filter(s => { const d = oblDaysDiff(oblNextRenewal(s.startDate, s.billingCycle)); return d >= 0 && d <= 7; }).length;
-  const overdue      = subs.filter(s => oblDaysDiff(oblNextRenewal(s.startDate, s.billingCycle)) < 0).length;
+  const all           = D.obligations.subscriptions || [];
+  const activeSubs    = all.filter(s => !s.status || s.status === 'Active');
+  const pausedSubs    = all.filter(s => s.status === 'Paused');
+  const cancelledSubs = all.filter(s => s.status === 'Cancelled');
+  const pane          = id('obl-pane-subscriptions');
 
-  const sorted = oblSortArr(subs, 'sub');
-  const rows = sorted.length ? sorted.map(sub => {
+  // KPIs based on active subscriptions only
+  const monthlyTotal = activeSubs.reduce((s, sub) => s + oblToMonthly(+sub.cost, sub.billingCycle), 0);
+  const annualTotal  = monthlyTotal * 12;
+  const upcomingSoon = activeSubs.filter(s => { const d = oblDaysDiff(oblNextRenewal(s.startDate, s.billingCycle)); return d >= 0 && d <= 7; }).length;
+  const overdue      = activeSubs.filter(s => oblDaysDiff(oblNextRenewal(s.startDate, s.billingCycle)) < 0).length;
+  const pausedMonthly = pausedSubs.reduce((s, sub) => s + oblToMonthly(+sub.cost, sub.billingCycle), 0);
+
+  // ── Shared row builder ─────────────────────────────────────
+  const makeSubRow = (sub, opts = {}) => {
+    const { dimmed = false, struck = false } = opts;
     const renewal = oblNextRenewal(sub.startDate, sub.billingCycle);
     const days    = oblDaysDiff(renewal);
     const urgCol  = oblUrgencyColor(days);
     const urgLbl  = oblUrgencyLabel(days);
     const monthly = oblToMonthly(+sub.cost, sub.billingCycle);
-    return `<tr>
-      <td><span class="obl-pill purple" style="margin-right:5px">${esc(sub.category||'Other')}</span>${esc(sub.name)}</td>
+    const nameStyle = struck ? 'text-decoration:line-through;color:var(--text3)' : '';
+    const rowStyle  = dimmed ? 'opacity:.6' : '';
+    return `<tr style="${rowStyle}">
+      <td><span class="obl-pill purple" style="margin-right:5px">${esc(sub.category||'Other')}</span><span style="${nameStyle}">${esc(sub.name)}</span></td>
       <td class="r">${fmtCurrency(sub.cost)}</td>
       <td>${sub.billingCycle}</td>
       <td class="r" style="color:var(--text3)">${fmtCurrency(monthly)}/mo</td>
-      <td><span style="color:${urgCol};font-weight:600">${urgLbl}</span><br><span style="font-size:.72rem;color:var(--text3)">${fmtDate(renewal)}</span></td>
+      <td>${struck ? '<span style="color:var(--text3)">—</span>' : `<span style="color:${urgCol};font-weight:600">${urgLbl}</span><br><span style="font-size:.72rem;color:var(--text3)">${fmtDate(renewal)}</span>`}</td>
       <td>${(() => {
         const pm = sub.paymentMethod||'';
         const warn = pm && oblPayAcctMismatch(pm) ? ' <span title="Account not found in Transactions" style="color:var(--warn);cursor:default">⚠️</span>' : '';
@@ -6575,29 +6752,54 @@ function renderOblSubscriptions() {
         <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="oblDeleteSub('${sub.id}')">✕</button>
       </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text3)">No subscriptions yet — add one above</td></tr>`;
+  };
+
+  const thead = `<thead><tr>
+    ${oblTh('Name','name','sub')}${oblTh('Amount','cost','sub','r')}${oblTh('Cycle','cycle','sub')}${oblTh('Monthly','monthly','sub','r')}
+    ${oblTh('Next Renewal','renewal','sub')}${oblTh('Payment Account','payment','sub')}${oblTh('Assigned','assigned','sub')}${oblTh('Status','status','sub')}<th></th>
+  </tr></thead>`;
+
+  const wrapTable = rows => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;overflow-x:auto">
+    <table class="obl-tbl">${thead}<tbody>${rows}</tbody></table>
+  </div>`;
+
+  // ── Active section ─────────────────────────────────────────
+  const activeRows = oblSortArr(activeSubs, 'sub').map(s => makeSubRow(s)).join('')
+    || `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text3)">No active subscriptions yet — add one above</td></tr>`;
+
+  // ── Paused section ─────────────────────────────────────────
+  const pausedSection = pausedSubs.length ? `
+    <div class="obl-section-hdr" style="margin-top:20px">
+      <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">⏸ Paused
+        <span style="font-size:.78rem;font-weight:400;color:var(--text3)">${pausedSubs.length} subscription${pausedSubs.length>1?'s':''} · ${fmtCurrency(pausedMonthly)}/mo if reactivated</span>
+      </h3>
+    </div>
+    ${wrapTable(oblSortArr(pausedSubs, 'sub').map(s => makeSubRow(s, { dimmed: true })).join(''))}` : '';
+
+  // ── Cancelled section ──────────────────────────────────────
+  const cancelledSection = cancelledSubs.length ? `
+    <div class="obl-section-hdr" style="margin-top:20px">
+      <h3 style="font-size:.95rem;font-weight:700;color:var(--text3)">🚫 Cancelled
+        <span style="font-size:.78rem;font-weight:400">${cancelledSubs.length} subscription${cancelledSubs.length>1?'s':''}</span>
+      </h3>
+    </div>
+    ${wrapTable(oblSortArr(cancelledSubs, 'sub').map(s => makeSubRow(s, { dimmed: true, struck: true })).join(''))}` : '';
 
   pane.innerHTML = `
     <div class="sum-row kpi-sticky-obl">
-      <div class="sum-card"><div class="sum-lbl">Active</div><div class="sum-val">${subs.length}</div><div class="sum-sub">${all.length} total</div></div>
-      <div class="sum-card"><div class="sum-lbl">Monthly Cost</div><div class="sum-val">${fmtCurrency(monthlyTotal)}</div><div class="sum-sub">across all subscriptions</div></div>
-      <div class="sum-card"><div class="sum-lbl">Annual Cost</div><div class="sum-val">${fmtCurrency(annualTotal)}</div><div class="sum-sub">projected yearly</div></div>
+      <div class="sum-card"><div class="sum-lbl">Active</div><div class="sum-val">${activeSubs.length}</div><div class="sum-sub">${pausedSubs.length} paused · ${cancelledSubs.length} cancelled</div></div>
+      <div class="sum-card"><div class="sum-lbl">Monthly Cost</div><div class="sum-val">${fmtCurrency(monthlyTotal)}</div><div class="sum-sub">active only</div></div>
+      <div class="sum-card"><div class="sum-lbl">Annual Cost</div><div class="sum-val">${fmtCurrency(annualTotal)}</div><div class="sum-sub">active projected</div></div>
       <div class="sum-card ${upcomingSoon>0?'c-warn':''}"><div class="sum-lbl">Renewing Soon</div><div class="sum-val">${upcomingSoon}</div><div class="sum-sub">within 7 days</div></div>
       <div class="sum-card ${overdue>0?'c-danger':''}"><div class="sum-lbl">Overdue</div><div class="sum-val">${overdue}</div><div class="sum-sub">past renewal date</div></div>
     </div>
     <div class="obl-section-hdr">
-      <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">All Subscriptions</h3>
+      <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">✅ Active Subscriptions</h3>
       <button class="btn btn-primary btn-sm" onclick="oblAddSubModal()">＋ Add Subscription</button>
     </div>
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;overflow-x:auto">
-      <table class="obl-tbl">
-        <thead><tr>
-          ${oblTh('Name','name','sub')}${oblTh('Amount','cost','sub','r')}${oblTh('Cycle','cycle','sub')}${oblTh('Monthly','monthly','sub','r')}
-          ${oblTh('Next Renewal','renewal','sub')}${oblTh('Payment Account','payment','sub')}${oblTh('Assigned','assigned','sub')}${oblTh('Status','status','sub')}<th></th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    ${wrapTable(activeRows)}
+    ${pausedSection}
+    ${cancelledSection}`;
 }
 
 function oblAddSubModal(id_) {
@@ -7477,6 +7679,8 @@ function renderMobileView() {
 }
 
 const BA = {
+
+  exportToExcel() { exportBudgetToExcel(); },
 
   exportForAI(year) {
     const y = year || parseInt((UI.budgetMonth || ymNow()).slice(0, 4));
