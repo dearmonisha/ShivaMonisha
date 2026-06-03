@@ -728,7 +728,8 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
         <button class="nav-dd-item" id="tab-sankey"        onclick="switchView('sankey');closeNavDropdowns()">🔀 Money Flow</button>
         <button class="nav-dd-item" id="tab-breakdown"     onclick="switchView('breakdown');closeNavDropdowns()">Spending Analysis</button>
         <button class="nav-dd-item" id="tab-reports"      onclick="switchView('reports');closeNavDropdowns()">📊 Reports</button>
-        <button class="nav-dd-item" id="tab-savings-pots" onclick="switchView('savings-pots');closeNavDropdowns()">💰 Savings Pots</button>
+        <button class="nav-dd-item" id="tab-savings-pots"  onclick="switchView('savings-pots');closeNavDropdowns()">💰 Savings Pots</button>
+        <button class="nav-dd-item" id="tab-reserve-pots" onclick="switchView('reserve-pots');closeNavDropdowns()">♻️ Reserve Pots</button>
         <button class="nav-dd-item" id="tab-debt-payoff"  onclick="switchView('debt-payoff');closeNavDropdowns()">🏁 Debt Payoff</button>
       </div>
     </div>
@@ -859,7 +860,8 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   </div>
   <div id="view-setup" style="display:none"></div>
   <div id="view-reports" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
-  <div id="view-savings-pots" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
+  <div id="view-savings-pots"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
+  <div id="view-reserve-pots" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-debt-payoff"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-transactions" style="display:none">
     <div class="tab-sticky-top" id="txn-sticky-hdr">
@@ -1145,7 +1147,8 @@ function _applyData(raw) {
   if (!D.budget.txnActuals)    D.budget.txnActuals    = [];
   if (!D.budget.rolloverCats)  D.budget.rolloverCats  = [];
   if (!D.budget.adjustments)   D.budget.adjustments   = [];
-  if (!D.savingsPots) D.savingsPots = { growthAccountId: '', trackedGroupId: '' };
+  if (!D.savingsPots)  D.savingsPots  = { growthAccountId: '', trackedGroupId: '' };
+  if (!D.reservePots)  D.reservePots  = { reserveAccountId: '' };
   if (!D.settings)   D.settings   = { theme: 'terracotta', iconStyle: 'emoji' };
   if (!D.settings.theme)     D.settings.theme     = 'terracotta';
   if (!D.settings.iconStyle) D.settings.iconStyle = 'emoji';
@@ -1684,13 +1687,13 @@ function buildDates(t, cycleYM) {
 // ════════════════════════════════════════════════════════════
 function switchView(v) {
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','setup','obligations','transactions','reports','savings-pots','debt-payoff'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','setup','obligations','transactions','reports','savings-pots','reserve-pots','debt-payoff'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual'];
-  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','savings-pots','debt-payoff'];
+  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','savings-pots','reserve-pots','debt-payoff'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -1710,6 +1713,7 @@ function switchView(v) {
   if (v==='transactions') renderTransactions();
   if (v==='reports')       renderReports();
   if (v==='savings-pots')  renderSavingsPots();
+  if (v==='reserve-pots')  renderReservePots();
   if (v==='debt-payoff')   renderDebtPayoff();
 }
 
@@ -5286,19 +5290,19 @@ function budgetGetPlan(catId, month) {
   return p ? parseFloat(p.amount)||0 : 0;
 }
 // Returns effective budget including compounding rollover surplus from prior months.
-// Uses budgetGetAdjustedPlan for the prior month so rollover chains correctly
-// (month3 picks up month2's effective budget, which already includes month1's surplus).
-// Guard: if no base plan exists for the prior month, recursion stops — no rollover from an empty month.
-function budgetGetEffectivePlan(catId, month) {
+// Treats "no budget set" as $0 — a zero budget still passes surplus forward.
+// _depth is an internal recursion guard (max 36 months back) to prevent runaway chains.
+function budgetGetEffectivePlan(catId, month, _depth) {
+  _depth = _depth || 0;
   const base = budgetGetPlan(catId, month);
   const rolloverCats = D.budget.rolloverCats || [];
   if (!rolloverCats.includes(catId)) return base;
-  const priorMonth    = bShiftMonth(month, -1);
-  const priorBasePlan = budgetGetPlan(catId, priorMonth);
-  if (!priorBasePlan) return base;  // no plan for prior month → nothing to roll over
-  const priorBudget   = budgetGetAdjustedPlan(catId, priorMonth);  // includes prior rollover + adjustments
-  const priorActual   = budgetGetCatActuals(catId, priorMonth);
-  const surplus       = Math.max(0, priorBudget - priorActual);
+  if (_depth > 36) return base; // safety: never recurse more than 3 years back
+  const priorMonth  = bShiftMonth(month, -1);
+  const priorBudget = budgetGetAdjustedPlan(catId, priorMonth, _depth + 1);
+  const priorActual = budgetGetCatActuals(catId, priorMonth);
+  const surplus     = Math.max(0, priorBudget - priorActual);
+  if (surplus <= 0) return base; // nothing to carry forward — stop recursion
   return base + surplus;
 }
 function budgetGetCatActuals(catId, month) {
@@ -5324,8 +5328,8 @@ function budgetGetAdjOut(catId, month) {
     .reduce((s,a) => s + (parseFloat(a.amount)||0), 0);
 }
 // Effective plan = base plan + rollover + adjustments in - adjustments out
-function budgetGetAdjustedPlan(catId, month) {
-  return budgetGetEffectivePlan(catId, month) + budgetGetAdjIn(catId, month) - budgetGetAdjOut(catId, month);
+function budgetGetAdjustedPlan(catId, month, _depth) {
+  return budgetGetEffectivePlan(catId, month, _depth) + budgetGetAdjIn(catId, month) - budgetGetAdjOut(catId, month);
 }
 function budgetGetMonthTotal(month) {
   // Mirror the same precedence logic as budgetGetCatActuals:
@@ -6115,32 +6119,20 @@ function renderBudgetTable(month) {
               <span class="btable-drag-handle" title="Drag to reorder" onclick="event.stopPropagation()">⠿</span>
               <span class="btable-edit" data-val="${esc(cat.name)}" onclick="event.stopPropagation();BA.startBudgetEdit(this,'catname','${cat.id}',null)">${esc(cat.name)}</span>
               <button title="${hasRollover?'Rollover ON — unspent budget carries forward':'Rollover OFF — click to carry forward unspent budget'}" onclick="event.stopPropagation();BA.toggleBudgetRollover('${cat.id}')" style="font-size:.7rem;padding:1px 5px;border-radius:4px;cursor:pointer;border:1px solid ${hasRollover?'var(--ok)':'var(--border)'};background:${hasRollover?'color-mix(in srgb,var(--ok) 12%,transparent)':'transparent'};color:${hasRollover?'var(--ok)':'var(--text3)'};line-height:1.4">↺</button>
-              ${hasRollover ? `<button class="rlvr-pot-btn${(D.budget.rolloverPotLinks||{})[cat.id]?' linked':''}" onclick="event.stopPropagation();BA.budgetLinkRolloverPot('${cat.id}')" title="${(D.budget.rolloverPotLinks||{})[cat.id]?'Savings pot linked — click to change':'Link a savings pot to physically back this rollover'}">🏦</button>` : ''}
             </div>
           </td>
           <td class="btable-num">
             <span class="btable-edit" data-val="${basePlan}" onclick="event.stopPropagation();BA.startBudgetEdit(this,'budget','${cat.id}','${month}')" style="${basePlan===0?'color:var(--text3)':''}">${basePlan>0?fmtC(basePlan):'— click to set'}</span>
-            ${rolloverAmt > 0 ? (() => {
-              const _potAcctId = (D.budget.rolloverPotLinks||{})[cat.id];
-              const _potAcct   = _potAcctId ? (D.txnAccounts||[]).find(a => a.id === _potAcctId) : null;
-              const _potBal    = _potAcct ? txnCurrentBalance(_potAcct) : null;
-              const _potGap    = _potBal !== null ? Math.round((rolloverAmt - Math.min(_potBal, rolloverAmt))*100)/100 : null;
-              const _chipHtml  = _potAcct
-                ? (_potGap > 0.005
-                  ? `<span class="rlvr-pot-chip gap" title="Pot '${esc(_potAcct.name)}' bal: ${fmtC(_potBal)} — short by ${fmtC(_potGap)}">⚠ −${fmtC(_potGap)}</span>`
-                  : `<span class="rlvr-pot-chip ok" title="Pot '${esc(_potAcct.name)}' bal: ${fmtC(_potBal)} — fully covered">✓ backed</span>`)
-                : '';
-              return `<span style="font-size:.65rem;color:var(--ok);display:block;margin-top:1px" title="Rollover surplus from prior month">↺ +${fmtC(rolloverAmt)}</span>${_chipHtml}`;
-            })() : ''}
+            ${rolloverAmt > 0 ? `<span style="font-size:.65rem;color:var(--ok);display:block;margin-top:1px" title="Rollover surplus from prior month — see Reserve Pots for balance">↺ +${fmtC(rolloverAmt)}</span>` : ''}
             ${adjIn  > 0 ? `<span style="font-size:.65rem;color:var(--ok);display:block;margin-top:1px"  title="Budget moved in from other categories">↕ +${fmtC(adjIn)}</span>`  : ''}
             ${adjOut > 0 ? `<span style="font-size:.65rem;color:var(--danger);display:block;margin-top:1px" title="Budget moved out to other categories">↕ −${fmtC(adjOut)}</span>` : ''}
           </td>
-          <td class="btable-num ${spent-budget>0.005&&budget>0?'btable-over':''}">
+          <td class="btable-num ${spent-budget>0.005?'btable-over':''}">
             <span class="${spent>0?'btable-drilldown':'btable-edit'}" onclick="event.stopPropagation();${spent>0?`BA.showActualDrillDown('${cat.id}','${month}')`:`BA.startBudgetEdit(this,'actual','${cat.id}','${month}')`}" style="${spent===0?'color:var(--text3);cursor:text':'cursor:pointer'}" title="${budgetGetCatActualsHasTxn(cat.id,month)?'Click to see transactions':'Click to enter actual'}">
               ${budgetGetCatActualsHasTxn(cat.id,month)?'<span style="font-size:.65rem;vertical-align:middle;margin-right:3px" title="Sourced from Transactions">💳</span>':''}${spent>0?fmtC(spent):'— click to enter'}
             </span>
           </td>
-          <td class="btable-num ${remain<0?'btable-over':''}">${budget>0?fmtC(remain):'—'}</td>
+          <td class="btable-num ${remain<0?'btable-over':''}">${(budget>0||spent>0)?fmtC(remain):'—'}</td>
           <td class="btable-bar">${budget>0||spent>0?`
             <div class="btable-bar-inner">
               <div class="btable-progress"><div class="btable-progress-fill" style="${barFillStyle}"></div></div>
@@ -10965,6 +10957,169 @@ function renderSavingsPots() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// RESERVE POTS  (rollover categories → Reserve account)
+// ══════════════════════════════════════════════════════════════════════
+function renderReservePots() {
+  const wrap = id('view-reserve-pots');
+  if (!wrap) return;
+
+  const rp           = D.reservePots || {};
+  const rolloverCats = D.budget.rolloverCats || [];
+
+  // ── Setup gate ──────────────────────────────────────────────
+  if (!rp.reserveAccountId) {
+    const accts = D.txnAccounts || [];
+    wrap.innerHTML = `
+      <div style="padding:40px 20px;display:flex;justify-content:center">
+        <div style="width:100%;max-width:480px">
+          <div style="font-size:1.2rem;font-weight:800;margin-bottom:6px">♻️ Reserve Pots</div>
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:22px;line-height:1.6">
+            Reserve Pots tracks your rollover balances — the unspent budget amounts you carry forward each month into a dedicated Reserve account.<br><br>
+            Select your <strong>Reserve account</strong> below. Any transfer you make <em>to</em> this account with split lines tagged to rollover categories will be tracked here.<br><br>
+            Rollover categories are configured in the Budget tab using the ↺ button on each category.
+          </p>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:18px 20px">
+            <div style="margin-bottom:8px">
+              <label style="font-size:.82rem;font-weight:700;display:block;margin-bottom:5px;color:var(--text2)">Reserve Account (holds rollover cash)</label>
+              <select id="rp-acct-sel" class="finput" style="width:100%">
+                <option value="">— Select an account —</option>
+                ${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.type)})</option>`).join('')}
+              </select>
+            </div>
+            ${rolloverCats.length === 0 ? `<p style="font-size:.78rem;color:var(--warn);margin:8px 0 16px">⚠ No rollover categories set up yet. Go to Budget → click ↺ on any category to enable rollover.</p>` : `<p style="font-size:.78rem;color:var(--text3);margin:8px 0 16px">${rolloverCats.length} rollover categor${rolloverCats.length>1?'ies':'y'} already configured and will be tracked automatically.</p>`}
+            <button class="btn btn-primary" style="width:100%" onclick="BA.reservePotsSaveSetup()">Save &amp; Show Reserve Pots →</button>
+          </div>
+        </div>
+      </div>`;
+    return;
+  }
+
+  // ── Compute pot balances from split-transfers ────────────────
+  const reserveAcctId = rp.reserveAccountId;
+  const reserveAcct   = (D.txnAccounts || []).find(a => a.id === reserveAcctId);
+  const budgetCats    = D.budget?.categories || [];
+  const trackedCats   = budgetCats.filter(c => rolloverCats.includes(c.id));
+  const trackedCatIds = new Set(trackedCats.map(c => c.id));
+
+  const pots = {};
+  trackedCats.forEach(c => { pots[c.id] = { deposited: 0, drawn: 0, history: [] }; });
+
+  (D.transactions || []).forEach(t => {
+    if (!t.isTransfer || !(t.splits && t.splits.length)) return;
+    const isDeposit = t.debit > 0 && t.transferToAcctId === reserveAcctId;
+    const isDraw    = t.debit > 0 && t.accountId === reserveAcctId;
+    if (!isDeposit && !isDraw) return;
+    t.splits.forEach(s => {
+      if (!trackedCatIds.has(s.categoryId)) return;
+      const amt = parseFloat(s.amount) || 0;
+      if (amt <= 0 || !pots[s.categoryId]) return;
+      if (isDeposit) {
+        pots[s.categoryId].deposited += amt;
+        pots[s.categoryId].history.push({ date: t.date, payee: t.payee || 'Transfer', amount: amt, type: 'deposit', txnId: t.id });
+      } else {
+        pots[s.categoryId].drawn += amt;
+        pots[s.categoryId].history.push({ date: t.date, payee: t.payee || 'Draw', amount: amt, type: 'draw', txnId: t.id });
+      }
+    });
+  });
+
+  const curMonth  = UI.budgetMonth || ymNow();
+  const catData   = trackedCats.map(c => {
+    const pot      = pots[c.id] || { deposited: 0, drawn: 0, history: [] };
+    const balance  = pot.deposited - pot.drawn;
+    // This month's rollover surplus = how much carried into this month
+    const rolloverAmt = Math.max(0, budgetGetEffectivePlan(c.id, curMonth) - budgetGetPlan(c.id, curMonth));
+    pot.history.sort((a, b) => b.date.localeCompare(a.date));
+    return { ...c, ...pot, balance, rolloverAmt };
+  }).sort((a, b) => b.balance - a.balance);
+
+  const totalDeposited = catData.reduce((s, c) => s + c.deposited, 0);
+  const totalDrawn     = catData.reduce((s, c) => s + c.drawn, 0);
+  const totalBalance   = totalDeposited - totalDrawn;
+  const reserveBal     = reserveAcct ? txnCurrentBalance(reserveAcct) : null;
+
+  const _fc = v => '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // ── Per-category cards ───────────────────────────────────────
+  const cards = catData.map(c => {
+    const balColor = c.balance > 0 ? 'var(--ok)' : c.balance < 0 ? 'var(--danger)' : 'var(--text3)';
+    const histRows = c.history.slice(0, 8).map(h => `
+      <div style="display:flex;align-items:center;justify-content:space-between;font-size:.71rem;padding:4px 0;border-bottom:1px solid var(--border-light)">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="color:${h.type==='deposit'?'var(--ok)':'var(--danger)'}">${h.type==='deposit'?'↑':'↓'}</span>
+          <span style="color:var(--text3)">${fmtDate(h.date)}</span>
+          <span style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px">${esc(h.payee)}</span>
+        </div>
+        <span style="font-weight:600;color:${h.type==='deposit'?'var(--ok)':'var(--danger)'}">${h.type==='deposit'?'+':'-'}${_fc(h.amount)}</span>
+      </div>`).join('');
+
+    return `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
+          <div>
+            <div style="font-size:.88rem;font-weight:700;color:var(--text)">${esc(c.name)}</div>
+            ${c.rolloverAmt > 0 ? `<div style="font-size:.7rem;color:var(--ok);margin-top:2px">↺ ${_fc(c.rolloverAmt)} rolling forward this month</div>` : ''}
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:1.1rem;font-weight:800;color:${balColor}">${_fc(c.balance)}</div>
+            <div style="font-size:.68rem;color:var(--text3)">reserve balance</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:14px;font-size:.72rem;color:var(--text3);margin-bottom:${c.history.length?'10px':'0'}">
+          <span>Deposited: <strong style="color:var(--ok)">${_fc(c.deposited)}</strong></span>
+          <span>Drawn: <strong style="color:${c.drawn>0?'var(--danger)':'var(--text3)'}">${_fc(c.drawn)}</strong></span>
+        </div>
+        ${c.history.length ? `<div style="border-top:1px solid var(--border);padding-top:8px">${histRows}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  const emptyMsg = trackedCats.length === 0
+    ? `<div style="padding:30px;text-align:center;color:var(--text3);font-size:.85rem">
+        No rollover categories set up yet.<br>
+        Go to <button class="btn btn-sm" style="margin:8px 4px" onclick="switchView('budget')">Budget</button> and click ↺ on any category to enable rollover.
+       </div>`
+    : (catData.every(c => c.deposited === 0)
+        ? `<div style="padding:20px;text-align:center;color:var(--text3);font-size:.82rem">
+            No reserve transfers recorded yet. Transfer money to <strong>${esc(reserveAcct?.name || 'Reserve account')}</strong> with splits tagged to your rollover categories.
+           </div>`
+        : cards);
+
+  wrap.innerHTML = `
+    <div style="padding:18px 20px 30px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <h2 style="margin:0;font-size:1.1rem;font-weight:700;color:var(--text)">♻️ Reserve Pots</h2>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${reserveAcct ? `<span style="font-size:.78rem;color:var(--text3)">Reserve: <strong style="color:var(--text)">${esc(reserveAcct.name)}</strong>${reserveBal!==null?` · ${_fc(reserveBal)}`:''}</span>` : ''}
+          <button class="btn btn-sm" onclick="BA.reservePotsConfigure()">⚙ Configure</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r1);padding:10px 16px;flex:1;min-width:130px">
+          <div style="font-size:.7rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.04em">Total Reserved</div>
+          <div style="font-size:1.2rem;font-weight:800;color:${totalBalance>=0?'var(--ok)':'var(--danger)'}">${_fc(totalBalance)}</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r1);padding:10px 16px;flex:1;min-width:130px">
+          <div style="font-size:.7rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.04em">Total Deposited</div>
+          <div style="font-size:1.2rem;font-weight:800;color:var(--ok)">${_fc(totalDeposited)}</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r1);padding:10px 16px;flex:1;min-width:130px">
+          <div style="font-size:.7rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.04em">Total Drawn</div>
+          <div style="font-size:1.2rem;font-weight:800;color:${totalDrawn>0?'var(--danger)':'var(--text3)'}">${_fc(totalDrawn)}</div>
+        </div>
+        ${reserveBal !== null ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r1);padding:10px 16px;flex:1;min-width:130px">
+          <div style="font-size:.7rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.04em">Account Balance</div>
+          <div style="font-size:1.2rem;font-weight:800;color:${reserveBal>=totalBalance?'var(--ok)':'var(--warn)'}">${_fc(reserveBal)}</div>
+        </div>` : ''}
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+        ${emptyMsg}
+      </div>
+    </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // DEBT PAYOFF TRACKER
 // ══════════════════════════════════════════════════════════════════════
 let _debtPayoffChart = null;
@@ -12483,6 +12638,48 @@ Object.assign(BA, {
     D.savingsPots.growthAccountId = acctId;
     D.savingsPots.trackedGroupId  = groupId;
     dirty(); closeModal(); renderSavingsPots();
+  },
+
+  // ── Reserve Pots ────────────────────────────────────────────
+  reservePotsSaveSetup() {
+    const acctId = id('rp-acct-sel')?.value;
+    if (!acctId) { toast('Please select a Reserve account', 'err'); return; }
+    if (!D.reservePots) D.reservePots = {};
+    D.reservePots.reserveAccountId = acctId;
+    dirty();
+    renderReservePots();
+  },
+  reservePotsConfigure() {
+    const rp    = D.reservePots || {};
+    const accts = D.txnAccounts || [];
+    const rolloverCats = D.budget.rolloverCats || [];
+    const catNames = (D.budget.categories || [])
+      .filter(c => rolloverCats.includes(c.id))
+      .map(c => esc(c.name)).join(', ') || 'None configured yet';
+    showModal(`
+      <div class="modal-title">⚙ Configure Reserve Pots</div>
+      <div style="margin-bottom:16px">
+        <label style="font-size:.82rem;font-weight:700;display:block;margin-bottom:5px;color:var(--text2)">Reserve Account</label>
+        <select id="rp-cfg-acct" class="finput" style="width:100%">
+          <option value="">— Select an account —</option>
+          ${accts.map(a => `<option value="${esc(a.id)}" ${rp.reserveAccountId === a.id ? 'selected' : ''}>${esc(a.name)} (${esc(a.type)})</option>`).join('')}
+        </select>
+      </div>
+      <div style="background:var(--surface2);border-radius:var(--r1);padding:10px 12px;font-size:.78rem;color:var(--text2);margin-bottom:16px">
+        <strong>Tracked rollover categories:</strong> ${catNames}<br>
+        <span style="color:var(--text3);font-size:.72rem">To add/remove categories, use the ↺ button in the Budget tab.</span>
+      </div>
+      <div class="mfoot" style="justify-content:flex-end;gap:8px">
+        <button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="BA.reservePotsApplyConfig()">Save</button>
+      </div>`);
+  },
+  reservePotsApplyConfig() {
+    const acctId = id('rp-cfg-acct')?.value;
+    if (!acctId) { toast('Please select a Reserve account', 'err'); return; }
+    if (!D.reservePots) D.reservePots = {};
+    D.reservePots.reserveAccountId = acctId;
+    dirty(); closeModal(); renderReservePots();
   },
 
   // Navigate from transaction row badge → Family tab showing that person
