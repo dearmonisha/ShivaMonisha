@@ -6385,7 +6385,7 @@ function renderCCRepaySection(month) {
   // ── LEFT PANEL — card summary rows ──
   const leftBodyRows = cardRows.map(({ card, charged, totalPaid, remaining, tbdCount, overBudgetCats }) => {
     const isSel    = card.id === selCardId;
-    const remColor = remaining > 0 ? 'var(--danger)' : 'var(--ok)';
+    const capColor = remaining > 0 ? 'var(--warn)' : 'var(--ok)';
     const rowBg    = isSel ? 'background:color-mix(in srgb,var(--primary) 8%,transparent)' : '';
 
     const tbdBadge = tbdCount > 0
@@ -6421,7 +6421,11 @@ function renderCCRepaySection(month) {
           : `<span style="color:var(--text3)">—</span>`}
       </td>
       <td style="padding:7px 10px;text-align:right;font-size:.82rem;color:var(--ok);font-weight:500">${totalPaid > 0 ? fmtCurrency(totalPaid) : '<span style="color:var(--text3)">—</span>'}</td>
-      <td style="padding:7px 10px;text-align:right;font-size:.82rem;font-weight:600;color:${remColor}">${remaining > 0 ? fmtCurrency(remaining) : '<span style="color:var(--ok)">✓ Paid</span>'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:.82rem;font-weight:600;color:${capColor}">
+        ${remaining > 0
+          ? `${fmtCurrency(remaining)}<div style="font-size:.62rem;font-weight:600;color:var(--warn);letter-spacing:.03em;margin-top:1px">↑ capitalising</div>`
+          : '<span style="color:var(--ok)">✓ Paid</span>'}
+      </td>
     </tr>`;
   }).join('');
 
@@ -6432,7 +6436,7 @@ function renderCCRepaySection(month) {
     <td style="padding:7px 10px;font-size:.8rem;font-weight:700;color:var(--text)">Total</td>
     <td style="padding:7px 10px;text-align:right;font-size:.8rem;font-weight:700;color:var(--text)">${fmtCurrency(grandCharged)}</td>
     <td style="padding:7px 10px;text-align:right;font-size:.8rem;font-weight:700;color:var(--ok)">${fmtCurrency(grandPaid)}</td>
-    <td style="padding:7px 10px;text-align:right;font-size:.8rem;font-weight:700;color:${grandRem>0?'var(--danger)':'var(--ok)'}">${grandRem > 0 ? fmtCurrency(grandRem) : '✓ All paid'}</td>
+    <td style="padding:7px 10px;text-align:right;font-size:.8rem;font-weight:700;color:${grandRem>0?'var(--warn)':'var(--ok)'}">${grandRem > 0 ? fmtCurrency(grandRem) : '✓ All paid'}</td>
   </tr>`;
 
   const flaggedAccounts = (D.txnAccounts || []).filter(a => a.showInCCRepay);
@@ -6490,16 +6494,87 @@ function renderCCRepaySection(month) {
           style="font-size:.76rem;padding:3px 6px;width:90px;text-align:right"
           value="${fmtCurrency(frmRemain)}"
           onfocus="this.value=parseFloat(this.value.replace(/[^0-9.]/g,''))||''"
-          onblur="this.value=fmtCurrency(parseFloat(this.value.replace(/[^0-9.]/g,''))||0)">
+          onblur="this.value=fmtCurrency(parseFloat(this.value.replace(/[^0-9.]/g,''))||0)"
+          oninput="BA.ccrUpdateCapPreview('${month}')">
         <button class="btn btn-primary btn-sm" style="font-size:.76rem;padding:3px 10px;white-space:nowrap"
           onclick="BA.ccrRecordPaymentForm('${month}')">💸 Record Payment</button>
       </div>
+      <div id="ccr-cap-preview" style="font-size:.72rem;margin-top:5px;min-height:16px"></div>
     </td>
   </tr>`;
 
   const noDataMsg = cardRows.every(r => r.charged === 0)
     ? `<div style="padding:20px 16px;color:var(--text3);font-size:.82rem">No CC transactions with assigned expense types found for ${monthLabel}.</div>`
     : null;
+
+  // ── Capitalised History section ──────────────────────────
+  const histMonths = [...new Set((D.budget.ccRepayments||[]).map(r=>r.month))].sort().reverse();
+  const histCards = ccAccounts.map(card => {
+    const mData = histMonths.map(m => {
+      const charged = computeCCChargesForMonth(card.id, m);
+      const paid    = (D.budget.ccRepayments||[])
+        .filter(r => r.cardAccountId === card.id && r.month === m)
+        .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
+      return { m, charged, paid, cap: Math.max(0, charged - paid) };
+    }).filter(d => d.charged > 0 || d.paid > 0);
+    const totalCap = mData.reduce((s,d) => s + d.cap, 0);
+    return { card, mData, totalCap };
+  }).filter(c => c.mData.length > 0);
+
+  const totalCapAll = histCards.reduce((s,c) => s + c.totalCap, 0);
+
+  let histHTML = '';
+  if (histCards.length) {
+    const histCollapsed = UI._ccrHistCollapsed;
+    const cardTables = histCards.map(({ card, mData, totalCap }) => {
+      let cumCap = 0;
+      const rows = mData.map(d => {
+        cumCap += d.cap;
+        return `<tr>
+          <td style="padding:5px 10px;font-size:.75rem;color:var(--text3)">${bFmtMonth(d.m)}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.75rem">${fmtCurrency(d.charged)}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--ok)">${d.paid > 0 ? fmtCurrency(d.paid) : '—'}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:600;color:${d.cap>0?'var(--warn)':'var(--ok)'}">${d.cap > 0 ? fmtCurrency(d.cap) : '—'}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:${cumCap>0?'var(--warn)':'var(--ok)'}">${fmtCurrency(cumCap)}</td>
+        </tr>`;
+      }).join('');
+      return `
+        <div style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+            <span style="font-size:.8rem;font-weight:700;color:var(--text)">${esc(card.name)}</span>
+            <span style="font-size:.75rem;color:${totalCap>0?'var(--warn)':'var(--ok)'}">
+              ${totalCap > 0 ? `Total capitalised: ${fmtCurrency(totalCap)}` : 'All fully paid ✓'}
+            </span>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r1);overflow:hidden">
+            <table style="width:100%;border-collapse:collapse">
+              <thead><tr style="background:var(--surface2)">
+                <th style="${thStyle}">Month</th>
+                <th style="${thStyleR}">Charged</th>
+                <th style="${thStyleR}">Paid</th>
+                <th style="${thStyleR}">↑ Capitalised</th>
+                <th style="${thStyleR}">Cumulative</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }).join('');
+
+    histHTML = `
+      <div style="margin-top:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface2);cursor:pointer"
+             onclick="UI._ccrHistCollapsed=!UI._ccrHistCollapsed;renderCCRepaySection('${month}')">
+          <div style="font-size:.85rem;font-weight:700;color:var(--text)">
+            ${histCollapsed ? '▶' : '▼'} ↑ Capitalised History
+          </div>
+          <div style="font-size:.75rem;color:${totalCapAll>0?'var(--warn)':'var(--ok)'}">
+            ${totalCapAll > 0 ? `${fmtCurrency(totalCapAll)} accumulated across all cards` : 'All months fully paid ✓'}
+          </div>
+        </div>
+        ${histCollapsed ? '' : `<div style="padding:14px 16px">${cardTables}</div>`}
+      </div>`;
+  }
 
   wrap.innerHTML = `
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
@@ -6515,7 +6590,7 @@ function renderCCRepaySection(month) {
               <th style="${thStyle}">Card</th>
               <th style="${thStyleR}">Charged</th>
               <th style="${thStyleR}">Paid</th>
-              <th style="${thStyleR}">Remaining</th>
+              <th style="${thStyleR}">Capitalised</th>
             </tr></thead>
             <tbody>
               ${leftBodyRows}
@@ -6545,7 +6620,8 @@ function renderCCRepaySection(month) {
           </table>
         </div>
       </div>`}
-    </div>`;
+    </div>
+    ${histHTML}`;
 }
 
 // ── Annual Budget Grid ───────────────────────────────────────
@@ -11598,6 +11674,28 @@ Object.assign(BA, {
         <button class="btn btn-primary btn-sm" onclick="closeModal()" style="font-size:.78rem">Close</button>
       </div>
     `);
+  },
+
+  ccrUpdateCapPreview(month) {
+    const preview = id('ccr-cap-preview');
+    if (!preview) return;
+    const cardEl = id('ccr-form-card');
+    const amtEl  = id('ccr-amt-form');
+    if (!amtEl) return;
+    const cardId = cardEl ? cardEl.value : (UI.ccrSelectedCard || null);
+    if (!cardId) { preview.textContent = ''; return; }
+    const charged    = computeCCChargesForMonth(cardId, month);
+    const alreadyPaid = (D.budget.ccRepayments||[])
+      .filter(r => r.month === month && r.cardAccountId === cardId)
+      .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
+    const inputAmt   = parseFloat(amtEl.value.replace(/[^0-9.]/g,'')) || 0;
+    const willCap    = Math.max(0, charged - alreadyPaid - inputAmt);
+    if (inputAmt <= 0) { preview.textContent = ''; return; }
+    if (willCap > 0) {
+      preview.innerHTML = `<span style="color:var(--warn)">↑ ${fmtCurrency(willCap)} will capitalise onto the card balance</span>`;
+    } else {
+      preview.innerHTML = `<span style="color:var(--ok)">✓ Card will be fully paid for ${bFmtMonth(month)}</span>`;
+    }
   },
 
   ccrUpdateCapitalized(cardId, charged, month) {
