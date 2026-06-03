@@ -1013,6 +1013,112 @@ function ghSetConfig(cfg) { localStorage.setItem(GH_CONFIG_KEY, JSON.stringify(c
 function ghGetSha()     { return localStorage.getItem(GH_SHA_KEY) || null; }
 function ghSetSha(sha)  { if (sha) localStorage.setItem(GH_SHA_KEY, sha); }
 
+// ════════════════════════════════════════════════════════════
+// THEME SYSTEM
+// ════════════════════════════════════════════════════════════
+const APP_THEMES = {
+  terracotta: {
+    name:'Terracotta', desc:'Warm & cosy — default', dots:['#D97757','#2E8B57','#C0392B'],
+    vars:{} // base CSS — no overrides needed
+  },
+  indigo: {
+    name:'Indigo Night', desc:'Rich purple-indigo', dots:['#6366f1','#10b981','#f43f5e'],
+    vars:{'--primary':'#6366f1','--primary-d':'#4f46e5','--primary-l':'#c7d2fe',
+          '--bg':'#F8F9FF','--surface2':'#EEF0FF','--surface3':'#E0E3FF',
+          '--border':'#D0D3F0','--border-light':'#E0E3FF',
+          '--text2':'#4338ca','--text3':'#818cf8'}
+  },
+  ocean: {
+    name:'Ocean', desc:'Cool cyan & teal', dots:['#0891b2','#0d9488','#f97316'],
+    vars:{'--primary':'#0891b2','--primary-d':'#0e7490','--primary-l':'#a5f3fc',
+          '--bg':'#F0FEFF','--surface2':'#E0F9FF','--surface3':'#CCEFFF',
+          '--border':'#BAE0EA','--border-light':'#CCEFFF',
+          '--text2':'#0e7490','--text3':'#64748b'}
+  },
+  amber: {
+    name:'Warm Amber', desc:'Golden & energetic', dots:['#d97706','#2E8B57','#C0392B'],
+    vars:{'--primary':'#d97706','--primary-d':'#b45309','--primary-l':'#fde68a',
+          '--bg':'#FFFCF0','--surface2':'#FFF8E0','--surface3':'#FEF0C0',
+          '--border':'#F5DDA0','--border-light':'#FFF0C8',
+          '--text2':'#92400e','--text3':'#b45309'}
+  },
+  forest: {
+    name:'Forest', desc:'Deep green, money-focused', dots:['#16a34a','#2471A3','#C0392B'],
+    vars:{'--primary':'#16a34a','--primary-d':'#15803d','--primary-l':'#bbf7d0',
+          '--bg':'#F6FBF7','--surface2':'#EDF7F0','--surface3':'#D8EFE0',
+          '--border':'#B8DEC8','--border-light':'#D0EDD8',
+          '--text2':'#166534','--text3':'#64748b'}
+  },
+  slate: {
+    name:'Slate', desc:'Neutral & professional', dots:['#475569','#10b981','#ef4444'],
+    vars:{'--primary':'#475569','--primary-d':'#334155','--primary-l':'#cbd5e1',
+          '--bg':'#F8FAFC','--surface2':'#F1F5F9','--surface3':'#E2E8F0',
+          '--border':'#CBD5E1','--border-light':'#E2E8F0',
+          '--text2':'#475569','--text3':'#94a3b8'}
+  },
+};
+
+const ICON_STYLES = {
+  emoji: { name:'Emoji', desc:'Colourful & expressive', preview:'💳 💰 📊 🔀' },
+  clean: { name:'Clean text', desc:'Labels only, no icons', preview:'Cards  Pots  Reports  Flow' },
+  icons: { name:'Line icons', desc:'Minimal Tabler icons', preview:'icon icon icon icon' },
+};
+
+// Nav items that carry emojis — patched by applyIconStyle()
+const NAV_ICON_MAP = {
+  'tab-cc-balances': {
+    emoji:'💳 Card Balances',
+    clean:'Card Balances',
+    icons:'<i class="ti ti-credit-card" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Card Balances'
+  },
+  'tab-treemap': {
+    emoji:'🗂️ Spending Breakdown',
+    clean:'Spending Breakdown',
+    icons:'<i class="ti ti-layout-grid" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Spending Breakdown'
+  },
+  'tab-sankey': {
+    emoji:'🔀 Money Flow',
+    clean:'Money Flow',
+    icons:'<i class="ti ti-arrows-split" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Money Flow'
+  },
+  'tab-reports': {
+    emoji:'📊 Reports',
+    clean:'Reports',
+    icons:'<i class="ti ti-chart-bar" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Reports'
+  },
+  'tab-savings-pots': {
+    emoji:'💰 Savings Pots',
+    clean:'Savings Pots',
+    icons:'<i class="ti ti-pig-money" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Savings Pots'
+  },
+  'tab-debt-payoff': {
+    emoji:'🏁 Debt Payoff',
+    clean:'Debt Payoff',
+    icons:'<i class="ti ti-flag" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Debt Payoff'
+  },
+};
+
+function applyTheme(themeId) {
+  const tid = themeId || 'terracotta';
+  if (!D.settings) D.settings = {};
+  D.settings.theme = tid;
+  let el = document.getElementById('app-theme-vars');
+  if (!el) { el = document.createElement('style'); el.id = 'app-theme-vars'; document.head.appendChild(el); }
+  const t = APP_THEMES[tid];
+  if (!t || !Object.keys(t.vars).length) { el.textContent = ''; return; }
+  el.textContent = `:root{${Object.entries(t.vars).map(([k,v])=>`${k}:${v}`).join(';')}}`;
+}
+
+function applyIconStyle(styleId) {
+  const sid = styleId || 'emoji';
+  if (!D.settings) D.settings = {};
+  D.settings.iconStyle = sid;
+  Object.entries(NAV_ICON_MAP).forEach(([elId, map]) => {
+    const el = document.getElementById(elId);
+    if (el) el.innerHTML = map[sid] || map.emoji;
+  });
+}
+
 // ── Seed / apply loaded data ─────────────────────────────────
 const BUDGET_EMPTY = { groups:[], categories:[], plans:[], actualTotals:[], income:[], incomeSchedules:[], expenseSchedules:[], ccRepayments:[], rolloverPotLinks:{} };
 function _applyData(raw) {
@@ -1040,6 +1146,9 @@ function _applyData(raw) {
   if (!D.budget.rolloverCats)  D.budget.rolloverCats  = [];
   if (!D.budget.adjustments)   D.budget.adjustments   = [];
   if (!D.savingsPots) D.savingsPots = { growthAccountId: '', trackedGroupId: '' };
+  if (!D.settings)   D.settings   = { theme: 'terracotta', iconStyle: 'emoji' };
+  if (!D.settings.theme)     D.settings.theme     = 'terracotta';
+  if (!D.settings.iconStyle) D.settings.iconStyle = 'emoji';
   if (!D.uiPrefs)    D.uiPrefs    = {};
   // Auto-sync CC cards → Transaction accounts (idempotent: keyed by ccCardId)
   const existingCCIds = new Set((D.txnAccounts).filter(a => a.ccCardId).map(a => a.ccCardId));
@@ -1262,6 +1371,8 @@ async function ghConnect() {
     const data = await _ghFetch(cfg);
     ghSetConfig(cfg);
     _applyData(data);
+    applyTheme(D.settings?.theme);
+    applyIconStyle(D.settings?.iconStyle);
     _hideFileOverlay();
     renderMonthly();
     renderMobileView();
@@ -1340,6 +1451,8 @@ async function loadState() {
   try {
     const data = await _ghFetch(cfg);
     _applyData(data);
+    applyTheme(D.settings?.theme);
+    applyIconStyle(D.settings?.iconStyle);
     _hideFileOverlay();
     renderMonthly();
     renderMobileView();
@@ -2326,7 +2439,58 @@ function submitAddPayment() {
 // SETUP VIEW
 // ════════════════════════════════════════════════════════════
 function renderSetup() {
+  const curTheme = D.settings?.theme || 'terracotta';
+  const curIcons = D.settings?.iconStyle || 'emoji';
+
+  // ── Theme swatches ────────────────────────────────────────
+  const themeCards = Object.entries(APP_THEMES).map(([tid, t]) => {
+    const active = curTheme === tid;
+    const dots = t.dots.map(c => `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${c}"></span>`).join('');
+    return `<button onclick="BA.setTheme('${tid}')" style="
+      padding:10px 12px;min-width:120px;text-align:left;cursor:pointer;
+      border:${active?'2px solid var(--primary)':'1.5px solid var(--border)'};
+      border-radius:var(--r2);
+      background:${active?'color-mix(in srgb,var(--primary) 8%,transparent)':'var(--surface)'};
+      transition:border-color .15s,background .15s">
+      <div style="display:flex;gap:4px;margin-bottom:6px">${dots}</div>
+      <div style="font-size:.78rem;font-weight:700;color:var(--text)">${t.name}</div>
+      <div style="font-size:.7rem;color:var(--text3);margin-top:1px">${t.desc}</div>
+      ${active ? `<div style="font-size:.65rem;font-weight:700;color:var(--primary);margin-top:4px;text-transform:uppercase;letter-spacing:.04em">✓ Active</div>` : ''}
+    </button>`;
+  }).join('');
+
+  // ── Icon style options ────────────────────────────────────
+  const iconPreviews = {
+    emoji: '💳 💰 📊 🔀',
+    clean: 'Cards · Pots · Reports · Flow',
+    icons: `<i class="ti ti-credit-card" aria-hidden="true"></i>&nbsp;<i class="ti ti-pig-money" aria-hidden="true"></i>&nbsp;<i class="ti ti-chart-bar" aria-hidden="true"></i>&nbsp;<i class="ti ti-arrows-split" aria-hidden="true"></i>`,
+  };
+  const iconCards = Object.entries(ICON_STYLES).map(([sid, s]) => {
+    const active = curIcons === sid;
+    return `<button onclick="BA.setIconStyle('${sid}')" style="
+      padding:10px 12px;min-width:130px;text-align:left;cursor:pointer;
+      border:${active?'2px solid var(--primary)':'1.5px solid var(--border)'};
+      border-radius:var(--r2);
+      background:${active?'color-mix(in srgb,var(--primary) 8%,transparent)':'var(--surface)'};
+      transition:border-color .15s,background .15s">
+      <div style="font-size:14px;color:var(--text2);margin-bottom:6px;min-height:20px">${iconPreviews[sid]}</div>
+      <div style="font-size:.78rem;font-weight:700;color:var(--text)">${s.name}</div>
+      <div style="font-size:.7rem;color:var(--text3);margin-top:1px">${s.desc}</div>
+      ${active ? `<div style="font-size:.65rem;font-weight:700;color:var(--primary);margin-top:4px;text-transform:uppercase;letter-spacing:.04em">✓ Active</div>` : ''}
+    </button>`;
+  }).join('');
+
   id('view-setup').innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px;margin-bottom:16px">
+      <div style="font-size:.95rem;font-weight:700;color:var(--text);margin-bottom:14px">🎨 Appearance</div>
+
+      <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);margin-bottom:8px">Color Theme</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">${themeCards}</div>
+
+      <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);margin-bottom:8px">Icon Style</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${iconCards}</div>
+    </div>
+
     <div class="stabs">
       <button class="stab ${UI.setupTab==='templates'?'active':''}" id="stab-templates" onclick="switchSetupTab('templates')">Payment Templates</button>
       <button class="stab ${UI.setupTab==='accounts'?'active':''}" id="stab-accounts" onclick="switchSetupTab('accounts')">Payment Accounts</button>
@@ -7749,6 +7913,17 @@ function renderMobileView() {
 const BA = {
 
   exportToExcel() { exportBudgetToExcel(); },
+
+  setTheme(themeId) {
+    applyTheme(themeId);
+    dirty();
+    renderSetup(); // re-render to update active state on swatches
+  },
+  setIconStyle(styleId) {
+    applyIconStyle(styleId);
+    dirty();
+    renderSetup(); // re-render to update active state
+  },
 
   exportForAI(year) {
     const y = year || parseInt((UI.budgetMonth || ymNow()).slice(0, 4));
