@@ -7821,13 +7821,17 @@ function renderMobileView() {
     </select>`;
 
     // Search input
-    const searchHTML = `<div style="position:relative;margin-bottom:10px">
-      <input id="mob-txn-search" type="search" placeholder="Search payee, category…"
-        value="${esc(UI.mobileTxnSearch||'')}"
-        oninput="BA.setMobileTxnSearch(this.value)"
-        style="width:100%;padding:8px 10px 8px 32px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
-      <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:.85rem;pointer-events:none">🔍</span>
-      ${searchQ ? `<button onclick="BA.setMobileTxnSearch('')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);cursor:pointer;font-size:1rem;padding:0;line-height:1">✕</button>` : ''}
+    const searchHTML = `<div style="display:flex;gap:6px;margin-bottom:10px">
+      <div style="position:relative;flex:1">
+        <input id="mob-txn-search" type="search" placeholder="Search payee, category…"
+          value="${esc(UI.mobileTxnSearch||'')}"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();BA.setMobileTxnSearch(document.getElementById('mob-txn-search').value)}"
+          style="width:100%;padding:8px 10px 8px 32px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
+        <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:.85rem;pointer-events:none">🔍</span>
+      </div>
+      <button onclick="BA.setMobileTxnSearch(document.getElementById('mob-txn-search').value)"
+        style="padding:8px 14px;border:1px solid var(--border);border-radius:var(--r1);background:var(--primary);color:#fff;font-size:.85rem;font-weight:600;cursor:pointer;white-space:nowrap">Search</button>
+      ${searchQ ? `<button onclick="BA.setMobileTxnSearch('')" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text3);font-size:.85rem;cursor:pointer">✕</button>` : ''}
     </div>`;
 
     // Balance pill
