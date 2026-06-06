@@ -1020,83 +1020,117 @@ function ghSetSha(sha)  { if (sha) localStorage.setItem(GH_SHA_KEY, sha); }
 // ════════════════════════════════════════════════════════════
 const APP_THEMES = {
   terracotta: {
-    name:'Terracotta', desc:'Warm & cosy — default', dots:['#D97757','#2E8B57','#C0392B'],
+    name:'Terracotta', desc:'Warm & cosy — current default', dots:['#D97757','#2E8B57','#C0392B'],
     vars:{} // base CSS — no overrides needed
   },
-  indigo: {
-    name:'Indigo Night', desc:'Rich purple-indigo', dots:['#6366f1','#10b981','#f43f5e'],
-    vars:{'--primary':'#6366f1','--primary-d':'#4f46e5','--primary-l':'#c7d2fe',
-          '--bg':'#F8F9FF','--surface2':'#EEF0FF','--surface3':'#E0E3FF',
-          '--border':'#D0D3F0','--border-light':'#E0E3FF',
-          '--text2':'#4338ca','--text3':'#818cf8'}
+  mint: {
+    name:'Mint', desc:'Clean teal — feels like a finance app', dots:['#0D9488','#10B981','#F59E0B'],
+    vars:{
+      '--primary':'#0D9488','--primary-d':'#0F766E','--primary-l':'#99F6E4',
+      '--bg':'#F0FDFB','--surface':'#FFFFFF','--surface2':'#E8FAF8','--surface3':'#D0F5F0',
+      '--border':'#A7D9D4','--border-light':'#D0F5F0',
+      '--text':'#0F2E2B','--text2':'#1F5F5B','--text3':'#6AADA8'
+    }
   },
-  ocean: {
-    name:'Ocean', desc:'Cool cyan & teal', dots:['#0891b2','#0d9488','#f97316'],
-    vars:{'--primary':'#0891b2','--primary-d':'#0e7490','--primary-l':'#a5f3fc',
-          '--bg':'#F0FEFF','--surface2':'#E0F9FF','--surface3':'#CCEFFF',
-          '--border':'#BAE0EA','--border-light':'#CCEFFF',
-          '--text2':'#0e7490','--text3':'#64748b'}
+  cobalt: {
+    name:'Cobalt', desc:'Deep blue — corporate & trustworthy', dots:['#1D4ED8','#3B82F6','#F97316'],
+    vars:{
+      '--primary':'#1D4ED8','--primary-d':'#1E40AF','--primary-l':'#BFDBFE',
+      '--bg':'#F0F4FF','--surface':'#FFFFFF','--surface2':'#EEF2FF','--surface3':'#E0E7FF',
+      '--border':'#C7D2FE','--border-light':'#E0E7FF',
+      '--text':'#1E1B4B','--text2':'#3730A3','--text3':'#818CF8'
+    }
   },
-  amber: {
-    name:'Warm Amber', desc:'Golden & energetic', dots:['#d97706','#2E8B57','#C0392B'],
-    vars:{'--primary':'#d97706','--primary-d':'#b45309','--primary-l':'#fde68a',
-          '--bg':'#FFFCF0','--surface2':'#FFF8E0','--surface3':'#FEF0C0',
-          '--border':'#F5DDA0','--border-light':'#FFF0C8',
-          '--text2':'#92400e','--text3':'#b45309'}
+  plum: {
+    name:'Plum', desc:'Bold purple — modern & distinctive', dots:['#7C3AED','#A78BFA','#EC4899'],
+    vars:{
+      '--primary':'#7C3AED','--primary-d':'#6D28D9','--primary-l':'#DDD6FE',
+      '--bg':'#FAF5FF','--surface':'#FFFFFF','--surface2':'#F3E8FF','--surface3':'#EDE9FE',
+      '--border':'#DDD6FE','--border-light':'#EDE9FE',
+      '--text':'#2D1B69','--text2':'#5B21B6','--text3':'#A78BFA'
+    }
   },
-  forest: {
-    name:'Forest', desc:'Deep green, money-focused', dots:['#16a34a','#2471A3','#C0392B'],
-    vars:{'--primary':'#16a34a','--primary-d':'#15803d','--primary-l':'#bbf7d0',
-          '--bg':'#F6FBF7','--surface2':'#EDF7F0','--surface3':'#D8EFE0',
-          '--border':'#B8DEC8','--border-light':'#D0EDD8',
-          '--text2':'#166534','--text3':'#64748b'}
+  rose: {
+    name:'Rose', desc:'Warm rose — energetic & bold', dots:['#E11D48','#F43F5E','#FB923C'],
+    vars:{
+      '--primary':'#E11D48','--primary-d':'#BE123C','--primary-l':'#FECDD3',
+      '--bg':'#FFF1F4','--surface':'#FFFFFF','--surface2':'#FFF0F3','--surface3':'#FFE4E8',
+      '--border':'#FEC9D4','--border-light':'#FFE4E8',
+      '--text':'#4C0519','--text2':'#9F1239','--text3':'#FB7185'
+    }
   },
-  slate: {
-    name:'Slate', desc:'Neutral & professional', dots:['#475569','#10b981','#ef4444'],
-    vars:{'--primary':'#475569','--primary-d':'#334155','--primary-l':'#cbd5e1',
-          '--bg':'#F8FAFC','--surface2':'#F1F5F9','--surface3':'#E2E8F0',
-          '--border':'#CBD5E1','--border-light':'#E2E8F0',
-          '--text2':'#475569','--text3':'#94a3b8'}
+  sage: {
+    name:'Sage', desc:'Muted green — calm & earthy', dots:['#4D7C6F','#6BAA94','#C8A96E'],
+    vars:{
+      '--primary':'#4D7C6F','--primary-d':'#3D6357','--primary-l':'#B2D8D0',
+      '--bg':'#F4F9F8','--surface':'#FFFFFF','--surface2':'#EBF4F2','--surface3':'#D8EDE9',
+      '--border':'#A3C8C3','--border-light':'#D8EDE9',
+      '--text':'#1A2E2A','--text2':'#2D5A52','--text3':'#7AAAA0'
+    }
+  },
+  midnight: {
+    name:'Midnight', desc:'Dark mode — navy with sky accents', dots:['#1E293B','#38BDF8','#4ADE80'],
+    vars:{
+      '--primary':'#38BDF8','--primary-d':'#0EA5E9','--primary-l':'#0C4A6E',
+      '--bg':'#0F172A','--surface':'#1E293B','--surface2':'#253347','--surface3':'#334155',
+      '--border':'#3D5068','--border-light':'#475569',
+      '--text':'#F1F5F9','--text2':'#94A3B8','--text3':'#64748B',
+      '--ok':'#4ADE80','--ok-bg':'#052E16',
+      '--warn':'#FCD34D','--warn-bg':'#422006',
+      '--danger':'#F87171','--danger-bg':'#450A0A',
+      '--info':'#38BDF8','--info-bg':'#0C4A6E',
+      '--sh1':'0 1px 3px rgba(0,0,0,.4)','--sh2':'0 2px 8px rgba(0,0,0,.5)','--sh3':'0 4px 20px rgba(0,0,0,.6)'
+    }
   },
 };
 
 const ICON_STYLES = {
-  emoji: { name:'Emoji', desc:'Colourful & expressive', preview:'💳 💰 📊 🔀' },
-  clean: { name:'Clean text', desc:'Labels only, no icons', preview:'Cards  Pots  Reports  Flow' },
-  icons: { name:'Line icons', desc:'Minimal Tabler icons', preview:'icon icon icon icon' },
+  emoji:   { name:'Emoji',          desc:'Colourful — works on most devices',          preview:'💳 💰 📊 🔀' },
+  clean:   { name:'Text only',      desc:'Clean labels, no decoration — most reliable', preview:'Cards · Pots · Reports · Flow' },
+  dot:     { name:'Dot prefix',     desc:'Subtle accent dot before each label',         preview:'• Cards  • Pots  • Reports' },
+  bracket: { name:'Mono brackets',  desc:'Monospace bracket style — very legible',      preview:'[Cards]  [Pots]  [Reports]' },
 };
 
 // Nav items that carry emojis — patched by applyIconStyle()
+// dot helper: small circle using currentColor so it inherits the active/hover tint
+const _dot = lbl => `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.5;margin-right:7px;vertical-align:1px" aria-hidden="true"></span>${lbl}`;
+const _brk = lbl => `<span style="font-family:monospace;opacity:.45;font-size:.88em">[</span>${lbl}<span style="font-family:monospace;opacity:.45;font-size:.88em">]</span>`;
 const NAV_ICON_MAP = {
   'tab-cc-balances': {
     emoji:'💳 Card Balances',
     clean:'Card Balances',
-    icons:'<i class="ti ti-credit-card" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Card Balances'
+    dot:_dot('Card Balances'),
+    bracket:_brk('Card Balances'),
   },
   'tab-treemap': {
     emoji:'🗂️ Spending Breakdown',
     clean:'Spending Breakdown',
-    icons:'<i class="ti ti-layout-grid" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Spending Breakdown'
+    dot:_dot('Spending Breakdown'),
+    bracket:_brk('Spending Breakdown'),
   },
   'tab-sankey': {
     emoji:'🔀 Money Flow',
     clean:'Money Flow',
-    icons:'<i class="ti ti-arrows-split" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Money Flow'
+    dot:_dot('Money Flow'),
+    bracket:_brk('Money Flow'),
   },
   'tab-reports': {
     emoji:'📊 Reports',
     clean:'Reports',
-    icons:'<i class="ti ti-chart-bar" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Reports'
+    dot:_dot('Reports'),
+    bracket:_brk('Reports'),
   },
   'tab-savings-pots': {
     emoji:'💰 Savings Pots',
     clean:'Savings Pots',
-    icons:'<i class="ti ti-pig-money" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Savings Pots'
+    dot:_dot('Savings Pots'),
+    bracket:_brk('Savings Pots'),
   },
   'tab-debt-payoff': {
     emoji:'🏁 Debt Payoff',
     clean:'Debt Payoff',
-    icons:'<i class="ti ti-flag" style="font-size:13px;vertical-align:-1px;margin-right:5px" aria-hidden="true"></i>Debt Payoff'
+    dot:_dot('Debt Payoff'),
+    bracket:_brk('Debt Payoff'),
   },
 };
 
@@ -2451,33 +2485,34 @@ function renderSetup() {
     const active = curTheme === tid;
     const dots = t.dots.map(c => `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${c}"></span>`).join('');
     return `<button onclick="BA.setTheme('${tid}')" style="
-      padding:10px 12px;min-width:120px;text-align:left;cursor:pointer;
+      padding:10px 12px;min-width:110px;max-width:150px;text-align:left;cursor:pointer;
       border:${active?'2px solid var(--primary)':'1.5px solid var(--border)'};
       border-radius:var(--r2);
       background:${active?'color-mix(in srgb,var(--primary) 8%,transparent)':'var(--surface)'};
       transition:border-color .15s,background .15s">
       <div style="display:flex;gap:4px;margin-bottom:6px">${dots}</div>
       <div style="font-size:.78rem;font-weight:700;color:var(--text)">${t.name}</div>
-      <div style="font-size:.7rem;color:var(--text3);margin-top:1px">${t.desc}</div>
-      ${active ? `<div style="font-size:.65rem;font-weight:700;color:var(--primary);margin-top:4px;text-transform:uppercase;letter-spacing:.04em">✓ Active</div>` : ''}
+      <div style="font-size:.68rem;color:var(--text3);margin-top:1px;line-height:1.3">${t.desc}</div>
+      ${active ? `<div style="font-size:.62rem;font-weight:700;color:var(--primary);margin-top:4px;text-transform:uppercase;letter-spacing:.04em">✓ Active</div>` : ''}
     </button>`;
   }).join('');
 
   // ── Icon style options ────────────────────────────────────
   const iconPreviews = {
-    emoji: '💳 💰 📊 🔀',
-    clean: 'Cards · Pots · Reports · Flow',
-    icons: `<i class="ti ti-credit-card" aria-hidden="true"></i>&nbsp;<i class="ti ti-pig-money" aria-hidden="true"></i>&nbsp;<i class="ti ti-chart-bar" aria-hidden="true"></i>&nbsp;<i class="ti ti-arrows-split" aria-hidden="true"></i>`,
+    emoji:   '💳 &nbsp;💰 &nbsp;📊 &nbsp;🔀',
+    clean:   '<span style="font-size:.82rem;color:var(--text2)">Cards &nbsp;·&nbsp; Pots &nbsp;·&nbsp; Reports</span>',
+    dot:     `<span style="font-size:.82rem;color:var(--text2)">${_dot('Cards')} &nbsp;${_dot('Pots')} &nbsp;${_dot('Reports')}</span>`,
+    bracket: `<span style="font-size:.82rem;font-family:monospace;color:var(--text2)">${_brk('Cards')} &nbsp;${_brk('Pots')}</span>`,
   };
   const iconCards = Object.entries(ICON_STYLES).map(([sid, s]) => {
     const active = curIcons === sid;
     return `<button onclick="BA.setIconStyle('${sid}')" style="
-      padding:10px 12px;min-width:130px;text-align:left;cursor:pointer;
+      padding:10px 12px;min-width:140px;text-align:left;cursor:pointer;
       border:${active?'2px solid var(--primary)':'1.5px solid var(--border)'};
       border-radius:var(--r2);
       background:${active?'color-mix(in srgb,var(--primary) 8%,transparent)':'var(--surface)'};
       transition:border-color .15s,background .15s">
-      <div style="font-size:14px;color:var(--text2);margin-bottom:6px;min-height:20px">${iconPreviews[sid]}</div>
+      <div style="font-size:14px;color:var(--text2);margin-bottom:6px;min-height:22px;display:flex;align-items:center">${iconPreviews[sid]}</div>
       <div style="font-size:.78rem;font-weight:700;color:var(--text)">${s.name}</div>
       <div style="font-size:.7rem;color:var(--text3);margin-top:1px">${s.desc}</div>
       ${active ? `<div style="font-size:.65rem;font-weight:700;color:var(--primary);margin-top:4px;text-transform:uppercase;letter-spacing:.04em">✓ Active</div>` : ''}
@@ -7823,7 +7858,7 @@ function renderMobileView() {
     // Search input
     const searchHTML = `<div style="display:flex;gap:6px;margin-bottom:10px">
       <div style="position:relative;flex:1">
-        <input id="mob-txn-search" type="search" placeholder="Search payee, category…"
+        <input id="mob-txn-search" type="search" placeholder="Search payee, category, amount…"
           value="${esc(UI.mobileTxnSearch||'')}"
           onkeydown="if(event.key==='Enter'){event.preventDefault();BA.setMobileTxnSearch(document.getElementById('mob-txn-search').value)}"
           style="width:100%;padding:8px 10px 8px 32px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
@@ -7860,9 +7895,12 @@ function renderMobileView() {
     const txns = searchQ ? allTxns.filter(t => {
       const acctName = (D.txnAccounts || []).find(a => a.id === t.accountId)?.name || '';
       const cat      = txnCatLabel ? txnCatLabel(t.categoryId) : '';
+      const amt      = Math.abs((parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0));
+      const amtStr   = amt.toFixed(2);
       return (t.payee || '').toLowerCase().includes(searchQ)
           || cat.toLowerCase().includes(searchQ)
-          || acctName.toLowerCase().includes(searchQ);
+          || acctName.toLowerCase().includes(searchQ)
+          || amtStr.includes(searchQ);
     }) : allTxns;
 
     let listHTML;
