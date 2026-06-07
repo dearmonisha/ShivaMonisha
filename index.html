@@ -2976,6 +2976,9 @@ function buildFamLedger(pid) {
   const endIdx = Math.min(startIdx + pageSize, total);
   const pageTxns = displayTxns.slice(startIdx, endIdx);
 
+  // Build a fast lookup of all existing transaction IDs so we can detect orphaned links
+  const _liveTxnIds = new Set((D.txnTransactions||[]).map(tx => tx.id));
+
   const rows = pageTxns.map((t, i) => {
     // Map display position back to chronological index for the correct running balance
     const chronoIdx = total - 1 - (startIdx + i);
@@ -2984,14 +2987,52 @@ function buildFamLedger(pid) {
     const bCls = rowBal > 0.005 ? 'bal-neg' : rowBal < -0.005 ? 'bal-pos' : 'bal-zero';
     const drFmt = t.dr ? `<span class="dr-cell">${fmtCurrency(t.dr)}</span>` : `<span style="color:var(--text3)">—</span>`;
     const crFmt = t.cr ? `<span class="cr-cell">${fmtCurrency(t.cr)}</span>` : `<span style="color:var(--text3)">—</span>`;
-    const txnLinkBtn = t.sourceTxnId ? `
-      <button class="ibtn" title="View linked transaction" onclick="BA.txnNavToLinked('${t.sourceTxnId}','${t.sourceAcctId||''}')" style="color:#7c3aed">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4.715 6.542 3.343 7.914a3 3 0 1 0 4.243 4.243l1.828-1.829A3 3 0 0 0 8.586 5.5L8 6.086a1.002 1.002 0 0 0-.154.199 2 2 0 0 1 .861 3.337L6.88 11.45a2 2 0 1 1-2.83-2.83l.793-.792a4.018 4.018 0 0 1-.128-1.287z"/><path d="M6.586 4.672A3 3 0 0 0 7.414 9.5l.775-.776a2 2 0 0 1-.896-3.346L9.12 3.55a2 2 0 1 1 2.83 2.83l-.793.792c.112.42.155.855.128 1.287l1.372-1.372a3 3 0 1 0-4.243-4.243L6.586 4.672z"/></svg>
-      </button>` : '';
-    return `<tr>
+
+    // Determine whether the linked source transaction still exists
+    const hasLink    = !!t.sourceTxnId;
+    const srcDeleted = hasLink && !_liveTxnIds.has(t.sourceTxnId);
+
+    // ── Description column link badge ──────────────────────────
+    const descBadge = hasLink
+      ? srcDeleted
+        ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.6rem;font-weight:700;
+              color:var(--warn);background:var(--warn-bg);
+              border:1px solid color-mix(in srgb,var(--warn) 35%,transparent);
+              border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:middle;white-space:nowrap"
+             title="The original transaction was deleted from the Transactions tab">
+             ⚠ deleted</span>`
+        : `<span style="font-size:.62rem;color:#7c3aed;margin-left:5px;opacity:.8"
+                title="Automatically linked from Transactions tab — click 🔗 to navigate">🔗</span>`
+      : '';
+
+    // ── Actions column link button ─────────────────────────────
+    const txnLinkBtn = hasLink
+      ? srcDeleted
+        ? `<button class="ibtn" disabled title="Source transaction was deleted — this entry has no match in Transactions tab"
+              style="color:var(--warn);cursor:default;opacity:.9">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                <path d="M7.002 11a1 1 0 1 1 2 0 1 1 0 0 1-2 0zM7.1 4.995a.905.905 0 1 1 1.8 0l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 4.995z"/>
+              </svg>
+           </button>`
+        : `<button class="ibtn" title="View linked transaction in Transactions tab"
+              onclick="BA.txnNavToLinked('${t.sourceTxnId}','${t.sourceAcctId||''}')" style="color:#7c3aed">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4.715 6.542 3.343 7.914a3 3 0 1 0 4.243 4.243l1.828-1.829A3 3 0 0 0 8.586 5.5L8 6.086a1.002 1.002 0 0 0-.154.199 2 2 0 0 1 .861 3.337L6.88 11.45a2 2 0 1 1-2.83-2.83l.793-.792a4.018 4.018 0 0 1-.128-1.287z"/>
+                <path d="M6.586 4.672A3 3 0 0 0 7.414 9.5l.775-.776a2 2 0 0 1-.896-3.346L9.12 3.55a2 2 0 1 1 2.83 2.83l-.793.792c.112.42.155.855.128 1.287l1.372-1.372a3 3 0 1 0-4.243-4.243L6.586 4.672z"/>
+              </svg>
+           </button>`
+      : '';
+
+    // ── Faint amber row tint when source was deleted ───────────
+    const rowStyle = srcDeleted
+      ? ' style="background:color-mix(in srgb,var(--warn) 5%,transparent)"'
+      : '';
+
+    return `<tr${rowStyle}>
       <td><div class="fcell rnum">${total - (startIdx + i)}</div></td>
       <td><div class="fcell">${fmtDateMDY(t.date)}</div></td>
-      <td><div class="fcell truncate" title="${esc(t.description)}">${esc(t.description)||'<span style=color:var(--text3)>—</span>'}${t.sourceTxnId ? `<span style="font-size:.62rem;color:#7c3aed;margin-left:5px;opacity:.8" title="Linked from Transactions tab">🔗</span>` : ''}</div></td>
+      <td><div class="fcell truncate" title="${esc(t.description)}">${esc(t.description)||'<span style=color:var(--text3)>—</span>'}${descBadge}</div></td>
       <td><div class="fcell" style="justify-content:flex-end">${drFmt}</div></td>
       <td><div class="fcell" style="justify-content:flex-end">${crFmt}</div></td>
       <td><div class="fcell" style="justify-content:flex-end"><span class="${bCls}">${fmtCurrency(rowBal)||'$0.00'}</span></div></td>
