@@ -2977,7 +2977,7 @@ function buildFamLedger(pid) {
   const pageTxns = displayTxns.slice(startIdx, endIdx);
 
   // Build a fast lookup of all existing transaction IDs so we can detect orphaned links
-  const _liveTxnIds = new Set((D.txnTransactions||[]).map(tx => tx.id));
+  const _liveTxnIds = new Set((D.transactions||[]).map(tx => tx.id));
 
   const rows = pageTxns.map((t, i) => {
     // Map display position back to chronological index for the correct running balance
