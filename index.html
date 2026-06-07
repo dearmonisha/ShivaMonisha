@@ -6583,9 +6583,15 @@ function renderCCRepaySection(month) {
       const paid    = (D.budget.ccRepayments||[])
         .filter(r => r.cardAccountId === card.id && r.month === m)
         .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
-      return { m, charged, paid, cap: Math.max(0, charged - paid) };
+      // cap = new debt added this month (floored at 0 — overpayment doesn't show as negative cap)
+      // net = charged - paid (can be negative when overpaying — used to reduce running balance)
+      const cap = Math.max(0, charged - paid);
+      const net = charged - paid;
+      return { m, charged, paid, cap, net };
     }).filter(d => d.charged > 0 || d.paid > 0);
-    const totalCap = mData.reduce((s,d) => s + d.cap, 0);
+    // totalCap = net outstanding balance = sum of all net values floored at 0
+    // (overpayments in any month correctly reduce the accumulated balance)
+    const totalCap = Math.max(0, mData.reduce((s,d) => s + d.net, 0));
     return { card, mData, totalCap };
   }).filter(c => c.mData.length > 0);
 
@@ -6594,27 +6600,46 @@ function renderCCRepaySection(month) {
   let histHTML = '';
   if (histCards.length) {
     const histCollapsed = UI._ccrHistCollapsed;
+    // Per-card collapse state: default fully-paid cards to collapsed, outstanding ones to expanded
+    if (!UI._ccrCardCollapsed) UI._ccrCardCollapsed = {};
+    histCards.forEach(({ card, totalCap }) => {
+      if (UI._ccrCardCollapsed[card.id] === undefined) {
+        UI._ccrCardCollapsed[card.id] = (totalCap === 0); // auto-collapse fully-paid cards
+      }
+    });
+
     const cardTables = histCards.map(({ card, mData, totalCap }) => {
-      let cumCap = 0;
-      const rows = mData.map(d => {
-        cumCap += d.cap;
-        return `<tr>
-          <td style="padding:5px 10px;font-size:.75rem;color:var(--text3)">${bFmtMonth(d.m)}</td>
-          <td style="padding:5px 10px;text-align:right;font-size:.75rem">${fmtCurrency(d.charged)}</td>
-          <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--ok)">${d.paid > 0 ? fmtCurrency(d.paid) : '—'}</td>
-          <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:600;color:${d.cap>0?'var(--warn)':'var(--ok)'}">${d.cap > 0 ? fmtCurrency(d.cap) : '—'}</td>
-          <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:${cumCap>0?'var(--warn)':'var(--ok)'}">${fmtCurrency(cumCap)}</td>
-        </tr>`;
-      }).join('');
-      return `
-        <div style="margin-bottom:14px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-            <span style="font-size:.8rem;font-weight:700;color:var(--text)">${esc(card.name)}</span>
-            <span style="font-size:.75rem;color:${totalCap>0?'var(--warn)':'var(--ok)'}">
-              ${totalCap > 0 ? `Total capitalised: ${fmtCurrency(totalCap)}` : 'All fully paid ✓'}
-            </span>
-          </div>
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r1);overflow:hidden">
+      const cardCollapsed = UI._ccrCardCollapsed[card.id];
+      const statusColor   = totalCap > 0 ? 'var(--warn)' : 'var(--ok)';
+      const statusLabel   = totalCap > 0
+        ? `<span style="font-weight:700">Outstanding: ${fmtCurrency(totalCap)}</span>`
+        : `<span>All fully paid ✓</span>`;
+
+      // Only build table rows when expanded
+      let tableHTML = '';
+      if (!cardCollapsed) {
+        // mData is newest-first. Compute running cumulative oldest→newest so overpayments
+        // correctly reduce the accumulated balance, then store results indexed to mData.
+        const cumCaps = [];
+        let runCum = 0;
+        [...mData].reverse().forEach(d => {
+          runCum = Math.max(0, runCum + d.net); // net can be negative (overpayment)
+          cumCaps.unshift(runCum);              // prepend so index aligns with mData
+        });
+
+        const rows = mData.map((d, i) => {
+          const cumCap = cumCaps[i];
+          return `<tr>
+            <td style="padding:5px 10px;font-size:.75rem;color:var(--text3)">${bFmtMonth(d.m)}</td>
+            <td style="padding:5px 10px;text-align:right;font-size:.75rem">${fmtCurrency(d.charged)}</td>
+            <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--ok)">${d.paid > 0 ? fmtCurrency(d.paid) : '—'}</td>
+            <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:600;color:${d.cap>0?'var(--warn)':'var(--ok)'}">${d.cap > 0 ? fmtCurrency(d.cap) : '—'}</td>
+            <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:${cumCap>0?'var(--warn)':'var(--ok)'}">${fmtCurrency(cumCap)}</td>
+          </tr>`;
+        }).join('');
+
+        tableHTML = `
+          <div style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--r) var(--r);overflow:hidden">
             <table style="width:100%;border-collapse:collapse">
               <thead><tr style="background:var(--surface2)">
                 <th style="${thStyle}">Month</th>
@@ -6625,7 +6650,21 @@ function renderCCRepaySection(month) {
               </tr></thead>
               <tbody>${rows}</tbody>
             </table>
+          </div>`;
+      }
+
+      return `
+        <div style="margin-bottom:10px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
+          <div style="display:flex;justify-content:space-between;align-items:center;
+                      padding:7px 12px;background:var(--surface2);cursor:pointer;user-select:none"
+               onclick="UI._ccrCardCollapsed['${card.id}']=!UI._ccrCardCollapsed['${card.id}'];renderCCRepaySection('${month}')">
+            <span style="display:flex;align-items:center;gap:7px;font-size:.8rem;font-weight:700;color:var(--text)">
+              <span style="font-size:.7rem;color:var(--text3)">${cardCollapsed ? '▶' : '▼'}</span>
+              ${esc(card.name)}
+            </span>
+            <span style="font-size:.75rem;color:${statusColor}">${statusLabel}</span>
           </div>
+          ${tableHTML}
         </div>`;
     }).join('');
 
@@ -12070,6 +12109,9 @@ Object.assign(BA, {
   // Auto-mark the linked Monthly Tab payment as paid when a CCR payment is recorded.
   // Checks current month first; if already paid (or absent), checks next month (early payment).
   // Multiple CCR payments in the same month are silently ignored after the first mark.
+  // IMPORTANT: only marks paid if amountDue > 0 — if the statement hasn't been generated yet
+  // (no Min Amt Due on the Monthly entry), we must NOT mark it as paid since the due amount
+  // is unknown and the payment is likely being made before the billing cycle closes.
   ccrAutoMarkMonthlyPaid(cardId, month, bankAcctId) {
     const txnAcct   = (D.txnAccounts || []).find(a => a.id === cardId);
     if (!txnAcct?.ccCardId) return;
@@ -12080,16 +12122,22 @@ Object.assign(BA, {
       .filter(r => r.month === month && r.cardAccountId === cardId)
       .reduce((s, r) => s + (parseFloat(r.amountPaid) || 0), 0);
 
+    // paidFrom in Monthly tab stores the account *name* (a string from D.accounts),
+    // not the account ID — resolve it here so the dropdown shows correctly
+    const bankAcctName = (D.txnAccounts || []).find(a => a.id === bankAcctId)?.name || null;
+
     const findEntry = ym => (D.cycles[ym]?.payments || []).find(p => p.templateId === linkedTpl.id);
-    const markPaid  = p  => { p.isPaid = true; p.paidDate = centralToday(); p.amountPaid = totalPaid; if (bankAcctId) p.paidFrom = bankAcctId; };
+    const hasAmtDue = p  => p && (+p.amountDue > 0);
+    const markPaid  = p  => { p.isPaid = true; p.paidDate = centralToday(); p.amountPaid = totalPaid; if (bankAcctName) p.paidFrom = bankAcctName; };
 
     const cur = findEntry(month);
-    if (cur && !cur.isPaid) { markPaid(cur); return; }
+    // Only auto-mark if a Min Amt Due has been set — otherwise statement hasn't been generated yet
+    if (cur && !cur.isPaid && hasAmtDue(cur)) { markPaid(cur); return; }
 
     const [y, m] = month.split('-').map(Number);
     const nextYm = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
     const nxt = findEntry(nextYm);
-    if (nxt && !nxt.isPaid) markPaid(nxt);
+    if (nxt && !nxt.isPaid && hasAmtDue(nxt)) markPaid(nxt);
   },
 
   // Delete one specific payment record by its id
