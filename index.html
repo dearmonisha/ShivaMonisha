@@ -3037,21 +3037,29 @@ function buildFamLedger(pid) {
            </button>`
       : '';
 
-    // ── Faint amber row tint when source was deleted ───────────
+    // ── Row tints: amber = source deleted, teal = reimbursement received ──
+    const _isReimb = !!t.isReimbursement;
+    const _canReimb = t.cr > 0; // only credit entries can be flagged as reimbursement
     const rowStyle = srcDeleted
       ? ' style="background:color-mix(in srgb,var(--warn) 5%,transparent)"'
+      : _isReimb
+        ? ' style="background:color-mix(in srgb,var(--info) 5%,transparent)"'
+        : '';
+    const reimbBadge = _isReimb
+      ? `<span style="display:inline-flex;align-items:center;font-size:.6rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;margin-left:5px" title="Reimbursement received">♻ Reimb</span>`
       : '';
 
     return `<tr${rowStyle}>
       <td><div class="fcell rnum">${total - (startIdx + i)}</div></td>
       <td><div class="fcell">${fmtDateMDY(t.date)}</div></td>
-      <td><div class="fcell truncate" title="${esc(t.description)}">${esc(t.description)||'<span style=color:var(--text3)>—</span>'}${descBadge}</div></td>
+      <td><div class="fcell truncate" title="${esc(t.description)}">${esc(t.description)||'<span style=color:var(--text3)>—</span>'}${descBadge}${reimbBadge}</div></td>
       <td><div class="fcell" style="justify-content:flex-end">${drFmt}</div></td>
       <td><div class="fcell" style="justify-content:flex-end">${crFmt}</div></td>
       <td><div class="fcell" style="justify-content:flex-end"><span class="${bCls}">${fmtCurrency(rowBal)||'$0.00'}</span></div></td>
       <td><div class="fcell truncate" title="${esc(t.notes)}" style="color:var(--text2);font-size:12px">${esc(t.notes)||''}</div></td>
       <td><div class="ract">
         ${txnLinkBtn}
+        ${_canReimb ? `<button class="ibtn" title="${_isReimb?'Remove reimbursement flag':'Mark as reimbursement received — offsets pending balance'}" onclick="BA.famToggleReimbursement('${pid}','${t.id}')" style="color:${_isReimb?'var(--info)':'var(--text3)'};font-weight:${_isReimb?'700':'400'}">♻</button>` : ''}
         <button class="ibtn" title="Edit" onclick="editFamTxnModal('${pid}','${t.id}')">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>
         </button>
@@ -5387,6 +5395,30 @@ function getTotalActualIncome(month) {
   return budgetGetIncome(month); // future months: use scheduled estimate
 }
 
+// Reimbursement receipts: sum of ♻-flagged credits from Transactions tab + Family tab ledger
+// upToMonth is inclusive (YYYY-MM); pass null to get all-time total
+function getReimbReceived(upToMonth) {
+  const inMonth = m => !upToMonth || m.slice(0,7) <= upToMonth;
+  const txnTotal = (D.transactions||[])
+    .filter(t => t.isReimbursement && t.date && inMonth(t.date))
+    .reduce((s,t) => s + (parseFloat(t.credit)||0), 0);
+  const famTotal = Object.values((D.familyAccounts?.ledgers)||{})
+    .flat()
+    .filter(e => e.isReimbursement && e.date && inMonth(e.date))
+    .reduce((s,e) => s + (parseFloat(e.cr)||0), 0);
+  return txnTotal + famTotal;
+}
+function getReimbReceivedForMonth(month) {
+  const txnTotal = (D.transactions||[])
+    .filter(t => t.isReimbursement && t.date && t.date.slice(0,7) === month)
+    .reduce((s,t) => s + (parseFloat(t.credit)||0), 0);
+  const famTotal = Object.values((D.familyAccounts?.ledgers)||{})
+    .flat()
+    .filter(e => e.isReimbursement && e.date && e.date.slice(0,7) === month)
+    .reduce((s,e) => s + (parseFloat(e.cr)||0), 0);
+  return txnTotal + famTotal;
+}
+
 function budgetGetPlan(catId, month) {
   const p = (D.budget.plans || []).find(p => p.categoryId===catId && p.month===month);
   return p ? parseFloat(p.amount)||0 : 0;
@@ -5784,7 +5816,14 @@ function renderBudgetKpis(month) {
          usedPct !== null ? `${usedPct}% spent` : 'No budget set') +
     card('🧾','Actual Spent', fmtC(actualSpent),
          actualSpent > totalBudgeted && totalBudgeted > 0 ? red : amber,
-         reimbSpent > 0 ? `<span style="color:var(--info)">+ ${fmtC(reimbSpent)} ♻ reimbursable</span>` : '') +
+         (() => {
+           if (!reimbSpent) return '';
+           const reimbRcvd = getReimbReceived(month);
+           const netPend   = Math.max(0, reimbSpent - reimbRcvd);
+           return netPend > 0
+             ? `<span style="color:var(--info)">+ ${fmtC(reimbSpent)} ♻ · ${fmtC(netPend)} still pending</span>`
+             : `<span style="color:var(--ok)">♻ ${fmtC(reimbSpent)} · fully reimbursed ✓</span>`;
+         })()) +
     splitCard('📊','Net In Hand',
       fmtC(plannedNet), plannedNet >= 0 ? green : red,
       fmtC(actualNet),  actualNet  >= 0 ? green : red) +
@@ -6346,16 +6385,25 @@ function renderBudgetTable(month) {
         <span class="btable-pct" style="color:${grandBar}">${grandPctLbl}</span>`:''}</td>
       <td></td>
     </tr>
-    ${grandReimbSpent > 0 && !_filterOver ? `
+    ${grandReimbSpent > 0 && !_filterOver ? (() => {
+      const _reimbRcvd  = getReimbReceived(month);
+      const _netPending = Math.max(0, grandReimbSpent - _reimbRcvd);
+      const _pendingLabel = _netPending > 0
+        ? `<span style="color:var(--info);font-weight:700">${fmtC(_netPending)} still pending</span>`
+        : `<span style="color:var(--ok);font-weight:700">✓ Fully reimbursed</span>`;
+      return `
     <tr style="background:color-mix(in srgb,var(--info) 4%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
       <td></td>
       <td class="btable-name" colspan="2" style="font-size:.75rem;color:var(--info);padding-left:18px">
         <span style="font-weight:600">♻ Reimbursable</span>
-        <span style="opacity:.7;font-weight:400"> — excluded from totals above (others will repay you)</span>
+        <span style="opacity:.7;font-weight:400"> — excluded from totals (others repay you)</span>
       </td>
       <td class="btable-num" style="color:var(--info);font-size:.8rem">${fmtC(grandReimbSpent)}</td>
-      <td colspan="3"></td>
-    </tr>` : ''}
+      <td class="btable-num" style="color:var(--ok);font-size:.8rem">${_reimbRcvd > 0 ? fmtC(Math.min(_reimbRcvd, grandReimbSpent)) : '—'}</td>
+      <td colspan="1" style="font-size:.73rem;padding:0 8px">${_pendingLabel}</td>
+      <td colspan="1"></td>
+    </tr>`;
+    })() : ''}
     ${!_filterOver ? `<tr id="btable-add-group-row" style="background:var(--surface2)">
       <td colspan="7" style="padding:7px 10px">
         <button class="btn btn-ghost btn-xs" onclick="BA.startInlineAddGroup()" style="color:var(--text3);font-size:.75rem">＋ Add group</button>
@@ -6659,27 +6707,34 @@ function renderCCRepaySection(month) {
   const histMonths = [...new Set((D.budget.ccRepayments||[]).map(r=>r.month))].sort().reverse();
   const histCards = ccAccounts.map(card => {
     const mData = histMonths.map(m => {
-      const charged      = computeCCChargesForMonth(card.id, m);
-      const reimbCharged = computeCCReimbChargesForMonth(card.id, m);
-      const trueCharged  = Math.max(0, charged - reimbCharged); // your own spend only
-      const paid         = (D.budget.ccRepayments||[])
+      const charged        = computeCCChargesForMonth(card.id, m);
+      const reimbCharged   = computeCCReimbChargesForMonth(card.id, m);
+      const trueCharged    = Math.max(0, charged - reimbCharged); // your own spend only
+      const paid           = (D.budget.ccRepayments||[])
         .filter(r => r.cardAccountId === card.id && r.month === m)
         .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
+      // Reimbursements received this month (from Transactions + Family tabs)
+      const reimbReceived  = getReimbReceivedForMonth(m);
       // True cap = your own spend vs payment (reimbursable excluded)
       // net can be negative when overpaying — reduces running balance
       const cap = Math.max(0, trueCharged - paid);
       const net = trueCharged - paid;
-      return { m, charged, reimbCharged, trueCharged, paid, cap, net };
+      return { m, charged, reimbCharged, trueCharged, paid, reimbReceived, cap, net };
     }).filter(d => d.charged > 0 || d.paid > 0);
     // totalCap = net outstanding balance on your OWN spend only
-    const totalCap   = Math.max(0, mData.reduce((s,d) => s + d.net, 0));
-    // totalReimb = informational total of reimbursable charges across all history months
-    const totalReimb = mData.reduce((s,d) => s + d.reimbCharged, 0);
-    return { card, mData, totalCap, totalReimb };
+    const totalCap      = Math.max(0, mData.reduce((s,d) => s + d.net, 0));
+    // totalReimb = gross reimbursable charges accumulated across all months
+    const totalReimbCharged = mData.reduce((s,d) => s + d.reimbCharged, 0);
+    // totalReimbReceived = total reimbursements received across all history months
+    const totalReimbReceived = mData.reduce((s,d) => s + d.reimbReceived, 0);
+    // netPendingReimb = what's still outstanding after accounting for repayments
+    const netPendingReimb = Math.max(0, totalReimbCharged - totalReimbReceived);
+    return { card, mData, totalCap, totalReimb: totalReimbCharged, totalReimbReceived, netPendingReimb };
   }).filter(c => c.mData.length > 0);
 
-  const totalCapAll   = histCards.reduce((s,c) => s + c.totalCap, 0);
-  const totalReimbAll = histCards.reduce((s,c) => s + c.totalReimb, 0);
+  const totalCapAll        = histCards.reduce((s,c) => s + c.totalCap, 0);
+  const totalReimbAll      = histCards.reduce((s,c) => s + c.totalReimb, 0);
+  const netPendingReimbAll = histCards.reduce((s,c) => s + c.netPendingReimb, 0);
 
   let histHTML = '';
   if (histCards.length) {
@@ -6692,13 +6747,18 @@ function renderCCRepaySection(month) {
       }
     });
 
-    const cardTables = histCards.map(({ card, mData, totalCap, totalReimb }) => {
+    const cardTables = histCards.map(({ card, mData, totalCap, totalReimb, totalReimbReceived, netPendingReimb }) => {
       const cardCollapsed  = UI._ccrCardCollapsed[card.id];
       const hasReimb       = totalReimb > 0;
       const statusColor    = totalCap > 0 ? 'var(--warn)' : 'var(--ok)';
+      const reimbStatus    = hasReimb
+        ? netPendingReimb > 0
+          ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(netPendingReimb)} still pending</span>`
+          : `<span style="color:var(--ok);font-size:.7rem;margin-left:8px">♻ Fully reimbursed ✓</span>`
+        : '';
       const statusLabel    = totalCap > 0
-        ? `<span style="font-weight:700">True cap: ${fmtCurrency(totalCap)}</span>${hasReimb ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(totalReimb)} pending reimb.</span>` : ''}`
-        : `<span>All fully paid ✓</span>${hasReimb ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(totalReimb)} pending reimb.</span>` : ''}`;
+        ? `<span style="font-weight:700">True cap: ${fmtCurrency(totalCap)}</span>${reimbStatus}`
+        : `<span>All fully paid ✓</span>${reimbStatus}`;
 
       // Only build table rows when expanded
       let tableHTML = '';
@@ -6716,7 +6776,8 @@ function renderCCRepaySection(month) {
         const rows = mData.map((d, i) => {
           const cumCap = cumCaps[i];
           const reimbCell = hasReimb
-            ? `<td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--info)">${d.reimbCharged > 0 ? fmtCurrency(d.reimbCharged) : '—'}</td>`
+            ? `<td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--info)">${d.reimbCharged > 0 ? fmtCurrency(d.reimbCharged) : '—'}</td>
+               <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--ok)">${d.reimbReceived > 0 ? fmtCurrency(d.reimbReceived) : '—'}</td>`
             : '';
           return `<tr${d.reimbCharged > 0 ? ' style="background:color-mix(in srgb,var(--info) 3%,transparent)"' : ''}>
             <td style="padding:5px 10px;font-size:.75rem;color:var(--text3)">${bFmtMonth(d.m)}</td>
@@ -6729,13 +6790,16 @@ function renderCCRepaySection(month) {
         }).join('');
 
         const reimbHeader = hasReimb
-          ? `<th style="${thStyleR}">♻ Reimb</th>`
+          ? `<th style="${thStyleR}">♻ Charged</th><th style="${thStyleR}">♻ Received</th>`
           : '';
         const reimbFooter = hasReimb
           ? `<tr style="background:color-mix(in srgb,var(--info) 6%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
-               <td style="padding:5px 10px;font-size:.72rem;color:var(--info);font-style:italic" colspan="2">♻ Pending reimbursement (not your spend)</td>
+               <td style="padding:5px 10px;font-size:.72rem;color:var(--info);font-style:italic">♻ Reimbursable (others repay you)</td>
                <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:700;color:var(--info)">${fmtCurrency(totalReimb)}</td>
-               <td colspan="3"></td>
+               <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:700;color:var(--ok)">${totalReimbReceived > 0 ? fmtCurrency(totalReimbReceived) : '—'}</td>
+               <td colspan="3" style="padding:5px 10px;font-size:.72rem;color:${netPendingReimb > 0 ? 'var(--info)' : 'var(--ok)'};font-weight:700">
+                 ${netPendingReimb > 0 ? `${fmtCurrency(netPendingReimb)} still pending` : '✓ Fully reimbursed'}
+               </td>
              </tr>`
           : '';
 
@@ -6781,7 +6845,11 @@ function renderCCRepaySection(month) {
             <span style="font-size:.75rem;color:${totalCapAll>0?'var(--warn)':'var(--ok)'}">
               ${totalCapAll > 0 ? `${fmtCurrency(totalCapAll)} true cap across all cards` : 'All months fully paid ✓'}
             </span>
-            ${totalReimbAll > 0 ? `<span style="font-size:.72rem;color:var(--info)">♻ ${fmtCurrency(totalReimbAll)} pending reimbursement</span>` : ''}
+            ${totalReimbAll > 0
+              ? netPendingReimbAll > 0
+                ? `<span style="font-size:.72rem;color:var(--info)">♻ ${fmtCurrency(netPendingReimbAll)} still pending reimbursement</span>`
+                : `<span style="font-size:.72rem;color:var(--ok)">♻ Fully reimbursed ✓</span>`
+              : ''}
           </div>
         </div>
         ${histCollapsed ? '' : `<div style="padding:14px 16px">${cardTables}</div>`}
@@ -6975,9 +7043,16 @@ function renderAnnual() {
   });
 
   const annNetBud = incActTotal - grandBudTotal, annNetAct = incActTotal - grandActTotal;
+  const _annReimbRcvd   = grandReimbTotal > 0 ? getReimbReceived(`${year}-12`) : 0;
+  const _annNetPending  = Math.max(0, grandReimbTotal - _annReimbRcvd);
   const reimbRow = grandReimbTotal > 0 ? `
     <tr style="background:color-mix(in srgb,var(--info) 4%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
-      <td class="ann-label" style="color:var(--info);font-size:.78rem">♻ Reimbursable (excl.)</td>
+      <td class="ann-label" style="color:var(--info);font-size:.78rem">
+        ♻ Reimbursable (excl.)
+        <span style="font-size:.68rem;opacity:.75;display:block;margin-top:1px">
+          ${_annNetPending > 0 ? `${fmtC(_annNetPending)} still pending` : '✓ Fully reimbursed'}
+        </span>
+      </td>
       ${reimbCells.join('')}
       <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
       <td class="ann-num ann-total-col ann-act-col" style="color:var(--info)">${fAct(grandReimbTotal)}</td>
@@ -8897,6 +8972,33 @@ const BA = {
     dirty(); renderBudget();
   },
 
+  txnToggleReimbursement(txnId) {
+    const t = (D.transactions||[]).find(t => t.id === txnId);
+    if (!t) return;
+    t.isReimbursement = !t.isReimbursement;
+    dirty();
+    toast(t.isReimbursement
+      ? '♻ Marked as reimbursement received — offsets pending balance'
+      : 'Reimbursement flag removed', t.isReimbursement ? 'ok' : 'info');
+    renderTxnRight();
+    // Refresh budget views if open
+    if (UI.view === 'budget') renderBudget();
+    if (UI.view === 'annual') renderAnnual();
+  },
+
+  famToggleReimbursement(pid, tid) {
+    const entry = famLedger(pid).find(e => e.id === tid);
+    if (!entry) return;
+    entry.isReimbursement = !entry.isReimbursement;
+    dirty();
+    toast(entry.isReimbursement
+      ? '♻ Marked as reimbursement received — offsets pending balance'
+      : 'Reimbursement flag removed', entry.isReimbursement ? 'ok' : 'info');
+    renderFamily();
+    if (UI.view === 'budget') renderBudget();
+    if (UI.view === 'annual') renderAnnual();
+  },
+
   toggleCatReimbursable(catId) {
     const cat = (D.budget.categories||[]).find(c => c.id === catId);
     if (!cat) return;
@@ -10523,12 +10625,19 @@ function renderTxnRight() {
     const _isHl  = UI.txnHighlightRow === t.id;
     const _famPerson = t.familyMemberId ? famPersons().find(p => p.id === t.familyMemberId) : null;
     const _famBadge  = _famPerson ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.67rem;font-weight:600;padding:1px 6px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:99px;margin-left:4px;cursor:pointer;white-space:nowrap" onclick="BA.txnNavToLinkedFamily('${t.familyMemberId}')" title="Family: ${esc(_famPerson.name)} — click to view in Family tab">👤 ${esc(_famPerson.name)}</span>` : '';
+    // ♻ Reimbursement flag — only relevant on credit (incoming) transactions on non-CC accounts
+    const _canReimb = t.credit > 0 && !t.isTransfer && !isCC;
+    const _isReimb  = !!t.isReimbursement;
+    const _reimbBadge = _isReimb
+      ? `<span style="display:inline-flex;align-items:center;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;margin-left:5px;white-space:nowrap" title="Reimbursement received — offsets pending balance">♻ Reimb</span>`
+      : '';
+    const _rowTint = _isReimb ? 'background:color-mix(in srgb,var(--info) 5%,transparent);' : '';
     return `
-      <tr data-txn-id="${t.id}" ondblclick="BA.txnStartEdit('${t.id}')" style="${_isHl?'background:color-mix(in srgb,var(--primary) 12%,transparent);outline:2px solid var(--primary);outline-offset:-2px;':_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
+      <tr data-txn-id="${t.id}" ondblclick="BA.txnStartEdit('${t.id}')" style="${_rowTint}${_isHl?'background:color-mix(in srgb,var(--primary) 12%,transparent);outline:2px solid var(--primary);outline-offset:-2px;':_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
         <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
         <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')}">${esc(t.payee||'')}</td>
-        <td>${catCellContent}${_famBadge}</td>
+        <td>${catCellContent}${_famBadge}${_reimbBadge}</td>
         <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;font-size:.75rem;color:var(--text3)" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
         <td class="r">${debitTd}</td>
         <td class="r">${creditTd}</td>
@@ -10540,6 +10649,7 @@ function renderTxnRight() {
           <span class="txn-flag ${t.flag||'none'}" style="${t.flag&&TXN_FLAG_COLORS[t.flag]?'background:'+TXN_FLAG_COLORS[t.flag]+';border-color:'+TXN_FLAG_COLORS[t.flag]:''}" onclick="BA.txnFlagPicker('${t.id}',this)" title="${t.flag?'Flagged: '+t.flag+' — click to change':'Click to flag'}"></span>
         </td>
         <td style="white-space:nowrap">
+          ${_canReimb ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnToggleReimbursement('${t.id}')" title="${_isReimb?'Remove reimbursement flag':'Mark as reimbursement received — offsets pending balance'}" style="color:${_isReimb?'var(--info)':'var(--text3)'};font-weight:${_isReimb?'700':'400'}">♻</button>` : ''}
           <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnStartEdit('${t.id}')" title="Edit (or double-click row)">✎</button>
           ${!t.isTransfer ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnMoveModal('${t.id}')" title="Move to another account" style="color:var(--primary)">➤</button>` : ''}
           <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="BA.txnDelete('${t.id}')">✕</button>
