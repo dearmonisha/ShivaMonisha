@@ -3367,56 +3367,69 @@ async function exportBudgetToExcel() {
   // ── EXPENSES ─────────────────────────────────────────────
   rows.push(['EXPENSES']);
 
-  // Track monthly expense totals for Total Expenses and Net rows
-  const mTotBud = months.map(() => 0);
-  const mTotAct = months.map(() => 0);
-  let fyTotBud = 0, fyTotAct = 0;
+  // Track monthly expense totals for Total Expenses and Net rows (reimbursable excluded)
+  const mTotBud     = months.map(() => 0);
+  const mTotAct     = months.map(() => 0);
+  const mReimbAct   = months.map(() => 0); // reimbursable actuals — informational only
+  let fyTotBud = 0, fyTotAct = 0, fyReimbAct = 0;
 
   for (const g of groups) {
-    const gCats = cats.filter(c => c.groupId === g.id);
+    const gCats     = cats.filter(c => c.groupId === g.id);
+    const gNonReim  = gCats.filter(c => !c.reimbursable);
+    const gReimb    = gCats.filter(c =>  c.reimbursable);
     if (!gCats.length) continue;
     const hasAny = gCats.some(c => months.some(m =>
       budgetGetAdjustedPlan(c.id,m)>0 || budgetGetCatActuals(c.id,m)>0));
     if (!hasAny) continue;
 
-    // Group subtotal row (bold label style with no indent)
+    // Group subtotal row — only non-reimbursable cats
     const gRow = buildRow(
       g.name,
-      m => r2(gCats.reduce((s,c)=>s+budgetGetAdjustedPlan(c.id,m),0)),
-      m => r2(gCats.reduce((s,c)=>s+budgetGetCatActuals(c.id,m),0))
+      m => r2(gNonReim.reduce((s,c)=>s+budgetGetAdjustedPlan(c.id,m),0)),
+      m => r2(gNonReim.reduce((s,c)=>s+budgetGetCatActuals(c.id,m),0))
     );
     rows.push(gRow);
 
-    // Accumulate totals
+    // Accumulate totals (non-reimbursable only)
     months.forEach((m,i) => {
-      const b = r2(gCats.reduce((s,c)=>s+budgetGetAdjustedPlan(c.id,m),0));
-      const a = r2(gCats.reduce((s,c)=>s+budgetGetCatActuals(c.id,m),0));
+      const b = r2(gNonReim.reduce((s,c)=>s+budgetGetAdjustedPlan(c.id,m),0));
+      const a = r2(gNonReim.reduce((s,c)=>s+budgetGetCatActuals(c.id,m),0));
       mTotBud[i]+=b; mTotAct[i]+=a;
+      mReimbAct[i] += r2(gReimb.reduce((s,c)=>s+budgetGetCatActuals(c.id,m),0));
     });
-    fyTotBud += r2(gRow[gRow.length-3]);
-    fyTotAct += r2(gRow[gRow.length-2]);
+    fyTotBud  += r2(gRow[gRow.length-3]);
+    fyTotAct  += r2(gRow[gRow.length-2]);
+    fyReimbAct += r2(gReimb.reduce((s,c) => s + months.reduce((ms,m) => ms+budgetGetCatActuals(c.id,m),0), 0));
 
-    // Category rows (indented)
+    // Category rows (indented) — reimbursable cats labelled with ♻
     for (const c of gCats) {
       const hasData = months.some(m =>
         budgetGetAdjustedPlan(c.id,m)>0 || budgetGetCatActuals(c.id,m)>0);
       if (!hasData) continue;
       rows.push(buildRow(
-        `  ${c.name}`,
-        m => budgetGetAdjustedPlan(c.id,m),
+        `  ${c.reimbursable ? '♻ ' : ''}${c.name}${c.reimbursable ? ' (reimbursable)' : ''}`,
+        m => c.reimbursable ? 0 : budgetGetAdjustedPlan(c.id,m),
         m => budgetGetCatActuals(c.id,m)
       ));
     }
     rows.push([]); // blank between groups
   }
 
-  // Total Expenses row
-  const totExpRow = ['Total Expenses'];
+  // Total Expenses row (reimbursable excluded)
+  const totExpRow = ['Total Expenses (excl. reimbursable)'];
   months.forEach((_,i) => totExpRow.push(r2(mTotBud[i]), r2(mTotAct[i]), r2(mTotBud[i]-mTotAct[i])));
   totExpRow.push(r2(fyTotBud), r2(fyTotAct), r2(fyTotBud-fyTotAct));
   rows.push(totExpRow);
 
-  // Net Savings row
+  // Reimbursable row (informational)
+  if (fyReimbAct > 0) {
+    const reimbRow = ['♻ Reimbursable (excl. from totals)'];
+    months.forEach((_,i) => reimbRow.push('', r2(mReimbAct[i]), ''));
+    reimbRow.push('', r2(fyReimbAct), '');
+    rows.push(reimbRow);
+  }
+
+  // Net Savings row (reimbursable already excluded from mTotAct)
   const netRow = ['Net Savings'];
   months.forEach((m,i) => {
     const incB = r2(budgetGetIncome(m)), incA = r2(getTotalActualIncome(m));
@@ -6424,6 +6437,26 @@ function computeCCChargesForMonth(cardAccountId, month) {
   }, 0);
 }
 
+function computeCCReimbChargesForMonth(cardAccountId, month) {
+  // Same filters as computeCCChargesForMonth but only for reimbursable categories
+  const reimbIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
+  if (!reimbIds.size) return 0;
+  return (D.transactions || []).filter(t => {
+    if (t.accountId !== cardAccountId) return false;
+    if (!t.date || t.date.slice(0, 7) !== month) return false;
+    if (t.status === 'pending' || t.status === 'rejected') return false;
+    if (t.isTransfer) return false;
+    if (t.splits && t.splits.length > 0) return t.splits.some(s => reimbIds.has(s.categoryId));
+    return reimbIds.has(t.categoryId);
+  }).reduce((sum, t) => {
+    if (t.splits && t.splits.length > 0) {
+      return sum + t.splits.filter(s => reimbIds.has(s.categoryId))
+                           .reduce((ss, s) => ss + (parseFloat(s.amount) || 0), 0);
+    }
+    return sum + (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+  }, 0);
+}
+
 function renderCCRepaySection(month) {
   const wrap = id('ccRepayWrap');
   if (!wrap) return;
@@ -6613,23 +6646,27 @@ function renderCCRepaySection(month) {
   const histMonths = [...new Set((D.budget.ccRepayments||[]).map(r=>r.month))].sort().reverse();
   const histCards = ccAccounts.map(card => {
     const mData = histMonths.map(m => {
-      const charged = computeCCChargesForMonth(card.id, m);
-      const paid    = (D.budget.ccRepayments||[])
+      const charged      = computeCCChargesForMonth(card.id, m);
+      const reimbCharged = computeCCReimbChargesForMonth(card.id, m);
+      const trueCharged  = Math.max(0, charged - reimbCharged); // your own spend only
+      const paid         = (D.budget.ccRepayments||[])
         .filter(r => r.cardAccountId === card.id && r.month === m)
         .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
-      // cap = new debt added this month (floored at 0 — overpayment doesn't show as negative cap)
-      // net = charged - paid (can be negative when overpaying — used to reduce running balance)
-      const cap = Math.max(0, charged - paid);
-      const net = charged - paid;
-      return { m, charged, paid, cap, net };
+      // True cap = your own spend vs payment (reimbursable excluded)
+      // net can be negative when overpaying — reduces running balance
+      const cap = Math.max(0, trueCharged - paid);
+      const net = trueCharged - paid;
+      return { m, charged, reimbCharged, trueCharged, paid, cap, net };
     }).filter(d => d.charged > 0 || d.paid > 0);
-    // totalCap = net outstanding balance = sum of all net values floored at 0
-    // (overpayments in any month correctly reduce the accumulated balance)
-    const totalCap = Math.max(0, mData.reduce((s,d) => s + d.net, 0));
-    return { card, mData, totalCap };
+    // totalCap = net outstanding balance on your OWN spend only
+    const totalCap   = Math.max(0, mData.reduce((s,d) => s + d.net, 0));
+    // totalReimb = informational total of reimbursable charges across all history months
+    const totalReimb = mData.reduce((s,d) => s + d.reimbCharged, 0);
+    return { card, mData, totalCap, totalReimb };
   }).filter(c => c.mData.length > 0);
 
-  const totalCapAll = histCards.reduce((s,c) => s + c.totalCap, 0);
+  const totalCapAll   = histCards.reduce((s,c) => s + c.totalCap, 0);
+  const totalReimbAll = histCards.reduce((s,c) => s + c.totalReimb, 0);
 
   let histHTML = '';
   if (histCards.length) {
@@ -6642,47 +6679,65 @@ function renderCCRepaySection(month) {
       }
     });
 
-    const cardTables = histCards.map(({ card, mData, totalCap }) => {
-      const cardCollapsed = UI._ccrCardCollapsed[card.id];
-      const statusColor   = totalCap > 0 ? 'var(--warn)' : 'var(--ok)';
-      const statusLabel   = totalCap > 0
-        ? `<span style="font-weight:700">Outstanding: ${fmtCurrency(totalCap)}</span>`
-        : `<span>All fully paid ✓</span>`;
+    const cardTables = histCards.map(({ card, mData, totalCap, totalReimb }) => {
+      const cardCollapsed  = UI._ccrCardCollapsed[card.id];
+      const hasReimb       = totalReimb > 0;
+      const statusColor    = totalCap > 0 ? 'var(--warn)' : 'var(--ok)';
+      const statusLabel    = totalCap > 0
+        ? `<span style="font-weight:700">True cap: ${fmtCurrency(totalCap)}</span>${hasReimb ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(totalReimb)} pending reimb.</span>` : ''}`
+        : `<span>All fully paid ✓</span>${hasReimb ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(totalReimb)} pending reimb.</span>` : ''}`;
 
       // Only build table rows when expanded
       let tableHTML = '';
       if (!cardCollapsed) {
         // mData is newest-first. Compute running cumulative oldest→newest so overpayments
         // correctly reduce the accumulated balance, then store results indexed to mData.
+        // Cumulative is based on trueCharged only — reimbursable is excluded.
         const cumCaps = [];
         let runCum = 0;
         [...mData].reverse().forEach(d => {
-          runCum = Math.max(0, runCum + d.net); // net can be negative (overpayment)
+          runCum = Math.max(0, runCum + d.net); // net = trueCharged - paid (can be negative)
           cumCaps.unshift(runCum);              // prepend so index aligns with mData
         });
 
         const rows = mData.map((d, i) => {
           const cumCap = cumCaps[i];
-          return `<tr>
+          const reimbCell = hasReimb
+            ? `<td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--info)">${d.reimbCharged > 0 ? fmtCurrency(d.reimbCharged) : '—'}</td>`
+            : '';
+          return `<tr${d.reimbCharged > 0 ? ' style="background:color-mix(in srgb,var(--info) 3%,transparent)"' : ''}>
             <td style="padding:5px 10px;font-size:.75rem;color:var(--text3)">${bFmtMonth(d.m)}</td>
-            <td style="padding:5px 10px;text-align:right;font-size:.75rem">${fmtCurrency(d.charged)}</td>
+            <td style="padding:5px 10px;text-align:right;font-size:.75rem">${fmtCurrency(d.trueCharged)}</td>
+            ${reimbCell}
             <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--ok)">${d.paid > 0 ? fmtCurrency(d.paid) : '—'}</td>
             <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:600;color:${d.cap>0?'var(--warn)':'var(--ok)'}">${d.cap > 0 ? fmtCurrency(d.cap) : '—'}</td>
             <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:${cumCap>0?'var(--warn)':'var(--ok)'}">${fmtCurrency(cumCap)}</td>
           </tr>`;
         }).join('');
 
+        const reimbHeader = hasReimb
+          ? `<th style="${thStyleR}">♻ Reimb</th>`
+          : '';
+        const reimbFooter = hasReimb
+          ? `<tr style="background:color-mix(in srgb,var(--info) 6%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
+               <td style="padding:5px 10px;font-size:.72rem;color:var(--info);font-style:italic" colspan="2">♻ Pending reimbursement (not your spend)</td>
+               <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:700;color:var(--info)">${fmtCurrency(totalReimb)}</td>
+               <td colspan="3"></td>
+             </tr>`
+          : '';
+
         tableHTML = `
           <div style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--r) var(--r);overflow:hidden">
             <table style="width:100%;border-collapse:collapse">
               <thead><tr style="background:var(--surface2)">
                 <th style="${thStyle}">Month</th>
-                <th style="${thStyleR}">Charged</th>
+                <th style="${thStyleR}">Your Spend</th>
+                ${reimbHeader}
                 <th style="${thStyleR}">Paid</th>
-                <th style="${thStyleR}">↑ Capitalised</th>
+                <th style="${thStyleR}">↑ True Cap</th>
                 <th style="${thStyleR}">Cumulative</th>
               </tr></thead>
-              <tbody>${rows}</tbody>
+              <tbody>${rows}${reimbFooter}</tbody>
             </table>
           </div>`;
       }
@@ -6709,8 +6764,11 @@ function renderCCRepaySection(month) {
           <div style="font-size:.85rem;font-weight:700;color:var(--text)">
             ${histCollapsed ? '▶' : '▼'} ↑ Capitalised History
           </div>
-          <div style="font-size:.75rem;color:${totalCapAll>0?'var(--warn)':'var(--ok)'}">
-            ${totalCapAll > 0 ? `${fmtCurrency(totalCapAll)} accumulated across all cards` : 'All months fully paid ✓'}
+          <div style="display:flex;gap:12px;align-items:center">
+            <span style="font-size:.75rem;color:${totalCapAll>0?'var(--warn)':'var(--ok)'}">
+              ${totalCapAll > 0 ? `${fmtCurrency(totalCapAll)} true cap across all cards` : 'All months fully paid ✓'}
+            </span>
+            ${totalReimbAll > 0 ? `<span style="font-size:.72rem;color:var(--info)">♻ ${fmtCurrency(totalReimbAll)} pending reimbursement</span>` : ''}
           </div>
         </div>
         ${histCollapsed ? '' : `<div style="padding:14px 16px">${cardTables}</div>`}
@@ -6825,9 +6883,10 @@ function renderAnnual() {
          + `<td class="ann-num ann-act-col${f?' ann-future':''}">${f&&v===0?z():fAct(v)}</td>`;
   }).join('');
 
-  const mBudTotals = new Array(12).fill(0);
-  const mActTotals = new Array(12).fill(0);
-  let grandBudTotal = 0, grandActTotal = 0, expenseRows = '';
+  const mBudTotals    = new Array(12).fill(0);
+  const mActTotals    = new Array(12).fill(0);
+  const mReimbTotals  = new Array(12).fill(0); // reimbursable actuals — excluded from main totals
+  let grandBudTotal = 0, grandActTotal = 0, grandReimbTotal = 0, expenseRows = '';
 
   for (const group of groups) {
     const gcats = cats.filter(c => c.groupId===group.id);
@@ -6835,23 +6894,31 @@ function renderAnnual() {
     let gBudTot = 0, gActTot = 0, catRowsHtml = '';
 
     for (const cat of gcats) {
+      const isReimb = !!cat.reimbursable;
       let cBud = 0, cAct = 0;
       const cells = MONTHS.map((_,i) => {
         const bud = getBudget(cat.id, ym(i));
         const act = getActual(cat.id, ym(i));
         cBud += bud; cAct += act;
-        gBudM[i] += bud; gActM[i] += act;
+        if (!isReimb) {
+          gBudM[i] += bud; gActM[i] += act;
+        } else {
+          mReimbTotals[i] += act; // track reimbursable separately
+        }
         const f = isFuture(i);
-        return `<td class="ann-num ann-bud-col${f?' ann-future':''}">${fBud(bud)}</td>`
+        return `<td class="ann-num ann-bud-col${f?' ann-future':''}">${isReimb ? `<span class="ann-zero">♻</span>` : fBud(bud)}</td>`
              + `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`;
       }).join('');
-      gBudTot += cBud; gActTot += cAct;
+      if (!isReimb) { gBudTot += cBud; gActTot += cAct; }
+      else          { grandReimbTotal += cAct; }
       catRowsHtml += `
-        <tr class="ann-row-cat">
-          <td class="ann-label ann-indent">${esc(cat.name)}</td>
+        <tr class="ann-row-cat"${isReimb ? ' style="background:color-mix(in srgb,var(--info) 4%,transparent);opacity:.85"' : ''}>
+          <td class="ann-label ann-indent" style="${isReimb ? 'color:var(--info)' : ''}">
+            ${isReimb ? '<span style="font-size:.65rem;font-weight:700;margin-right:4px">♻</span>' : ''}${esc(cat.name)}
+          </td>
           ${cells}
-          <td class="ann-num ann-total-col ann-bud-col">${fBud(cBud)}</td>
-          <td class="ann-num ann-total-col ann-act-col">${fAct(cAct)}</td>
+          <td class="ann-num ann-total-col ann-bud-col">${isReimb ? `<span class="ann-zero">♻</span>` : fBud(cBud)}</td>
+          <td class="ann-num ann-total-col ann-act-col" style="${isReimb ? 'color:var(--info)' : ''}">${fAct(cAct)}</td>
         </tr>`;
     }
 
@@ -6879,18 +6946,29 @@ function renderAnnual() {
   }
 
   let cumulBud = 0, cumulAct = 0;
-  const expTotCells = [], netCells = [], cumulCells = [];
+  const expTotCells = [], reimbCells = [], netCells = [], cumulCells = [];
   MONTHS.forEach((_,i) => {
-    const inc = getIncome(ym(i)), bud = mBudTotals[i], act = mActTotals[i];
+    const inc   = getIncome(ym(i));
+    const bud   = mBudTotals[i];   // excludes reimbursable
+    const act   = mActTotals[i];   // excludes reimbursable
+    const reimb = mReimbTotals[i]; // reimbursable actuals only
     const netBud = inc - bud, netAct = inc - act;
     cumulBud += netBud; cumulAct += netAct;
     const f = isFuture(i);
     expTotCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${fBud(bud)}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`);
+    reimbCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${z()}</td><td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--info)">${reimb > 0 ? fAct(reimb) : z()}</td>`);
     netCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${fNet(netBud)}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(netAct)}</td>`);
     cumulCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${fNet(cumulBud)}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(cumulAct)}</td>`);
   });
 
   const annNetBud = incActTotal - grandBudTotal, annNetAct = incActTotal - grandActTotal;
+  const reimbRow = grandReimbTotal > 0 ? `
+    <tr style="background:color-mix(in srgb,var(--info) 4%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
+      <td class="ann-label" style="color:var(--info);font-size:.78rem">♻ Reimbursable (excl.)</td>
+      ${reimbCells.join('')}
+      <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
+      <td class="ann-num ann-total-col ann-act-col" style="color:var(--info)">${fAct(grandReimbTotal)}</td>
+    </tr>` : '';
   const summaryRows = `
     <tr class="ann-row-income">
       <td class="ann-label">💰 Income</td>
@@ -6904,6 +6982,7 @@ function renderAnnual() {
       <td class="ann-num ann-total-col ann-bud-col">${fBud(grandBudTotal)}</td>
       <td class="ann-num ann-total-col ann-act-col">${fAct(grandActTotal)}</td>
     </tr>
+    ${reimbRow}
     <tr class="ann-row-net">
       <td class="ann-label">📊 Net (Income − Exp)</td>
       ${netCells.join('')}
