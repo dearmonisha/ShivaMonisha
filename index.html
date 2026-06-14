@@ -2977,25 +2977,39 @@ function buildFamLedger(pid) {
   let rb = 0;
   txns.forEach(t => { rb += (+t.cr||0) - (+t.dr||0); runBals.push(rb); });
 
-  // Display newest first: reverse the array for presentation only
+  // Map each transaction id → its chronological index so we can look up runBals
+  // after filtering (index arithmetic breaks once items are removed from the list)
+  const chronoIdxMap = {};
+  txns.forEach((t, i) => { chronoIdxMap[t.id] = i; });
+
+  // Active filter: 'all' | 'dr' | 'cr' | 'reimb'
+  const activeFilter = UI.famFilter || 'all';
+
+  // Display newest first, then apply filter
   const total = txns.length;
   const displayTxns = txns.slice().reverse(); // newest first, storage unchanged
+  const filteredTxns = displayTxns.filter(t => {
+    if (activeFilter === 'dr')    return t.dr > 0;
+    if (activeFilter === 'cr')    return t.cr > 0;
+    if (activeFilter === 'reimb') return !!t.isReimbursement;
+    return true; // 'all'
+  });
+  const filteredTotal = filteredTxns.length;
 
-  // Pagination over the reversed display array
+  // Pagination over the filtered array
   const pageSize = UI.famPageSize || 25;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const totalPages = Math.max(1, Math.ceil(filteredTotal / pageSize));
   const page = Math.min(UI.famPage || 0, totalPages - 1);
   const startIdx = page * pageSize;
-  const endIdx = Math.min(startIdx + pageSize, total);
-  const pageTxns = displayTxns.slice(startIdx, endIdx);
+  const endIdx = Math.min(startIdx + pageSize, filteredTotal);
+  const pageTxns = filteredTxns.slice(startIdx, endIdx);
 
   // Build a fast lookup of all existing transaction IDs so we can detect orphaned links
   const _liveTxnIds = new Set((D.transactions||[]).map(tx => tx.id));
 
   const rows = pageTxns.map((t, i) => {
-    // Map display position back to chronological index for the correct running balance
-    const chronoIdx = total - 1 - (startIdx + i);
-    const rowBal = runBals[chronoIdx];
+    // Look up the chronological index via id map (safe after filtering)
+    const rowBal = runBals[chronoIdxMap[t.id]];
     // positive = you owe them (red); negative = they owe you (green)
     const bCls = rowBal > 0.005 ? 'bal-neg' : rowBal < -0.005 ? 'bal-pos' : 'bal-zero';
     const drFmt = t.dr ? `<span class="dr-cell">${fmtCurrency(t.dr)}</span>` : `<span style="color:var(--text3)">—</span>`;
@@ -3054,7 +3068,7 @@ function buildFamLedger(pid) {
       : '';
 
     return `<tr${rowStyle}>
-      <td><div class="fcell rnum">${total - (startIdx + i)}</div></td>
+      <td><div class="fcell rnum">${filteredTotal - (startIdx + i)}</div></td>
       <td><div class="fcell">${fmtDateMDY(t.date)}</div></td>
       <td><div class="fcell truncate" title="${esc(t.description)}">${esc(t.description)||'<span style=color:var(--text3)>—</span>'}${descBadge}${reimbBadge}</div></td>
       <td><div class="fcell" style="justify-content:flex-end">${drFmt}</div></td>
@@ -3074,11 +3088,11 @@ function buildFamLedger(pid) {
     </tr>`;
   }).join('');
 
-  const emptyState = total === 0 ? `
+  const emptyState = filteredTotal === 0 ? `
     <tr><td colspan="8"><div class="empty">
-      <div class="empty-icon">📋</div>
-      <div class="empty-title">No transactions yet</div>
-      <div class="empty-sub">Add the first transaction below</div>
+      <div class="empty-icon">${total === 0 ? '📋' : '🔍'}</div>
+      <div class="empty-title">${total === 0 ? 'No transactions yet' : 'No matching transactions'}</div>
+      <div class="empty-sub">${total === 0 ? 'Add the first transaction below' : 'Try a different filter'}</div>
     </div></td></tr>` : '';
 
   // Page number buttons (show up to 5 around current page)
@@ -3095,13 +3109,47 @@ function buildFamLedger(pid) {
     if (hi < totalPages - 1) pageNums += `<button class="btn btn-sm" onclick="setFamPage(${totalPages-1})">${totalPages}</button>`;
   }
 
-  const pager = total > pageSize ? `
+  const pagerInfo = filteredTotal < total
+    ? `Showing ${filteredTotal === 0 ? 0 : startIdx+1}–${endIdx} of ${filteredTotal} filtered (${total} total)`
+    : `Showing ${filteredTotal === 0 ? 0 : startIdx+1}–${endIdx} of ${total} transactions`;
+
+  const pager = filteredTotal > pageSize ? `
     <div class="fam-pager">
-      <span class="fam-page-info">Showing ${startIdx+1}–${endIdx} of ${total} transactions</span>
+      <span class="fam-page-info">${pagerInfo}</span>
       <button class="btn btn-sm" onclick="setFamPage(${page-1})" ${page===0?'disabled':''}>‹ Prev</button>
       ${pageNums}
       <button class="btn btn-sm" onclick="setFamPage(${page+1})" ${page===totalPages-1?'disabled':''}>Next ›</button>
     </div>` : '';
+
+  // ── Filter pills ────────────────────────────────────────────
+  const famFilterDefs = [
+    { key: 'all',   label: 'All' },
+    { key: 'dr',    label: 'DR only' },
+    { key: 'cr',    label: 'CR only' },
+    { key: 'reimb', label: '♻ Reimbursable' },
+  ];
+  const pillStyle = (key) => {
+    const on = activeFilter === key;
+    return on
+      ? `background:var(--accent);color:#fff;border:1px solid var(--accent);border-radius:20px;padding:3px 12px;font-size:.72rem;font-weight:700;cursor:pointer`
+      : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 12px;font-size:.72rem;font-weight:500;cursor:pointer`;
+  };
+  const filterPills = famFilterDefs.map(f =>
+    `<button onclick="setFamFilter('${f.key}')" style="${pillStyle(f.key)}">${f.label}</button>`
+  ).join('');
+  const filterCount = activeFilter !== 'all'
+    ? `<span style="font-size:.68rem;color:var(--text3);margin-left:4px">${filteredTotal} of ${total}</span>`
+    : '';
+
+  // Page-size pills — right side of filter bar
+  const pageSizeOpts = [25, 50, 100, 250];
+  const pageSizePills = pageSizeOpts.map(n => {
+    const on = pageSize === n;
+    const s = on
+      ? `background:var(--accent);color:#fff;border:1px solid var(--accent);border-radius:20px;padding:3px 10px;font-size:.7rem;font-weight:700;cursor:pointer`
+      : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:.7rem;font-weight:500;cursor:pointer`;
+    return `<button onclick="setFamPageSize(${n})" style="${s}">${n}</button>`;
+  }).join('');
 
   return `<div class="fam-ledger-wrap">
     <div class="fam-ledger-hdr">
@@ -3110,6 +3158,13 @@ function buildFamLedger(pid) {
       <div style="margin-left:auto;display:flex;gap:7px">
         <button class="btn btn-sm" onclick="addFamTxnModal('${pid}')">&#65291; Transaction</button>
         <button class="btn btn-sm btn-danger" onclick="deleteFamPerson('${pid}')">Delete Person</button>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;padding:7px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
+      ${filterPills}${filterCount}
+      <div style="margin-left:auto;display:flex;align-items:center;gap:5px">
+        <span style="font-size:.68rem;color:var(--text3)">Per page:</span>
+        ${pageSizePills}
       </div>
     </div>
     <div class="fam-table-wrap">
@@ -3136,6 +3191,18 @@ function setFamPage(p) {
   const total = famLedger(UI.familyPerson).length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   UI.famPage = Math.max(0, Math.min(p, totalPages - 1));
+  renderFamily();
+}
+
+function setFamFilter(f) {
+  UI.famFilter = f;
+  UI.famPage = 0; // reset to first page whenever filter changes
+  renderFamily();
+}
+
+function setFamPageSize(n) {
+  UI.famPageSize = n;
+  UI.famPage = 0; // reset to first page whenever page size changes
   renderFamily();
 }
 
