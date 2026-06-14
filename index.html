@@ -1009,6 +1009,7 @@ let UI = {
   txnDateFrom:   '',
   txnDateTo:     '',
   txnCatFilter:  '',   // expense type filter for ledger
+  txnReimbFilter: false, // true = show only reimbursable/reimbursement transactions
   reportsMonth:  '',   // selected month for spending breakdown chart
 };
 
@@ -2982,17 +2983,18 @@ function buildFamLedger(pid) {
   const chronoIdxMap = {};
   txns.forEach((t, i) => { chronoIdxMap[t.id] = i; });
 
-  // Active filter: 'all' | 'dr' | 'cr' | 'reimb'
-  const activeFilter = UI.famFilter || 'all';
+  // Two independent filters: DR/CR/All selector + Reimbursable toggle
+  const drCrFilter   = UI.famDrCrFilter  || 'all'; // 'all' | 'dr' | 'cr'
+  const reimbFilter  = !!UI.famReimbFilter;          // true = show only ♻ flagged
 
-  // Display newest first, then apply filter
+  // Display newest first, then apply both filters independently (AND logic)
   const total = txns.length;
   const displayTxns = txns.slice().reverse(); // newest first, storage unchanged
   const filteredTxns = displayTxns.filter(t => {
-    if (activeFilter === 'dr')    return t.dr > 0;
-    if (activeFilter === 'cr')    return t.cr > 0;
-    if (activeFilter === 'reimb') return !!t.isReimbursement;
-    return true; // 'all'
+    if (drCrFilter === 'dr' && !(t.dr > 0)) return false;
+    if (drCrFilter === 'cr' && !(t.cr > 0)) return false;
+    if (reimbFilter && !t.isReimbursement)   return false;
+    return true;
   });
   const filteredTotal = filteredTxns.length;
 
@@ -3122,22 +3124,29 @@ function buildFamLedger(pid) {
     </div>` : '';
 
   // ── Filter pills ────────────────────────────────────────────
-  const famFilterDefs = [
-    { key: 'all',   label: 'All' },
-    { key: 'dr',    label: 'DR only' },
-    { key: 'cr',    label: 'CR only' },
-    { key: 'reimb', label: '♻ Reimbursable' },
+  // DR/CR group: mutually exclusive selector
+  const drCrDefs = [
+    { key: 'all', label: 'All' },
+    { key: 'dr',  label: 'DR only' },
+    { key: 'cr',  label: 'CR only' },
   ];
-  const pillStyle = (key) => {
-    const on = activeFilter === key;
+  const drCrPillStyle = (key) => {
+    const on = drCrFilter === key;
     return on
       ? `background:var(--accent);color:#fff;border:1px solid var(--accent);border-radius:20px;padding:3px 12px;font-size:.72rem;font-weight:700;cursor:pointer`
       : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 12px;font-size:.72rem;font-weight:500;cursor:pointer`;
   };
-  const filterPills = famFilterDefs.map(f =>
-    `<button onclick="setFamFilter('${f.key}')" style="${pillStyle(f.key)}">${f.label}</button>`
+  const drCrPills = drCrDefs.map(f =>
+    `<button onclick="setFamDrCrFilter('${f.key}')" style="${drCrPillStyle(f.key)}">${f.label}</button>`
   ).join('');
-  const filterCount = activeFilter !== 'all'
+
+  // Reimbursable: independent toggle pill
+  const reimbPillStyle = reimbFilter
+    ? `background:var(--info);color:#fff;border:1px solid var(--info);border-radius:20px;padding:3px 12px;font-size:.72rem;font-weight:700;cursor:pointer`
+    : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 12px;font-size:.72rem;font-weight:500;cursor:pointer`;
+  const reimbPill = `<button onclick="setFamReimbFilter()" style="${reimbPillStyle}">♻ Reimbursable</button>`;
+
+  const filterCount = (drCrFilter !== 'all' || reimbFilter)
     ? `<span style="font-size:.68rem;color:var(--text3);margin-left:4px">${filteredTotal} of ${total}</span>`
     : '';
 
@@ -3161,7 +3170,10 @@ function buildFamLedger(pid) {
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:6px;padding:7px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
-      ${filterPills}${filterCount}
+      ${drCrPills}
+      <span style="width:1px;height:16px;background:var(--border);margin:0 2px"></span>
+      ${reimbPill}
+      ${filterCount}
       <div style="margin-left:auto;display:flex;align-items:center;gap:5px">
         <span style="font-size:.68rem;color:var(--text3)">Per page:</span>
         ${pageSizePills}
@@ -3194,9 +3206,15 @@ function setFamPage(p) {
   renderFamily();
 }
 
-function setFamFilter(f) {
-  UI.famFilter = f;
-  UI.famPage = 0; // reset to first page whenever filter changes
+function setFamDrCrFilter(f) {
+  UI.famDrCrFilter = f;
+  UI.famPage = 0;
+  renderFamily();
+}
+
+function setFamReimbFilter() {
+  UI.famReimbFilter = !UI.famReimbFilter;
+  UI.famPage = 0;
   renderFamily();
 }
 
@@ -10236,7 +10254,8 @@ function _renderAllAccountsView(panel) {
     if (t.categoryId) _catIdsAll.add(t.categoryId);
     (t.splits||[]).forEach(s => { if (s.categoryId) _catIdsAll.add(s.categoryId); });
   });
-  const _cf = UI.txnCatFilter, _df = UI.txnDateFrom, _dt = UI.txnDateTo;
+  const _cf = UI.txnCatFilter, _df = UI.txnDateFrom, _dt = UI.txnDateTo, _rf = !!UI.txnReimbFilter;
+  const _reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
   const _catFilterOpts = [..._catIdsAll]
     .map(cid => ({ cid, lbl: txnCatLabel(cid)||cid }))
     .sort((a,b) => a.lbl.localeCompare(b.lbl))
@@ -10253,12 +10272,19 @@ function _renderAllAccountsView(panel) {
         const splitMatch = (t.splits||[]).some(s => s.categoryId === _cf);
         if (!mainMatch && !splitMatch) return false;
       }
+      if (_rf) {
+        // Reimbursable = flagged ♻ received, OR assigned to a reimbursable expense type
+        const flagged    = !!t.isReimbursement;
+        const reimbCat   = _reimbCatIds.has(t.categoryId);
+        const reimbSplit = (t.splits||[]).some(s => _reimbCatIds.has(s.categoryId));
+        if (!flagged && !reimbCat && !reimbSplit) return false;
+      }
       return true;
     })
     .sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
   const totalCommitted = committed.length;
-  const anyFilterActive = !!(_df || _dt || _cf);
+  const anyFilterActive = !!(_df || _dt || _cf || _rf);
 
   // ── Net amount across filtered results ─────────────────────────────────
   // When a category filter is active, split transactions contribute only
@@ -10303,6 +10329,9 @@ function _renderAllAccountsView(panel) {
     </tr>`;
   }).join('');
 
+  const _reimbPillStyleAll = _rf
+    ? `background:var(--info);color:#fff;border:1px solid var(--info);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap`
+    : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:500;cursor:pointer;white-space:nowrap`;
   const filterBar = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
       <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
@@ -10314,8 +10343,9 @@ function _renderAllAccountsView(panel) {
         <option value="">All Expense Types</option>
         ${_catFilterOpts}
       </select>
+      <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleAll}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear</button>
         <span style="color:var(--primary);font-weight:600">${allTxns.length} of ${totalCommitted} shown</span>
         <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,${_fltNetColor} 10%,transparent);border:1px solid color-mix(in srgb,${_fltNetColor} 30%,transparent);font-size:.76rem;font-weight:700;color:${_fltNetColor};white-space:nowrap" title="Net amount of filtered transactions (Debits − Credits)">
           Net ${_fltNetLabel}
@@ -10710,8 +10740,9 @@ function renderTxnRight() {
       </div>`;
   }
 
-  // Date + expense type filter
-  const _df  = UI.txnDateFrom, _dt = UI.txnDateTo, _cf = UI.txnCatFilter;
+  // Date + expense type + reimbursable filter
+  const _df  = UI.txnDateFrom, _dt = UI.txnDateTo, _cf = UI.txnCatFilter, _rf = !!UI.txnReimbFilter;
+  const _reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
   const filteredRows = withBal.filter(t => {
     if (_df && (t.date||'') < _df) return false;
     if (_dt && (t.date||'') > _dt) return false;
@@ -10721,9 +10752,15 @@ function renderTxnRight() {
       const splitMatch = (t.splits||[]).some(s => s.categoryId === _cf);
       if (!mainMatch && !splitMatch) return false;
     }
+    if (_rf) {
+      const flagged    = !!t.isReimbursement;
+      const reimbCat   = _reimbCatIds.has(t.categoryId);
+      const reimbSplit = (t.splits||[]).some(s => _reimbCatIds.has(s.categoryId));
+      if (!flagged && !reimbCat && !reimbSplit) return false;
+    }
     return true;
   });
-  const anyFilterActive = !!(_df || _dt || _cf);
+  const anyFilterActive = !!(_df || _dt || _cf || _rf);
 
   // Build expense type options for filter dropdown (unique cats in this account)
   const _catIdsInAcct = new Set();
@@ -10825,6 +10862,9 @@ function renderTxnRight() {
   }).join('');
 
   const hasRows = filteredRows.length > 0 || UI.txnNewRow;
+  const _reimbPillStyleSingle = _rf
+    ? `background:var(--info);color:#fff;border:1px solid var(--info);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap`
+    : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:500;cursor:pointer;white-space:nowrap`;
   const filterBar = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
       <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
@@ -10836,8 +10876,9 @@ function renderTxnRight() {
         <option value="">All Expense Types</option>
         ${_catFilterOpts}
       </select>
+      <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleSingle}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
         <span style="color:var(--primary);font-weight:600">${filteredRows.length} of ${committedTxns.length} shown</span>` :
         `<span style="color:var(--text3);opacity:.6">${committedTxns.length} transaction${committedTxns.length!==1?'s':''}</span>`}
       <div style="margin-left:auto">
