@@ -6751,10 +6751,9 @@ function renderCCRepaySection(month) {
       const cardCollapsed  = UI._ccrCardCollapsed[card.id];
       const hasReimb       = totalReimb > 0;
       const statusColor    = totalCap > 0 ? 'var(--warn)' : 'var(--ok)';
+      // Reimbursements are not card-specific — just show the charged amount per card
       const reimbStatus    = hasReimb
-        ? netPendingReimb > 0
-          ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(netPendingReimb)} still pending</span>`
-          : `<span style="color:var(--ok);font-size:.7rem;margin-left:8px">♻ Fully reimbursed ✓</span>`
+        ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(totalReimb)} reimbursable</span>`
         : '';
       const statusLabel    = totalCap > 0
         ? `<span style="font-weight:700">True cap: ${fmtCurrency(totalCap)}</span>${reimbStatus}`
@@ -6776,8 +6775,7 @@ function renderCCRepaySection(month) {
         const rows = mData.map((d, i) => {
           const cumCap = cumCaps[i];
           const reimbCell = hasReimb
-            ? `<td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--info)">${d.reimbCharged > 0 ? fmtCurrency(d.reimbCharged) : '—'}</td>
-               <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--ok)">${d.reimbReceived > 0 ? fmtCurrency(d.reimbReceived) : '—'}</td>`
+            ? `<td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--info)">${d.reimbCharged > 0 ? fmtCurrency(d.reimbCharged) : '—'}</td>`
             : '';
           return `<tr${d.reimbCharged > 0 ? ' style="background:color-mix(in srgb,var(--info) 3%,transparent)"' : ''}>
             <td style="padding:5px 10px;font-size:.75rem;color:var(--text3)">${bFmtMonth(d.m)}</td>
@@ -6790,16 +6788,13 @@ function renderCCRepaySection(month) {
         }).join('');
 
         const reimbHeader = hasReimb
-          ? `<th style="${thStyleR}">♻ Charged</th><th style="${thStyleR}">♻ Received</th>`
+          ? `<th style="${thStyleR}">♻ Reimb Charged</th>`
           : '';
         const reimbFooter = hasReimb
           ? `<tr style="background:color-mix(in srgb,var(--info) 6%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
-               <td style="padding:5px 10px;font-size:.72rem;color:var(--info);font-style:italic">♻ Reimbursable (others repay you)</td>
+               <td style="padding:5px 10px;font-size:.72rem;color:var(--info);font-style:italic" colspan="2">♻ Total reimbursable on this card</td>
                <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:700;color:var(--info)">${fmtCurrency(totalReimb)}</td>
-               <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:700;color:var(--ok)">${totalReimbReceived > 0 ? fmtCurrency(totalReimbReceived) : '—'}</td>
-               <td colspan="3" style="padding:5px 10px;font-size:.72rem;color:${netPendingReimb > 0 ? 'var(--info)' : 'var(--ok)'};font-weight:700">
-                 ${netPendingReimb > 0 ? `${fmtCurrency(netPendingReimb)} still pending` : '✓ Fully reimbursed'}
-               </td>
+               <td colspan="3" style="padding:5px 10px;font-size:.71rem;color:var(--text3)">Received &amp; pending shown in summary below ↓</td>
              </tr>`
           : '';
 
@@ -6834,6 +6829,29 @@ function renderCCRepaySection(month) {
         </div>`;
     }).join('');
 
+    // Global reimbursement summary (not per-card since received payments aren't card-specific)
+    const reimbSummaryBlock = totalReimbAll > 0 ? `
+      <div style="margin-top:10px;padding:10px 14px;background:color-mix(in srgb,var(--info) 6%,transparent);border:1px solid color-mix(in srgb,var(--info) 22%,transparent);border-radius:var(--r)">
+        <div style="font-size:.75rem;font-weight:700;color:var(--info);margin-bottom:8px">♻ Reimbursement Summary — all cards</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:.75rem">
+          <div style="text-align:center;padding:6px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
+            <div style="color:var(--text3);font-size:.68rem;margin-bottom:2px">Total Reimbursable Charged</div>
+            <div style="font-weight:700;color:var(--info)">${fmtCurrency(totalReimbAll)}</div>
+          </div>
+          <div style="text-align:center;padding:6px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
+            <div style="color:var(--text3);font-size:.68rem;margin-bottom:2px">Total Received (all sources)</div>
+            <div style="font-weight:700;color:var(--ok)">${fmtCurrency(Math.min(getReimbReceived(null), totalReimbAll))}</div>
+          </div>
+          <div style="text-align:center;padding:6px;background:var(--surface);border-radius:6px;border:1px solid ${netPendingReimbAll > 0 ? 'color-mix(in srgb,var(--info) 30%,transparent)' : 'color-mix(in srgb,var(--ok) 30%,transparent)'}">
+            <div style="color:var(--text3);font-size:.68rem;margin-bottom:2px">Net Still Pending</div>
+            <div style="font-weight:700;color:${netPendingReimbAll > 0 ? 'var(--info)' : 'var(--ok)'}">
+              ${netPendingReimbAll > 0 ? fmtCurrency(netPendingReimbAll) : '✓ Fully reimbursed'}
+            </div>
+          </div>
+        </div>
+        <div style="font-size:.67rem;color:var(--text3);margin-top:6px">Received = ♻-flagged credits in Transactions tab + Family tab. Not attributable to individual cards.</div>
+      </div>` : '';
+
     histHTML = `
       <div style="margin-top:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface2);cursor:pointer"
@@ -6847,12 +6865,12 @@ function renderCCRepaySection(month) {
             </span>
             ${totalReimbAll > 0
               ? netPendingReimbAll > 0
-                ? `<span style="font-size:.72rem;color:var(--info)">♻ ${fmtCurrency(netPendingReimbAll)} still pending reimbursement</span>`
+                ? `<span style="font-size:.72rem;color:var(--info)">♻ ${fmtCurrency(netPendingReimbAll)} still pending</span>`
                 : `<span style="font-size:.72rem;color:var(--ok)">♻ Fully reimbursed ✓</span>`
               : ''}
           </div>
         </div>
-        ${histCollapsed ? '' : `<div style="padding:14px 16px">${cardTables}</div>`}
+        ${histCollapsed ? '' : `<div style="padding:14px 16px">${cardTables}${reimbSummaryBlock}</div>`}
       </div>`;
   }
 
