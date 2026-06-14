@@ -6713,28 +6713,27 @@ function renderCCRepaySection(month) {
       const paid           = (D.budget.ccRepayments||[])
         .filter(r => r.cardAccountId === card.id && r.month === m)
         .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
-      // Reimbursements received this month (from Transactions + Family tabs)
-      const reimbReceived  = getReimbReceivedForMonth(m);
       // True cap = your own spend vs payment (reimbursable excluded)
       // net can be negative when overpaying — reduces running balance
       const cap = Math.max(0, trueCharged - paid);
       const net = trueCharged - paid;
-      return { m, charged, reimbCharged, trueCharged, paid, reimbReceived, cap, net };
+      return { m, charged, reimbCharged, trueCharged, paid, cap, net };
     }).filter(d => d.charged > 0 || d.paid > 0);
     // totalCap = net outstanding balance on your OWN spend only
     const totalCap      = Math.max(0, mData.reduce((s,d) => s + d.net, 0));
-    // totalReimb = gross reimbursable charges accumulated across all months
-    const totalReimbCharged = mData.reduce((s,d) => s + d.reimbCharged, 0);
-    // totalReimbReceived = total reimbursements received across all history months
-    const totalReimbReceived = mData.reduce((s,d) => s + d.reimbReceived, 0);
-    // netPendingReimb = what's still outstanding after accounting for repayments
-    const netPendingReimb = Math.max(0, totalReimbCharged - totalReimbReceived);
-    return { card, mData, totalCap, totalReimb: totalReimbCharged, totalReimbReceived, netPendingReimb };
+    // totalReimb = gross reimbursable charges on this card across all history months
+    const totalReimb    = mData.reduce((s,d) => s + d.reimbCharged, 0);
+    // NOTE: reimbursements received are NOT tracked per-card — they're a global pool
+    // computed once at the section level (see reimbSummaryBlock below)
+    return { card, mData, totalCap, totalReimb };
   }).filter(c => c.mData.length > 0);
 
   const totalCapAll        = histCards.reduce((s,c) => s + c.totalCap, 0);
+  // Total reimbursable charged across all cards (sum of card-specific amounts)
   const totalReimbAll      = histCards.reduce((s,c) => s + c.totalReimb, 0);
-  const netPendingReimbAll = histCards.reduce((s,c) => s + c.netPendingReimb, 0);
+  // Total reimbursements received — counted ONCE globally, not per card or per month
+  const totalReimbReceived = getReimbReceived(null);
+  const netPendingReimbAll = Math.max(0, totalReimbAll - totalReimbReceived);
 
   let histHTML = '';
   if (histCards.length) {
@@ -6747,7 +6746,7 @@ function renderCCRepaySection(month) {
       }
     });
 
-    const cardTables = histCards.map(({ card, mData, totalCap, totalReimb, totalReimbReceived, netPendingReimb }) => {
+    const cardTables = histCards.map(({ card, mData, totalCap, totalReimb }) => {
       const cardCollapsed  = UI._ccrCardCollapsed[card.id];
       const hasReimb       = totalReimb > 0;
       const statusColor    = totalCap > 0 ? 'var(--warn)' : 'var(--ok)';
@@ -6840,7 +6839,7 @@ function renderCCRepaySection(month) {
           </div>
           <div style="text-align:center;padding:6px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
             <div style="color:var(--text3);font-size:.68rem;margin-bottom:2px">Total Received (all sources)</div>
-            <div style="font-weight:700;color:var(--ok)">${fmtCurrency(Math.min(getReimbReceived(null), totalReimbAll))}</div>
+            <div style="font-weight:700;color:var(--ok)">${fmtCurrency(Math.min(totalReimbReceived, totalReimbAll))}</div>
           </div>
           <div style="text-align:center;padding:6px;background:var(--surface);border-radius:6px;border:1px solid ${netPendingReimbAll > 0 ? 'color-mix(in srgb,var(--info) 30%,transparent)' : 'color-mix(in srgb,var(--ok) 30%,transparent)'}">
             <div style="color:var(--text3);font-size:.68rem;margin-bottom:2px">Net Still Pending</div>
@@ -10644,7 +10643,7 @@ function renderTxnRight() {
     const _famPerson = t.familyMemberId ? famPersons().find(p => p.id === t.familyMemberId) : null;
     const _famBadge  = _famPerson ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.67rem;font-weight:600;padding:1px 6px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:99px;margin-left:4px;cursor:pointer;white-space:nowrap" onclick="BA.txnNavToLinkedFamily('${t.familyMemberId}')" title="Family: ${esc(_famPerson.name)} — click to view in Family tab">👤 ${esc(_famPerson.name)}</span>` : '';
     // ♻ Reimbursement flag — only relevant on credit (incoming) transactions on non-CC accounts
-    const _canReimb = t.credit > 0 && !t.isTransfer && !isCC;
+    const _canReimb = t.credit > 0 && !isCC; // transfers received (credits) are valid reimbursements
     const _isReimb  = !!t.isReimbursement;
     const _reimbBadge = _isReimb
       ? `<span style="display:inline-flex;align-items:center;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;margin-left:5px;white-space:nowrap" title="Reimbursement received — offsets pending balance">♻ Reimb</span>`
