@@ -6541,6 +6541,27 @@ function computeCCReimbChargesForMonth(cardAccountId, month) {
   }, 0);
 }
 
+// All-time reimbursable charges across ALL months and ALL accounts (CC, bank, any).
+// Unlike the per-month CC version used in the history table, this does NOT filter by account
+// type or histMonths — it captures every transaction in any account that is assigned a
+// reimbursable budget category.
+function computeReimbChargesAllTime() {
+  const reimbIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
+  if (!reimbIds.size) return 0;
+  return (D.transactions || []).filter(t => {
+    if (t.status === 'pending' || t.status === 'rejected') return false;
+    if (t.isTransfer) return false;
+    if (t.splits && t.splits.length > 0) return t.splits.some(s => reimbIds.has(s.categoryId));
+    return reimbIds.has(t.categoryId);
+  }).reduce((sum, t) => {
+    if (t.splits && t.splits.length > 0) {
+      return sum + t.splits.filter(s => reimbIds.has(s.categoryId))
+                           .reduce((ss, s) => ss + (parseFloat(s.amount) || 0), 0);
+    }
+    return sum + (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+  }, 0);
+}
+
 function renderCCRepaySection(month) {
   const wrap = id('ccRepayWrap');
   if (!wrap) return;
@@ -6752,8 +6773,10 @@ function renderCCRepaySection(month) {
   }).filter(c => c.mData.length > 0);
 
   const totalCapAll        = histCards.reduce((s,c) => s + c.totalCap, 0);
-  // Total reimbursable charged across all CC cards (sum of card-specific amounts)
-  const _ccReimbAll        = histCards.reduce((s,c) => s + c.totalReimb, 0);
+  // Total reimbursable charges across ALL accounts (CC, bank, any) and ALL months.
+  // Computed directly from transactions — NOT from histCards — so bank account spending
+  // and months without a logged CC repayment entry are both included.
+  const _ccReimbAll        = computeReimbChargesAllTime();
   // Cash paid directly via Family tab DR entries flagged ♻ (no expense category, no CC card)
   const _famDirectReimb    = getFamReimbExpense(null);
   const totalReimbAll      = _ccReimbAll + _famDirectReimb;
@@ -6769,7 +6792,7 @@ function renderCCRepaySection(month) {
       <div style="font-size:.75rem;font-weight:700;color:var(--info);margin-bottom:9px">♻ Reimbursement Tracker</div>
       <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:.73rem">
         <div style="text-align:center;padding:6px 4px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
-          <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">CC Reimbursable Charges</div>
+          <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">Reimbursable Txn Charges</div>
           <div style="font-weight:700;color:var(--info)">${_ccReimbAll > 0 ? fmtCurrency(_ccReimbAll) : '—'}</div>
         </div>
         <div style="text-align:center;padding:6px 4px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
@@ -6792,8 +6815,8 @@ function renderCCRepaySection(month) {
         </div>
       </div>
       <div style="font-size:.66rem;color:var(--text3);margin-top:7px">
-        <b>CC Charges</b> = reimbursable budget categories on CC cards across all history months. &nbsp;
-        <b>Family Cash ♻</b> = DR entries in Family tab flagged ♻ (cash you paid directly). &nbsp;
+        <b>Reimbursable Txn Charges</b> = transactions in any account (CC, bank, etc.) assigned a reimbursable expense type. &nbsp;
+        <b>Family Cash ♻</b> = DR entries in Family tab flagged ♻ (cash you paid directly, no expense type). &nbsp;
         <b>Received</b> = ♻-flagged credits in Transactions tab + Family tab.
       </div>
     </div>` : '';
@@ -13459,6 +13482,30 @@ Object.assign(BA, {
 
     const lines = [headers.join(',')];
     rows.forEach(t => {
+      // When a category filter is active and this transaction has splits, export only the
+      // matching split line(s) at their individual amounts — not the whole transaction total.
+      if (_cf && t.splits?.length) {
+        const matchingSplits = t.splits.filter(s => s.categoryId === _cf);
+        matchingSplits.forEach(s => {
+          const amt = parseFloat(s.amount) || 0;
+          const row = [
+            csvEsc(t.date || ''),
+            ...(acct ? [] : [csvEsc(rows._acctMap?.[t.accountId]?.name || '')]),
+            csvEsc(t.payee || ''),
+            csvEsc(txnCatLabel(s.categoryId) || ''),
+            csvEsc(t.notes || ''),
+            csvEsc(amt > 0 ? amt.toFixed(2) : ''),  // split amounts are always debits
+            csvEsc(''),
+            ...(acct ? [csvEsc('')] : []),  // balance not meaningful for individual split lines
+            csvEsc(t.cleared    ? 'Yes' : 'No'),
+            csvEsc(t.reconciled ? 'Yes' : 'No'),
+          ];
+          lines.push(row.join(','));
+        });
+        return; // skip the whole-transaction row below
+      }
+
+      // No category filter active, or transaction has no splits — export as a single row
       let expType = t.isTransfer ? 'Transfer' : t.splits?.length ? 'Split' : txnCatLabel(t.categoryId) || '';
       const base = [
         csvEsc(t.date || ''),
@@ -13480,7 +13527,8 @@ Object.assign(BA, {
     const a    = document.createElement('a');
     a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
-    toast(`Exported ${rows.length} transaction${rows.length!==1?'s':''} ✓`, 'ok');
+    const exportedLines = lines.length - 1; // subtract header row
+    toast(`Exported ${exportedLines} row${exportedLines!==1?'s':''} ✓`, 'ok');
   },
 
   // Sort an obligations grid: toggle dir if same col, else set new col asc
