@@ -5651,10 +5651,13 @@ function renderBudgetKpis(month) {
   // Budget-based income: scheduled + manual entries (used for "Planned" net)
   const budgetIncome  = budgetGetIncome(month);
 
+  // Reimbursable cats are excluded from household totals
+  const _reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
   const totalBudgeted = (D.budget.plans || [])
-    .filter(p => p.month===month)
+    .filter(p => p.month===month && !_reimbCatIds.has(p.categoryId))
     .reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
-  const actualSpent   = budgetGetMonthTotal(month);
+  const reimbSpent    = [..._reimbCatIds].reduce((s, cid) => s + budgetGetCatActuals(cid, month), 0);
+  const actualSpent   = budgetGetMonthTotal(month) - reimbSpent;
   const plannedNet    = budgetIncome - totalBudgeted;   // budget vs budget
   const actualNet     = txnIncome   - actualSpent;      // actual income vs actual spend
 
@@ -5680,11 +5683,13 @@ function renderBudgetKpis(month) {
   const allMonths = [...monthSet].filter(m => m <= month).sort();
   const cumulPlanned = allMonths.reduce((sum, m) => {
     const inc = budgetGetIncome(m);
-    const bud = (D.budget.plans || []).filter(p => p.month===m).reduce((s,p) => s+(parseFloat(p.amount)||0), 0);
+    const bud = (D.budget.plans || []).filter(p => p.month===m && !_reimbCatIds.has(p.categoryId)).reduce((s,p) => s+(parseFloat(p.amount)||0), 0);
     return sum + inc - bud;
   }, 0);
-  const cumulActual = allMonths.reduce((sum, m) =>
-    sum + getTotalActualIncome(m) - budgetGetMonthTotal(m), 0);
+  const cumulActual = allMonths.reduce((sum, m) => {
+    const mReimbSpent = [..._reimbCatIds].reduce((s, cid) => s + budgetGetCatActuals(cid, m), 0);
+    return sum + getTotalActualIncome(m) - (budgetGetMonthTotal(m) - mReimbSpent);
+  }, 0);
 
   const usedPct = totalBudgeted > 0 ? Math.round(actualSpent/totalBudgeted*100) : null;
   const green = 'var(--ok)', red = 'var(--danger)', blue = 'var(--info)', amber = 'var(--warn)';
@@ -5752,7 +5757,8 @@ function renderBudgetKpis(month) {
     card('📋','Total Budgeted', fmtC(totalBudgeted), blue,
          usedPct !== null ? `${usedPct}% spent` : 'No budget set') +
     card('🧾','Actual Spent', fmtC(actualSpent),
-         actualSpent > totalBudgeted && totalBudgeted > 0 ? red : amber) +
+         actualSpent > totalBudgeted && totalBudgeted > 0 ? red : amber,
+         reimbSpent > 0 ? `<span style="color:var(--info)">+ ${fmtC(reimbSpent)} ♻ reimbursable</span>` : '') +
     splitCard('📊','Net In Hand',
       fmtC(plannedNet), plannedNet >= 0 ? green : red,
       fmtC(actualNet),  actualNet  >= 0 ? green : red) +
@@ -5774,12 +5780,15 @@ function renderBudgetPanel(month) {
 
   // ── Budget Health Scorecard (always visible) ──────────────
   let over = 0, overAmt = 0, onTrack = 0, noBudget = 0;
-  const totalBudgeted = cats.reduce((s, c) => s + budgetGetAdjustedPlan(c.id, month), 0);
-  const totalSpent    = cats.reduce((s, c) => s + budgetGetCatActuals(c.id, month), 0);
+  // Exclude reimbursable cats from health scorecard — they're pass-through spend
+  const _panelReimbIds = new Set(cats.filter(c => c.reimbursable).map(c => c.id));
+  const totalBudgeted = cats.filter(c => !_panelReimbIds.has(c.id)).reduce((s, c) => s + budgetGetAdjustedPlan(c.id, month), 0);
+  const totalSpent    = cats.filter(c => !_panelReimbIds.has(c.id)).reduce((s, c) => s + budgetGetCatActuals(c.id, month), 0);
   const usedPct       = totalBudgeted > 0 ? Math.round(totalSpent / totalBudgeted * 100) : 0;
   const usedColor     = usedPct >= 100 ? 'var(--danger)' : usedPct >= 85 ? 'var(--warn)' : 'var(--ok)';
 
   cats.forEach(c => {
+    if (_panelReimbIds.has(c.id)) return; // skip reimbursable
     const b    = budgetGetAdjustedPlan(c.id, month);
     const a    = budgetGetCatActuals(c.id, month);
     if (b <= 0) { noBudget++; return; }
@@ -6104,10 +6113,10 @@ function renderBudgetTable(month) {
 
   const _filterOver = (UI.budgetFilter || 'all') === 'over';
 
-  let grandBudget = 0, grandSpent = 0, tbody = '';
+  let grandBudget = 0, grandSpent = 0, grandReimbSpent = 0, tbody = '';
   for (const group of groups) {
     const gcats = cats.filter(c => c.groupId===group.id);
-    let gBudget = 0, gSpent = 0;
+    let gBudget = 0, gSpent = 0, gReimbSpent = 0;
     const isCollapsed = !!_budgetCollapsed[group.id];
 
     // In "Over Budget" filter mode, skip this whole group if none of its cats are over
@@ -6133,6 +6142,7 @@ function renderBudgetTable(month) {
       </tr>`;
 
     for (const cat of gcats) {
+      const isReimbursable = !!cat.reimbursable;
       const basePlan     = budgetGetPlan(cat.id, month);
       const effPlan      = budgetGetEffectivePlan(cat.id, month); // includes rollover
       const budget       = budgetGetAdjustedPlan(cat.id, month);  // includes adjustments
@@ -6149,15 +6159,18 @@ function renderBudgetTable(month) {
       const rawPct  = budget > 0 ? (spent / budget * 100) : (spent > 0 ? Infinity : 0);
       const pct     = Math.min(rawPct, 100);  // clamped for bar fill width
       // isOver: half-cent epsilon prevents -0.00 / Cover-button ghost after an exact Cover
-      const isOver  = spent - Math.max(0, budget) > 0.005;
+      // Reimbursable cats never show as "over" — they're pass-through spend
+      const isOver  = !isReimbursable && spent - Math.max(0, budget) > 0.005;
       const isFull  = !isOver && rawPct >= 99.5 && budget > 0;
-      const bar     = isOver ? 'var(--danger)' : isFull ? 'var(--info)' : rawPct >= 80 ? 'var(--warn)' : 'var(--ok)';
+      const bar     = isReimbursable ? 'var(--info)' : isOver ? 'var(--danger)' : isFull ? 'var(--info)' : rawPct >= 80 ? 'var(--warn)' : 'var(--ok)';
       // Progress bar fill: striped pattern when over budget, solid otherwise
       const barFillStyle = isOver
         ? `width:100%;background:repeating-linear-gradient(45deg,var(--danger),var(--danger) 5px,color-mix(in srgb,var(--danger) 55%,transparent) 5px,color-mix(in srgb,var(--danger) 55%,transparent) 10px)`
         : `width:${pct}%;background:${bar}`;
       // pctLabel: guard against Infinity when budget was fully reallocated away
-      const pctLabel = isOver
+      const pctLabel = isReimbursable
+        ? `<span style="color:var(--info);font-size:.65rem;font-weight:600">♻</span>`
+        : isOver
         ? `<span style="color:var(--danger);font-weight:700;white-space:nowrap">⚠ ${isFinite(rawPct) ? Math.round(rawPct) + '%' : 'Over budget'}</span>`
         : isFull
         ? `<span style="color:var(--info);font-weight:700">✓ 100%</span>`
@@ -6165,28 +6178,36 @@ function renderBudgetTable(month) {
       // In "Over Budget" filter mode, skip non-over categories entirely
       if (_filterOver && !isOver) continue;
 
-      // Mirror the individual row rule: only count a category in the group total
-      // when it has an actual budget (budget > 0). Categories with budget = 0
-      // display '—' on the individual row; including their spending in gSpent
-      // without a matching gBudget entry makes the group total go negative even
-      // when every individual row shows 0 or '—'. Using Math.round to eliminate
-      // sub-cent floating-point noise before accumulating.
-      if (budget > 0) {
+      // Reimbursable cats are tracked separately and excluded from household totals
+      if (isReimbursable) {
+        gReimbSpent    += Math.round(spent * 100) / 100;
+        grandReimbSpent += Math.round(spent * 100) / 100;
+      } else if (budget > 0) {
+        // Mirror the individual row rule: only count a category in the group total
+        // when it has an actual budget (budget > 0). Categories with budget = 0
+        // display '—' on the individual row; including their spending in gSpent
+        // without a matching gBudget entry makes the group total go negative even
+        // when every individual row shows 0 or '—'. Using Math.round to eliminate
+        // sub-cent floating-point noise before accumulating.
         gBudget += Math.round(budget * 100) / 100;
         gSpent  += Math.round(spent  * 100) / 100;
       }
 
       // ── Cover / Move action button ────────────────────────────
-      const hasAvail   = budget > 0 && remain > 0;
+      const hasAvail   = !isReimbursable && budget > 0 && remain > 0;
       const actionBtn  = isOver
         ? `<button class="budget-realloc-btn cover" onclick="event.stopPropagation();BA.budgetReallocModal('${cat.id}','${month}','cover')" title="Cover overspend from another category">Cover ↑</button>`
         : hasAvail
         ? `<button class="budget-realloc-btn move"  onclick="event.stopPropagation();BA.budgetReallocModal('${cat.id}','${month}','move')"  title="Move available budget to another category">Move →</button>`
         : '';
 
+      // Reimbursable rows get a subtle teal tint to visually separate them
+      const reimbRowStyle = isReimbursable
+        ? 'background:color-mix(in srgb,var(--info) 4%,transparent);'
+        : '';
       const isCatChecked = (UI.budgetCheckedCats||new Set()).has(cat.id);
       tbody += `
-        <tr class="btable-row" draggable="true" data-drag-type="cat" data-drag-id="${cat.id}" data-drag-group="${group.id}" data-group-member="${group.id}" onclick="BA.budgetSelectCat('${cat.id}')" style="cursor:pointer;${isCollapsed?'display:none;':''}${UI.budgetSelectedCat===cat.id?'background:color-mix(in srgb,var(--primary) 7%,transparent);outline:2px solid color-mix(in srgb,var(--primary) 30%,transparent);outline-offset:-2px;':''}${isCatChecked?'background:color-mix(in srgb,var(--danger) 5%,transparent);':''}">
+        <tr class="btable-row" draggable="true" data-drag-type="cat" data-drag-id="${cat.id}" data-drag-group="${group.id}" data-group-member="${group.id}" onclick="BA.budgetSelectCat('${cat.id}')" style="cursor:pointer;${reimbRowStyle}${isCollapsed?'display:none;':''}${UI.budgetSelectedCat===cat.id?'background:color-mix(in srgb,var(--primary) 7%,transparent);outline:2px solid color-mix(in srgb,var(--primary) 30%,transparent);outline-offset:-2px;':''}${isCatChecked?'background:color-mix(in srgb,var(--danger) 5%,transparent);':''}">
           <td style="padding:0 0 0 6px;text-align:center" onclick="event.stopPropagation()">
             <input type="checkbox" class="budget-cat-chk" data-cat-id="${cat.id}" ${isCatChecked?'checked':''} onchange="BA.budgetToggleCatCheck('${cat.id}',this.checked)" style="cursor:pointer">
           </td>
@@ -6194,7 +6215,9 @@ function renderBudgetTable(month) {
             <div style="display:flex;align-items:center;gap:4px">
               <span class="btable-drag-handle" title="Drag to reorder" onclick="event.stopPropagation()">⠿</span>
               <span class="btable-edit" data-val="${esc(cat.name)}" onclick="event.stopPropagation();BA.startBudgetEdit(this,'catname','${cat.id}',null)">${esc(cat.name)}</span>
+              ${isReimbursable ? `<span style="font-size:.62rem;font-weight:700;color:var(--info);background:color-mix(in srgb,var(--info) 12%,transparent);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;padding:1px 5px" title="Reimbursable — excluded from budget totals">♻ Reimb</span>` : ''}
               <button title="${hasRollover?'Rollover ON — unspent budget carries forward':'Rollover OFF — click to carry forward unspent budget'}" onclick="event.stopPropagation();BA.toggleBudgetRollover('${cat.id}')" style="font-size:.7rem;padding:1px 5px;border-radius:4px;cursor:pointer;border:1px solid ${hasRollover?'var(--ok)':'var(--border)'};background:${hasRollover?'color-mix(in srgb,var(--ok) 12%,transparent)':'transparent'};color:${hasRollover?'var(--ok)':'var(--text3)'};line-height:1.4">↺</button>
+              <button title="${isReimbursable?'Reimbursable ON — excluded from totals, click to disable':'Mark as reimbursable — spend will be excluded from budget totals (others repay you)'}" onclick="event.stopPropagation();BA.toggleCatReimbursable('${cat.id}')" style="font-size:.7rem;padding:1px 5px;border-radius:4px;cursor:pointer;border:1px solid ${isReimbursable?'var(--info)':'var(--border)'};background:${isReimbursable?'color-mix(in srgb,var(--info) 12%,transparent)':'transparent'};color:${isReimbursable?'var(--info)':'var(--text3)'};line-height:1.4">♻</button>
             </div>
           </td>
           <td class="btable-num">
@@ -6269,6 +6292,7 @@ function renderBudgetTable(month) {
         <td></td>
       </tr>`;
     grandBudget += gBudget; grandSpent += gSpent;
+    // grandReimbSpent already accumulated per-cat above
   }
 
   const grandRemain  = grandBudget - grandSpent;
@@ -6296,6 +6320,16 @@ function renderBudgetTable(month) {
         <span class="btable-pct" style="color:${grandBar}">${grandPctLbl}</span>`:''}</td>
       <td></td>
     </tr>
+    ${grandReimbSpent > 0 && !_filterOver ? `
+    <tr style="background:color-mix(in srgb,var(--info) 4%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
+      <td></td>
+      <td class="btable-name" colspan="2" style="font-size:.75rem;color:var(--info);padding-left:18px">
+        <span style="font-weight:600">♻ Reimbursable</span>
+        <span style="opacity:.7;font-weight:400"> — excluded from totals above (others will repay you)</span>
+      </td>
+      <td class="btable-num" style="color:var(--info);font-size:.8rem">${fmtC(grandReimbSpent)}</td>
+      <td colspan="3"></td>
+    </tr>` : ''}
     ${!_filterOver ? `<tr id="btable-add-group-row" style="background:var(--surface2)">
       <td colspan="7" style="padding:7px 10px">
         <button class="btn btn-ghost btn-xs" onclick="BA.startInlineAddGroup()" style="color:var(--text3);font-size:.75rem">＋ Add group</button>
@@ -8768,6 +8802,17 @@ const BA = {
       toast('Rollover enabled — unspent budget will carry forward ↺', 'ok');
     }
     dirty(); renderBudget();
+  },
+
+  toggleCatReimbursable(catId) {
+    const cat = (D.budget.categories||[]).find(c => c.id === catId);
+    if (!cat) return;
+    cat.reimbursable = !cat.reimbursable;
+    dirty();
+    toast(cat.reimbursable
+      ? '♻ Category marked as reimbursable — excluded from budget totals'
+      : 'Reimbursable flag removed — category now counts toward totals', 'ok');
+    renderBudget();
   },
 
   budgetLinkRolloverPot(catId) {
