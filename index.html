@@ -559,25 +559,38 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .ann-today{background:var(--primary)!important;color:#fff!important}
 .ann-today-sub{background:rgba(217,119,87,.75)!important;color:#fff!important}
 .ann-total-head{background:rgba(0,0,0,.3)}
-.ann-bud-col{background-color:rgba(46,139,87,.03)}
-.ann-act-col{background-color:rgba(217,119,87,.03)}
+/* Column banding — blue for budget, amber for actual, month boundary after each act col */
+.ann-bud-col{background-color:color-mix(in srgb,var(--info) 8%,transparent)}
+.ann-act-col{background-color:color-mix(in srgb,var(--warn) 8%,transparent);border-right:1px solid var(--border-light)}
 .ann-future{opacity:.55}
-.ann-total-col{background:rgba(217,119,87,.06)!important;font-weight:600}
-.ann-row-income td{background:#E8F5EE;font-weight:600;border-top:2px solid var(--border)}
-.ann-row-income .ann-label{background:#E8F5EE}
+.ann-total-col{background:color-mix(in srgb,var(--warn) 14%,transparent)!important;font-weight:600;border-left:2px solid var(--border)!important}
+/* Income / Expenses summary rows */
+.ann-row-income td{background:color-mix(in srgb,var(--ok) 10%,var(--surface));font-weight:600;border-top:2px solid var(--border)}
+.ann-row-income .ann-label{background:color-mix(in srgb,var(--ok) 10%,var(--surface))}
 .ann-row-expenses td{background:var(--surface3);font-weight:600;border-top:1px solid var(--border)}
 .ann-row-expenses .ann-label{background:var(--surface3)}
-.ann-row-net td{background:#FEF3E2;font-weight:700;border-top:2px solid var(--border)}
-.ann-row-net .ann-label{background:#FEF3E2}
-.ann-row-cumul td{background:var(--surface2);font-weight:600}
-.ann-row-cumul .ann-label{background:var(--surface2)}
+/* ── Net & Cumulative: dark inverted rows with thick top boundary ── */
+.ann-summary-divider td{height:4px;padding:0;background:var(--text);border:none}
+.ann-row-net td{background:color-mix(in srgb,var(--text) 90%,transparent)!important;color:#fff!important;font-weight:700;border-top:none!important}
+.ann-row-net .ann-label{background:color-mix(in srgb,var(--text) 90%,transparent)!important;color:#fff!important}
+.ann-row-net .ann-positive{color:#86EFAC!important;font-weight:700}
+.ann-row-net .ann-negative{color:#FCA5A5!important;font-weight:700}
+.ann-row-net .ann-zero{color:rgba(255,255,255,.35)!important}
+.ann-row-cumul td{background:color-mix(in srgb,var(--text) 72%,transparent)!important;color:#fff!important;font-weight:600;border-top:1px solid rgba(255,255,255,.15)!important}
+.ann-row-cumul .ann-label{background:color-mix(in srgb,var(--text) 72%,transparent)!important;color:#fff!important}
+.ann-row-cumul .ann-positive{color:#86EFAC!important;font-weight:700}
+.ann-row-cumul .ann-negative{color:#FCA5A5!important;font-weight:700}
+.ann-row-cumul .ann-zero{color:rgba(255,255,255,.35)!important}
+/* Row types */
 .ann-row-group td{background:var(--surface2);font-weight:700;border-top:1px solid var(--border)}
 .ann-row-group .ann-label{background:var(--surface2)}
 .ann-row-cat td{border-bottom:1px solid var(--border-light)}
 .ann-row-cat .ann-label{background:var(--surface);padding-left:22px;color:var(--text2);font-size:.9em}
 .ann-indent{padding-left:22px!important;color:var(--text2)}
 .ann-section-divider td{background:var(--surface3);padding:5px 10px;font-size:.7rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text2);border-top:2px solid var(--border);border-bottom:1px solid var(--border)}
-.ann-bud-val{color:var(--info)}
+/* Value colours */
+.ann-bud-val{color:color-mix(in srgb,var(--info) 85%,var(--text));font-weight:600}
+.ann-act-val{color:color-mix(in srgb,var(--primary) 80%,var(--text));font-weight:500}
 .ann-positive{color:var(--ok);font-weight:600}
 .ann-negative{color:var(--danger);font-weight:600}
 /* Income schedule styles */
@@ -6850,7 +6863,7 @@ function renderAnnual() {
   const TOTAL_COLS = 1 + 12*2 + 2;
   const z    = () => `<span class="ann-zero">—</span>`;
   const fBud = v  => v > 0 ? `<span class="ann-bud-val">${fmtC(v).replace('$','').replace(/\.00$/,'')}</span>` : z();
-  const fAct = v  => v > 0 ? fmtC(v).replace('$','').replace(/\.00$/,'') : z();
+  const fAct = v  => v > 0 ? `<span class="ann-act-val">${fmtC(v).replace('$','').replace(/\.00$/,'')}</span>` : z();
   const fNet = v  => {
     const s = fmtC(Math.abs(v)).replace('$','').replace(/\.00$/,'');
     return `<span class="${v>=0?'ann-positive':'ann-negative'}">${v<0?'-':''}${s}</span>`;
@@ -6983,6 +6996,7 @@ function renderAnnual() {
       <td class="ann-num ann-total-col ann-act-col">${fAct(grandActTotal)}</td>
     </tr>
     ${reimbRow}
+    <tr class="ann-summary-divider"><td colspan="${TOTAL_COLS}"></td></tr>
     <tr class="ann-row-net">
       <td class="ann-label">📊 Net (Income − Exp)</td>
       ${netCells.join('')}
