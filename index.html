@@ -3037,16 +3037,20 @@ function buildFamLedger(pid) {
            </button>`
       : '';
 
-    // ── Row tints: amber = source deleted, teal = reimbursement received ──
-    const _isReimb = !!t.isReimbursement;
-    const _canReimb = t.cr > 0; // only credit entries can be flagged as reimbursement
+    // ── Row tints: amber = source deleted, teal = reimbursable (expense owed or receipt) ──
+    const _isReimb  = !!t.isReimbursement;
+    const _isDRReimb = _isReimb && t.dr > 0; // DR flagged = expense you paid, awaiting repayment
+    const _isCRReimb = _isReimb && t.cr > 0; // CR flagged = reimbursement received
+    const _canReimb = t.cr > 0 || t.dr > 0;  // both DR and CR entries can be flagged ♻
     const rowStyle = srcDeleted
       ? ' style="background:color-mix(in srgb,var(--warn) 5%,transparent)"'
       : _isReimb
         ? ' style="background:color-mix(in srgb,var(--info) 5%,transparent)"'
         : '';
-    const reimbBadge = _isReimb
-      ? `<span style="display:inline-flex;align-items:center;font-size:.6rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;margin-left:5px" title="Reimbursement received">♻ Reimb</span>`
+    const reimbBadge = _isDRReimb
+      ? `<span style="display:inline-flex;align-items:center;font-size:.6rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;margin-left:5px" title="Reimbursable expense — you paid, pending repayment">♻ Owed</span>`
+      : _isCRReimb
+        ? `<span style="display:inline-flex;align-items:center;font-size:.6rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;margin-left:5px" title="Reimbursement received">♻ Rcvd</span>`
       : '';
 
     return `<tr${rowStyle}>
@@ -3059,7 +3063,7 @@ function buildFamLedger(pid) {
       <td><div class="fcell truncate" title="${esc(t.notes)}" style="color:var(--text2);font-size:12px">${esc(t.notes)||''}</div></td>
       <td><div class="ract">
         ${txnLinkBtn}
-        ${_canReimb ? `<button class="ibtn" title="${_isReimb?'Remove reimbursement flag':'Mark as reimbursement received — offsets pending balance'}" onclick="BA.famToggleReimbursement('${pid}','${t.id}')" style="color:${_isReimb?'var(--info)':'var(--text3)'};font-weight:${_isReimb?'700':'400'}">♻</button>` : ''}
+        ${_canReimb ? `<button class="ibtn" title="${_isReimb ? 'Remove ♻ flag' : t.dr > 0 ? 'Mark as reimbursable expense — adds to pending balance owed to you' : 'Mark as reimbursement received — offsets pending balance'}" onclick="BA.famToggleReimbursement('${pid}','${t.id}')" style="color:${_isReimb?'var(--info)':'var(--text3)'};font-weight:${_isReimb?'700':'400'}">♻</button>` : ''}
         <button class="ibtn" title="Edit" onclick="editFamTxnModal('${pid}','${t.id}')">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>
         </button>
@@ -5402,9 +5406,10 @@ function getReimbReceived(upToMonth) {
   const txnTotal = (D.transactions||[])
     .filter(t => t.isReimbursement && t.date && inMonth(t.date))
     .reduce((s,t) => s + (parseFloat(t.credit)||0), 0);
-  const famTotal = Object.values((D.familyAccounts?.ledgers)||{})
+  // Only sum CR entries — DR entries flagged ♻ are expenses owed, not receipts
+  const famTotal = Object.values(((D.familyAccounts)||{}).ledgers||{})
     .flat()
-    .filter(e => e.isReimbursement && e.date && inMonth(e.date))
+    .filter(e => e.isReimbursement && e.cr > 0 && e.date && inMonth(e.date))
     .reduce((s,e) => s + (parseFloat(e.cr)||0), 0);
   return txnTotal + famTotal;
 }
@@ -5412,11 +5417,26 @@ function getReimbReceivedForMonth(month) {
   const txnTotal = (D.transactions||[])
     .filter(t => t.isReimbursement && t.date && t.date.slice(0,7) === month)
     .reduce((s,t) => s + (parseFloat(t.credit)||0), 0);
-  const famTotal = Object.values((D.familyAccounts?.ledgers)||{})
+  const famTotal = Object.values(((D.familyAccounts)||{}).ledgers||{})
     .flat()
-    .filter(e => e.isReimbursement && e.date && e.date.slice(0,7) === month)
+    .filter(e => e.isReimbursement && e.cr > 0 && e.date && e.date.slice(0,7) === month)
     .reduce((s,e) => s + (parseFloat(e.cr)||0), 0);
   return txnTotal + famTotal;
+}
+// Sum of ♻-flagged DR entries in Family tab = cash you paid directly, pending reimbursement.
+// These are NOT tracked via budget categories, so they are added separately to reimbursable totals.
+function getFamReimbExpense(upToMonth) {
+  const inMonth = m => !upToMonth || m.slice(0,7) <= upToMonth;
+  return Object.values(((D.familyAccounts)||{}).ledgers||{})
+    .flat()
+    .filter(e => e.isReimbursement && e.dr > 0 && e.date && inMonth(e.date))
+    .reduce((s,e) => s + (parseFloat(e.dr)||0), 0);
+}
+function getFamReimbExpenseForMonth(month) {
+  return Object.values(((D.familyAccounts)||{}).ledgers||{})
+    .flat()
+    .filter(e => e.isReimbursement && e.dr > 0 && e.date && e.date.slice(0,7) === month)
+    .reduce((s,e) => s + (parseFloat(e.dr)||0), 0);
 }
 
 function budgetGetPlan(catId, month) {
@@ -6359,6 +6379,9 @@ function renderBudgetTable(month) {
     grandBudget += gBudget; grandSpent += gSpent;
     // grandReimbSpent already accumulated per-cat above
   }
+  // Also include cash paid directly via Family tab DR entries flagged ♻
+  // (these have no expense category, so they're not caught in the category loop above)
+  grandReimbSpent += getFamReimbExpenseForMonth(month);
 
   const grandRemain  = grandBudget - grandSpent;
   const grandRawPct  = grandBudget > 0 ? (grandSpent / grandBudget * 100) : (grandSpent > 0 ? Infinity : 0);
@@ -6729,8 +6752,11 @@ function renderCCRepaySection(month) {
   }).filter(c => c.mData.length > 0);
 
   const totalCapAll        = histCards.reduce((s,c) => s + c.totalCap, 0);
-  // Total reimbursable charged across all cards (sum of card-specific amounts)
-  const totalReimbAll      = histCards.reduce((s,c) => s + c.totalReimb, 0);
+  // Total reimbursable charged across all CC cards (sum of card-specific amounts)
+  const _ccReimbAll        = histCards.reduce((s,c) => s + c.totalReimb, 0);
+  // Cash paid directly via Family tab DR entries flagged ♻ (no expense category, no CC card)
+  const _famDirectReimb    = getFamReimbExpense(null);
+  const totalReimbAll      = _ccReimbAll + _famDirectReimb;
   // Total reimbursements received — counted ONCE globally, not per card or per month
   const totalReimbReceived = getReimbReceived(null);
   const netPendingReimbAll = Math.max(0, totalReimbAll - totalReimbReceived);
@@ -7043,13 +7069,20 @@ function renderAnnual() {
       <tbody id="annbody-${group.id}">${catRowsHtml}</tbody>`;
   }
 
+  // Add Family tab DR entries flagged ♻ to each month's reimbursable total.
+  // These are cash payments with no expense category, so they are not caught in the category loop above.
+  MONTHS.forEach((_,i) => {
+    const famDR = getFamReimbExpenseForMonth(ym(i));
+    if (famDR > 0) { mReimbTotals[i] += famDR; grandReimbTotal += famDR; }
+  });
+
   let cumulBud = 0, cumulAct = 0;
   const expTotCells = [], reimbCells = [], netCells = [], cumulCells = [];
   MONTHS.forEach((_,i) => {
     const inc   = getIncome(ym(i));
     const bud   = mBudTotals[i];   // excludes reimbursable
     const act   = mActTotals[i];   // excludes reimbursable
-    const reimb = mReimbTotals[i]; // reimbursable actuals only
+    const reimb = mReimbTotals[i]; // reimbursable actuals only (category-linked + Family DR)
     const netBud = inc - bud, netAct = inc - act;
     cumulBud += netBud; cumulAct += netAct;
     const f = isFuture(i);
