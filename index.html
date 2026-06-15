@@ -9363,11 +9363,13 @@ const BA = {
         </div>
       </div>`;
 
-    const _copyAttr = JSON.stringify(copyText).replace(/</g,'\\u003c');
+    // Stash copy text in UI so the onclick can reference it by name — avoids inlining
+    // the entire string as an HTML attribute (breaks on quotes, parens, etc.)
+    UI._reimbCopyText = copyText;
     showModal(`
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
         <div class="modal-title" style="margin-bottom:0">♻ Reimbursement Breakdown</div>
-        <button onclick="navigator.clipboard.writeText(${_copyAttr}).then(()=>toast('Copied!','ok'))"
+        <button onclick="navigator.clipboard.writeText(UI._reimbCopyText).then(()=>toast('Copied! Paste into Claude.','ok'))"
           style="font-size:.72rem;padding:3px 12px;background:var(--primary);color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600;white-space:nowrap">
           📋 Copy as Text
         </button>
