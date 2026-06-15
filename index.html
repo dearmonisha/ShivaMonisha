@@ -2983,14 +2983,19 @@ function buildFamLedger(pid) {
   const chronoIdxMap = {};
   txns.forEach((t, i) => { chronoIdxMap[t.id] = i; });
 
-  // Two independent filters: DR/CR/All selector + Reimbursable toggle
-  const drCrFilter   = UI.famDrCrFilter  || 'all'; // 'all' | 'dr' | 'cr'
-  const reimbFilter  = !!UI.famReimbFilter;          // true = show only ♻ flagged
+  // Three independent filters: year | DR/CR/All | Reimbursable toggle
+  const yearFilter   = UI.famYearFilter   || null;   // null = all years, or e.g. '2025'
+  const drCrFilter   = UI.famDrCrFilter  || 'all';  // 'all' | 'dr' | 'cr'
+  const reimbFilter  = !!UI.famReimbFilter;           // true = show only ♻ flagged
 
-  // Display newest first, then apply both filters independently (AND logic)
+  // Derive available years from this person's entries (for year pill rendering below)
+  const availYears = [...new Set(txns.map(t => (t.date||'').slice(0,4)).filter(Boolean))].sort().reverse();
+
+  // Display newest first, then apply all filters independently (AND logic)
   const total = txns.length;
   const displayTxns = txns.slice().reverse(); // newest first, storage unchanged
   const filteredTxns = displayTxns.filter(t => {
+    if (yearFilter  && (t.date||'').slice(0,4) !== yearFilter) return false;
     if (drCrFilter === 'dr' && !(t.dr > 0)) return false;
     if (drCrFilter === 'cr' && !(t.cr > 0)) return false;
     if (reimbFilter && !t.isReimbursement)   return false;
@@ -3146,8 +3151,20 @@ function buildFamLedger(pid) {
     : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 12px;font-size:.72rem;font-weight:500;cursor:pointer`;
   const reimbPill = `<button onclick="setFamReimbFilter()" style="${reimbPillStyle}">♻ Reimbursable</button>`;
 
-  const filterCount = (drCrFilter !== 'all' || reimbFilter)
+  const anyFilterActive = yearFilter || drCrFilter !== 'all' || reimbFilter;
+  const filterCount = anyFilterActive
     ? `<span style="font-size:.68rem;color:var(--text3);margin-left:4px">${filteredTotal} of ${total}</span>`
+    : '';
+
+  // Year pills — derived from actual data
+  const yearPillStyle = (y) => {
+    const on = yearFilter === y;
+    return on
+      ? `background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:700;cursor:pointer`
+      : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:500;cursor:pointer`;
+  };
+  const yearPills = availYears.length > 1
+    ? availYears.map(y => `<button onclick="setFamYearFilter('${y}')" style="${yearPillStyle(y)}">${y}</button>`).join('')
     : '';
 
   // Page-size pills — right side of filter bar
@@ -3169,6 +3186,11 @@ function buildFamLedger(pid) {
         <button class="btn btn-sm btn-danger" onclick="deleteFamPerson('${pid}')">Delete Person</button>
       </div>
     </div>
+    ${yearPills ? `
+    <div style="display:flex;align-items:center;gap:5px;padding:5px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
+      <span style="font-size:.68rem;color:var(--text3);white-space:nowrap;margin-right:2px">Year:</span>
+      ${yearPills}
+    </div>` : ''}
     <div style="display:flex;align-items:center;gap:6px;padding:7px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
       ${drCrPills}
       <span style="width:1px;height:16px;background:var(--border);margin:0 2px"></span>
@@ -3214,6 +3236,12 @@ function setFamDrCrFilter(f) {
 
 function setFamReimbFilter() {
   UI.famReimbFilter = !UI.famReimbFilter;
+  UI.famPage = 0;
+  renderFamily();
+}
+
+function setFamYearFilter(y) {
+  UI.famYearFilter = (UI.famYearFilter === y) ? null : y; // toggle off if same year clicked
   UI.famPage = 0;
   renderFamily();
 }
@@ -6874,7 +6902,10 @@ function renderCCRepaySection(month) {
   // Placed OUTSIDE histCards.length gate so it works even with no CC repayment history.
   const reimbSummaryBlock = (totalReimbAll > 0 || totalReimbReceived > 0) ? `
     <div style="margin-top:10px;padding:12px 14px;background:color-mix(in srgb,var(--info) 6%,transparent);border:1px solid color-mix(in srgb,var(--info) 22%,transparent);border-radius:var(--r)">
-      <div style="font-size:.75rem;font-weight:700;color:var(--info);margin-bottom:9px">♻ Reimbursement Tracker</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
+        <div style="font-size:.75rem;font-weight:700;color:var(--info)">♻ Reimbursement Tracker</div>
+        <button onclick="BA.reimbBreakdownModal()" style="font-size:.7rem;padding:2px 10px;background:color-mix(in srgb,var(--info) 10%,transparent);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);color:var(--info);border-radius:5px;cursor:pointer;font-weight:600" title="See every transaction contributing to these totals — copy and paste to Claude to diagnose discrepancies">🔍 Breakdown</button>
+      </div>
       <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:.73rem">
         <div style="text-align:center;padding:6px 4px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
           <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">Reimbursable Txn Charges</div>
@@ -9168,9 +9199,185 @@ const BA = {
     toast(entry.isReimbursement
       ? (isDR ? '♻ Marked as reimbursable expense — adds to pending balance owed to you' : '♻ Marked as reimbursement received — offsets pending balance')
       : 'Reimbursement flag removed', entry.isReimbursement ? 'ok' : 'info');
+    // Preserve scroll position — .fam-table-wrap is destroyed and recreated by renderFamily()
+    const _famScroll = document.querySelector('.fam-table-wrap');
+    const _savedScroll = _famScroll ? _famScroll.scrollTop : 0;
     renderFamily();
+    const _newScroll = document.querySelector('.fam-table-wrap');
+    if (_newScroll && _savedScroll) _newScroll.scrollTop = _savedScroll;
     if (UI.view === 'budget') renderBudget();
     if (UI.view === 'annual') renderAnnual();
+  },
+
+  reimbBreakdownModal() {
+    const fmtAmt = n => '$' + (n||0).toFixed(2);
+    const reimbIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
+    const acctMap  = {};
+    (D.txnAccounts||[]).forEach(a => { acctMap[a.id] = a.name; });
+    const persons  = famPersons();
+    const personMap = {};
+    persons.forEach(p => { personMap[p.id] = p.name; });
+
+    // ── Section A: Reimbursable txn charges ──────────────────
+    const reimbTxns = (D.transactions||[]).filter(t => {
+      if (t.status && t.status !== 'approved') return false;
+      if (t.isTransfer) return false;
+      if (t.splits?.length) return t.splits.some(s => reimbIds.has(s.categoryId));
+      return reimbIds.has(t.categoryId);
+    }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
+    const sectionA = reimbTxns.map(t => {
+      let amt, cats;
+      if (t.splits?.length) {
+        const matching = t.splits.filter(s => reimbIds.has(s.categoryId));
+        amt  = matching.reduce((s,l) => s + (parseFloat(l.amount)||0), 0);
+        cats = matching.map(s => txnCatLabel(s.categoryId)||s.categoryId).join(' + ');
+      } else {
+        amt  = (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
+        cats = txnCatLabel(t.categoryId)||t.categoryId||'';
+      }
+      return { date: t.date||'', acct: acctMap[t.accountId]||'?', payee: t.payee||'', cats, amt };
+    });
+    const totalA = sectionA.reduce((s,r) => s + r.amt, 0);
+
+    // ── Section B: Family tab DR entries flagged ♻ ───────────
+    const sectionB = [];
+    Object.entries(((D.familyAccounts)||{}).ledgers||{}).forEach(([pid, entries]) => {
+      (entries||[]).filter(e => e.isReimbursement && e.dr > 0).forEach(e => {
+        sectionB.push({ person: personMap[pid]||pid, date: e.date||'', desc: e.description||'', amt: parseFloat(e.dr)||0 });
+      });
+    });
+    sectionB.sort((a,b) => a.date.localeCompare(b.date));
+    const totalB = sectionB.reduce((s,r) => s + r.amt, 0);
+
+    // ── Section C: Received — Transactions tab ♻ credits ─────
+    const sectionC = (D.transactions||[])
+      .filter(t => t.isReimbursement && (parseFloat(t.credit)||0) > 0)
+      .sort((a,b) => (a.date||'').localeCompare(b.date||''))
+      .map(t => ({ date: t.date||'', acct: acctMap[t.accountId]||'?', payee: t.payee||'', amt: parseFloat(t.credit)||0 }));
+    const totalC = sectionC.reduce((s,r) => s + r.amt, 0);
+
+    // ── Section D: Received — Family tab CR entries flagged ♻ ─
+    const sectionD = [];
+    Object.entries(((D.familyAccounts)||{}).ledgers||{}).forEach(([pid, entries]) => {
+      (entries||[]).filter(e => e.isReimbursement && e.cr > 0).forEach(e => {
+        sectionD.push({ person: personMap[pid]||pid, date: e.date||'', desc: e.description||'', amt: parseFloat(e.cr)||0 });
+      });
+    });
+    sectionD.sort((a,b) => a.date.localeCompare(b.date));
+    const totalD = sectionD.reduce((s,r) => s + r.amt, 0);
+
+    // ── Build copy-friendly plain text ────────────────────────
+    const pad = (s, n) => String(s).padEnd(n);
+    const lines = [];
+    lines.push('=== REIMBURSEMENT BREAKDOWN ===');
+    lines.push('');
+    lines.push('--- A) Reimbursable Transaction Charges ---');
+    lines.push(pad('Date',12) + pad('Account',20) + pad('Payee',30) + pad('Expense Type',28) + 'Amount');
+    lines.push('-'.repeat(95));
+    sectionA.forEach(r => lines.push(pad(r.date,12) + pad(r.acct,20) + pad(r.payee,30) + pad(r.cats,28) + fmtAmt(r.amt)));
+    lines.push('-'.repeat(95));
+    lines.push(pad('SUBTOTAL A',90) + fmtAmt(totalA));
+    lines.push('');
+    lines.push('--- B) Family Tab Cash Paid (DR entries flagged ♻) ---');
+    lines.push(pad('Date',12) + pad('Person',20) + pad('Description',50) + 'Amount');
+    lines.push('-'.repeat(88));
+    sectionB.forEach(r => lines.push(pad(r.date,12) + pad(r.person,20) + pad(r.desc,50) + fmtAmt(r.amt)));
+    lines.push('-'.repeat(88));
+    lines.push(pad('SUBTOTAL B',83) + fmtAmt(totalB));
+    lines.push('');
+    lines.push(`TOTAL REIMBURSABLE (A + B) = ${fmtAmt(totalA + totalB)}`);
+    lines.push('');
+    lines.push('--- C) Received — Transactions Tab (♻-flagged credits) ---');
+    lines.push(pad('Date',12) + pad('Account',20) + pad('Payee',40) + 'Amount');
+    lines.push('-'.repeat(78));
+    sectionC.forEach(r => lines.push(pad(r.date,12) + pad(r.acct,20) + pad(r.payee,40) + fmtAmt(r.amt)));
+    lines.push('-'.repeat(78));
+    lines.push(pad('SUBTOTAL C',73) + fmtAmt(totalC));
+    lines.push('');
+    lines.push('--- D) Received — Family Tab (CR entries flagged ♻) ---');
+    lines.push(pad('Date',12) + pad('Person',20) + pad('Description',40) + 'Amount');
+    lines.push('-'.repeat(78));
+    sectionD.forEach(r => lines.push(pad(r.date,12) + pad(r.person,20) + pad(r.desc,40) + fmtAmt(r.amt)));
+    lines.push('-'.repeat(78));
+    lines.push(pad('SUBTOTAL D',73) + fmtAmt(totalD));
+    lines.push('');
+    lines.push(`TOTAL RECEIVED (C + D) = ${fmtAmt(totalC + totalD)}`);
+    lines.push('');
+    lines.push(`NET PENDING = ${fmtAmt(Math.max(0, (totalA+totalB) - (totalC+totalD)))}`);
+    const copyText = lines.join('\n');
+
+    // ── Build HTML modal ──────────────────────────────────────
+    const tblHdr = (cols) => `<tr style="background:var(--surface2)">${cols.map(c=>`<th style="padding:4px 8px;text-align:left;font-size:.7rem;border-bottom:1px solid var(--border);white-space:nowrap">${c}</th>`).join('')}</tr>`;
+    const tblRow = (cells, shade) => `<tr style="${shade?'background:color-mix(in srgb,var(--info) 3%,transparent)':''}">
+      ${cells.map(c=>`<td style="padding:3px 8px;font-size:.72rem;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent);white-space:nowrap">${c}</td>`).join('')}</tr>`;
+    const totalRow = (label, amt, cols) => `<tr style="background:var(--surface2);font-weight:700">
+      <td colspan="${cols-1}" style="padding:4px 8px;font-size:.72rem;text-align:right">${label}</td>
+      <td style="padding:4px 8px;font-size:.72rem;color:var(--info)">${fmtAmt(amt)}</td></tr>`;
+
+    const secA_html = `
+      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">A — Reimbursable Transaction Charges <span style="color:var(--info);margin-left:8px">${fmtAmt(totalA)}</span></div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
+        ${tblHdr(['Date','Account','Payee','Expense Type','Amount'])}
+        ${sectionA.map((r,i) => tblRow([r.date, esc(r.acct), esc(r.payee), esc(r.cats), fmtAmt(r.amt)], i%2)).join('')}
+        ${totalRow('Subtotal A', totalA, 5)}
+      </table></div>`;
+
+    const secB_html = `
+      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">B — Family Tab Cash Paid (DR flagged ♻) <span style="color:var(--info);margin-left:8px">${fmtAmt(totalB)}</span></div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
+        ${tblHdr(['Date','Person','Description','Amount'])}
+        ${sectionB.map((r,i) => tblRow([r.date, esc(r.person), esc(r.desc), fmtAmt(r.amt)], i%2)).join('')}
+        ${sectionB.length ? totalRow('Subtotal B', totalB, 4) : tblRow(['—','No Family DR entries flagged ♻','',''],false)}
+      </table></div>`;
+
+    const secC_html = `
+      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">C — Received via Transactions Tab (♻ credits) <span style="color:var(--ok);margin-left:8px">${fmtAmt(totalC)}</span></div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
+        ${tblHdr(['Date','Account','Payee','Amount'])}
+        ${sectionC.map((r,i) => tblRow([r.date, esc(r.acct), esc(r.payee), fmtAmt(r.amt)], i%2)).join('')}
+        ${sectionC.length ? totalRow('Subtotal C', totalC, 4) : tblRow(['—','No ♻-flagged credit transactions','',''],false)}
+      </table></div>`;
+
+    const secD_html = `
+      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">D — Received via Family Tab (CR flagged ♻) <span style="color:var(--ok);margin-left:8px">${fmtAmt(totalD)}</span></div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
+        ${tblHdr(['Date','Person','Description','Amount'])}
+        ${sectionD.map((r,i) => tblRow([r.date, esc(r.person), esc(r.desc), fmtAmt(r.amt)], i%2)).join('')}
+        ${sectionD.length ? totalRow('Subtotal D', totalD, 4) : tblRow(['—','No Family CR entries flagged ♻','',''],false)}
+      </table></div>`;
+
+    const net = Math.max(0, (totalA+totalB) - (totalC+totalD));
+    const summaryHtml = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px;padding:10px 12px;background:color-mix(in srgb,var(--info) 6%,transparent);border:1px solid color-mix(in srgb,var(--info) 20%,transparent);border-radius:var(--r)">
+        <div style="text-align:center">
+          <div style="font-size:.65rem;color:var(--text3);margin-bottom:2px">Total Reimbursable (A+B)</div>
+          <div style="font-weight:700;color:var(--info);font-size:.85rem">${fmtAmt(totalA+totalB)}</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.65rem;color:var(--text3);margin-bottom:2px">Total Received (C+D)</div>
+          <div style="font-weight:700;color:var(--ok);font-size:.85rem">${fmtAmt(totalC+totalD)}</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.65rem;color:var(--text3);margin-bottom:2px">Net Pending</div>
+          <div style="font-weight:700;font-size:.85rem;color:${net>0?'var(--warn)':'var(--ok)'}">${net>0?fmtAmt(net):'✓ Fully settled'}</div>
+        </div>
+      </div>`;
+
+    const _copyAttr = JSON.stringify(copyText).replace(/</g,'\\u003c');
+    showModal(`
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
+        <div class="modal-title" style="margin-bottom:0">♻ Reimbursement Breakdown</div>
+        <button onclick="navigator.clipboard.writeText(${_copyAttr}).then(()=>toast('Copied!','ok'))"
+          style="font-size:.72rem;padding:3px 12px;background:var(--primary);color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600;white-space:nowrap">
+          📋 Copy as Text
+        </button>
+      </div>
+      <div style="font-size:.72rem;color:var(--text3);margin-bottom:12px">Click <b>Copy as Text</b> and paste into Claude to diagnose discrepancies.</div>
+      ${secA_html}${secB_html}${secC_html}${secD_html}${summaryHtml}
+    `);
+    // Widen the modal so the tables have room
+    const _m = document.querySelector('#modal-root .modal');
+    if (_m) { _m.style.maxWidth = '860px'; _m.style.width = '90vw'; }
   },
 
   toggleCatReimbursable(catId) {
