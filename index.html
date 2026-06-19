@@ -9711,12 +9711,13 @@ function txnRunningBalances(acct, txns) {
   // Sort oldest → newest; compute cumulative balance per row
   const sorted = [...txns].sort((a,b) => (a.date||'').localeCompare(b.date||'') || (a.id||'').localeCompare(b.id||''));
   let bal = parseFloat(acct.openingBalance) || 0;
-  const isCC = acct.type === 'Credit Card';
+  const isCC   = acct.type === 'Credit Card';
+  const isLoan = acct.type === 'Loans';
   return sorted.map(t => {
     const d = parseFloat(t.debit)  || 0;
     const c = parseFloat(t.credit) || 0;
-    // Bank: balance = prev + credits – debits  |  CC: balance = prev + debits – credits (balance = amount owed)
-    bal = isCC ? bal + d - c : bal + c - d;
+    // Bank/Asset: balance = prev + credits – debits  |  CC/Loan (liability): balance = prev + debits – credits
+    bal = (isCC || isLoan) ? bal + d - c : bal + c - d;
     return { ...t, _bal: bal };
   });
 }
@@ -10853,7 +10854,7 @@ function renderTxnRight() {
   // rejected ones silently excluded from both displays
   const withBal = txnRunningBalances(acct, committedTxns).reverse(); // newest first
   const isCC    = acct.type === 'Credit Card';
-  const isLoan  = acct.type === 'Loan';
+  const isLoan  = acct.type === 'Loans';
 
   // Cleared balance for ledger header
   const clearedTxns2 = committedTxns.filter(t => t.cleared);
