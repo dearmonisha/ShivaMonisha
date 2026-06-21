@@ -395,6 +395,8 @@ table.ccg{border-collapse:collapse;font-size:13.5px;white-space:nowrap}
 .ccg .val-cell{padding:3px 10px;text-align:right;cursor:pointer;transition:background .12s}
 .ccg .val-cell:hover{background:rgba(217,119,87,.08)!important}
 .ccg .zero{color:var(--text3)}
+.cc-trend-up{display:inline-block;font-size:9.5px;font-weight:800;color:#fff;background:var(--danger);border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:middle;line-height:14px;letter-spacing:0}
+.cc-trend-dn{display:inline-block;font-size:9.5px;font-weight:800;color:#fff;background:var(--ok);border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:middle;line-height:14px;letter-spacing:0}
 .ccg .int-val{color:var(--danger)}
 .ccg .os-val{color:var(--info)}
 .ccg .limit-col{color:var(--text3);font-size:11px}
@@ -5104,30 +5106,57 @@ function buildCCGrid(type) {
     const label = pct < 30 ? `${pct.toFixed(0)}% — At target` : pct < 75 ? `${pct.toFixed(0)}% — Watch` : `${pct.toFixed(0)}% — High risk`;
     return `<span title="Utilization: ${label}" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${color};margin-right:6px;flex-shrink:0;vertical-align:middle"></span>`;
   };
+  // Helper: trend badge comparing current vs previous month value
+  // allMonths is newest-first, so "previous" = allMonths[mi + 1]
+  const trendBadge = (cur, prev) => {
+    if (cur === null || prev === null || cur === prev) return '';
+    const diff = cur - prev;
+    const absDiff = Math.abs(diff);
+    const diffFmt = '$' + absDiff.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    return diff > 0
+      ? `<span class="cc-trend-up" title="▲ ${diffFmt} vs prior month">↑</span>`
+      : `<span class="cc-trend-dn" title="▼ ${diffFmt} vs prior month">↓</span>`;
+  };
+
   // Card rows
   let tbody = '';
   cct.cards.forEach(card => {
     tbody += `<tr><td class="card-cell"><span style="display:inline-flex;align-items:center">${utilIcon(card)}${esc(card.name)}</span></td><td><div class="stmt-day-cell">${esc(card.intDay || '—')}</div></td>`;
-    allMonths.forEach(ym => {
+    allMonths.forEach((ym, mi) => {
       const entry = (cct.data[card.id] || {})[ym];
-      const val = entry ? (entry[type] || 0) : null;
       const hasData = entry && entry[type] !== undefined && entry[type] !== null;
+      const curVal = hasData ? (entry[type] || 0) : null;
+      // Previous month = next index (allMonths is newest-first)
+      const prevYm = allMonths[mi + 1];
+      const prevEntry = prevYm ? (cct.data[card.id] || {})[prevYm] : null;
+      const prevVal = (prevEntry && prevEntry[type] !== undefined && prevEntry[type] !== null) ? (prevEntry[type] || 0) : null;
       const cls = hasData ? (type==='interest' ? 'int-val' : 'os-val') : 'zero';
       const display = hasData ? fmtVal(entry[type]) : '—';
-      tbody += `<td><div class="val-cell ${cls}" onclick="editCCCell('${esc(card.id)}','${ym}')">${display}</div></td>`;
+      tbody += `<td><div class="val-cell ${cls}" onclick="editCCCell('${esc(card.id)}','${ym}')">${display}${trendBadge(curVal, prevVal)}</div></td>`;
     });
     tbody += `</tr>`;
   });
   // Total row
   tbody += `<tr class="total-row"><td class="card-cell">TOTAL</td><td></td>`;
-  allMonths.forEach(ym => {
-    let total = 0;
+  allMonths.forEach((ym, mi) => {
+    let total = 0, hasAny = false;
     cct.cards.forEach(card => {
       const entry = (cct.data[card.id] || {})[ym];
-      if (entry) total += entry[type] || 0;
+      if (entry) { total += entry[type] || 0; hasAny = true; }
     });
+    // Previous month total
+    const prevYm = allMonths[mi + 1];
+    let prevTotal = null;
+    if (prevYm) {
+      let pt = 0, prevAny = false;
+      cct.cards.forEach(card => {
+        const pe = (cct.data[card.id] || {})[prevYm];
+        if (pe) { pt += pe[type] || 0; prevAny = true; }
+      });
+      if (prevAny) prevTotal = pt;
+    }
     const cls = type==='interest' ? 'int-val' : 'os-val';
-    tbody += `<td><div class="val-cell ${cls}">${total > 0 ? fmtVal(total) : '—'}</div></td>`;
+    tbody += `<td><div class="val-cell ${cls}">${hasAny && total > 0 ? fmtVal(total) : '—'}${hasAny && total > 0 ? trendBadge(total, prevTotal) : ''}</div></td>`;
   });
   tbody += `</tr>`;
   return `<table class="ccg"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
