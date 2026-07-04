@@ -7195,7 +7195,13 @@ function renderAnnual() {
   const TOTAL_COLS = 1 + 12*2 + 2;
   const z    = () => `<span class="ann-zero">—</span>`;
   const fBud = v  => v > 0 ? `<span class="ann-bud-val">${fmtC(v).replace('$','').replace(/\.00$/,'')}</span>` : z();
-  const fAct = v  => v > 0 ? `<span class="ann-act-val">${fmtC(v).replace('$','').replace(/\.00$/,'')}</span>` : z();
+  const fAct = v  => {
+    if (Math.abs(v) < 0.005) return z();
+    const s = fmtC(Math.abs(v)).replace('$','').replace(/\.00$/,'');
+    return v > 0
+      ? `<span class="ann-act-val">${s}</span>`
+      : `<span class="ann-act-val" style="color:var(--ok)" title="Refund / credit">−${s}</span>`;
+  };
   const fNet = v  => {
     const s = fmtC(Math.abs(v)).replace('$','').replace(/\.00$/,'');
     return `<span class="${v>=0?'ann-positive':'ann-negative'}">${v<0?'-':''}${s}</span>`;
@@ -7398,7 +7404,13 @@ function renderActualsGrid() {
   const getActual = (catId, m) => budgetGetCatActuals(catId, m);
 
   const z    = () => `<span class="ann-zero">—</span>`;
-  const fAct = v  => v > 0 ? `<span class="ann-act-val">${fmtC(v).replace('$','')}</span>` : z();
+  const fAct = v  => {
+    if (Math.abs(v) < 0.005) return z();
+    const s = fmtC(Math.abs(v)).replace('$','');
+    return v > 0
+      ? `<span class="ann-act-val">${s}</span>`
+      : `<span class="ann-act-val" style="color:var(--ok)" title="Refund / credit">−${s}</span>`;
+  };
   const fNet = v  => {
     const s = fmtC(Math.abs(v)).replace('$','');
     return `<span class="${v>=0?'ann-positive':'ann-negative'}">${v<0?'-':''}${s}</span>`;
