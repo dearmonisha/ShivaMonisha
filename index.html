@@ -1764,7 +1764,7 @@ function buildDates(t, cycleYM) {
 // ════════════════════════════════════════════════════════════
 function switchView(v) {
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','setup','obligations','transactions','reports','savings-pots','reserve-pots','debt-payoff'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','savings-pots','reserve-pots','debt-payoff'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
