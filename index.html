@@ -1448,6 +1448,15 @@ async function _ghFetch(cfg) {
   if (!res.ok) throw new Error(`GitHub API error ${res.status}: ${res.statusText}`);
   const json = await res.json();
   ghSetSha(json.sha);
+  // GitHub omits content and provides download_url when file exceeds 1 MB
+  if (!json.content || json.content.trim() === '') {
+    if (!json.download_url) throw new Error('File too large and no download_url provided by GitHub.');
+    const rawRes = await fetch(json.download_url, {
+      headers: { 'Authorization': `Bearer ${cfg.token}` }
+    });
+    if (!rawRes.ok) throw new Error(`Failed to fetch file content: ${rawRes.status}`);
+    return rawRes.json();
+  }
   const decoded = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
   return JSON.parse(decoded);
 }
