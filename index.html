@@ -7506,6 +7506,28 @@ function renderActualsGrid() {
     cumulCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(cumulAct)}</td>`);
   });
 
+  // CC balance change per month: net increase (+) or decrease (-) in total CC balances
+  // Positive = charged more than paid (accumulated debt), Negative = paid down more than charged
+  const ccAcctIds = new Set((D.txnAccounts||[]).filter(a => a.type==='Credit Card').map(a => a.id));
+  const ccCells = [];
+  let ccYearTotal = 0;
+  MONTHS.forEach((_,i) => {
+    const f = isFuture(i);
+    const change = (D.transactions||[])
+      .filter(t => t.date && t.date.slice(0,7)===ym(i) && ccAcctIds.has(t.accountId))
+      .reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
+    ccYearTotal += change;
+    const absC = Math.round(Math.abs(change)*100)/100;
+    const color = change > 0.005 ? 'var(--warn)' : change < -0.005 ? 'var(--ok)' : '';
+    const lbl   = absC < 0.005 ? z()
+      : `<span style="color:${color};font-weight:600">${change>0?'+':'−'}${fmtC(absC).replace('$','').replace(/\.00$/,'')}</span>`;
+    ccCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${f?z():lbl}</td>`);
+  });
+  const ccYearAbs   = Math.round(Math.abs(ccYearTotal)*100)/100;
+  const ccYearColor = ccYearTotal > 0.005 ? 'var(--warn)' : ccYearTotal < -0.005 ? 'var(--ok)' : '';
+  const ccYearLbl   = ccYearAbs < 0.005 ? z()
+    : `<span style="color:${ccYearColor};font-weight:600">${ccYearTotal>0?'+':'−'}${fmtC(ccYearAbs).replace('$','').replace(/\.00$/,'')}</span>`;
+
   const annNetAct = incActTotal - grandActTotal;
   const _annReimbRcvd  = grandReimbTotal > 0 ? getReimbReceived(`${year}-12`) : 0;
   const _annNetPending = Math.max(0, grandReimbTotal - _annReimbRcvd);
@@ -7539,6 +7561,11 @@ function renderActualsGrid() {
       <td class="ann-label">📊 Net (Income − Exp)</td>
       ${netCells.join('')}
       <td class="ann-num ann-total-col">${fNet(annNetAct)}</td>
+    </tr>
+    <tr style="background:color-mix(in srgb,var(--warn) 4%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Month-over-month change in total CC balances. Positive = more charged than paid (debt up). Negative = net paydown.">💳 CC Balance Change</td>
+      ${ccCells.join('')}
+      <td class="ann-num ann-total-col">${ccYearLbl}</td>
     </tr>
     <tr class="ann-row-cumul">
       <td class="ann-label">🏦 Cumulative Balance</td>
