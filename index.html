@@ -1448,10 +1448,12 @@ async function _ghFetch(cfg) {
   if (!res.ok) throw new Error(`GitHub API error ${res.status}: ${res.statusText}`);
   const json = await res.json();
   ghSetSha(json.sha);
-  // GitHub omits content and provides download_url when file exceeds 1 MB
+  // GitHub omits content when file exceeds 1 MB — use Git Blobs API with raw accept header instead
   if (!json.content || json.content.trim() === '') {
-    if (!json.download_url) throw new Error('File too large and no download_url provided by GitHub.');
-    const rawRes = await fetch(json.download_url); // token is already embedded in the signed URL
+    const blobUrl = `https://api.github.com/repos/${cfg.repo}/git/blobs/${json.sha}`;
+    const rawRes = await fetch(blobUrl, {
+      headers: { 'Authorization': `Bearer ${cfg.token}`, 'Accept': 'application/vnd.github.raw' }
+    });
     if (!rawRes.ok) throw new Error(`Failed to fetch file content: ${rawRes.status}`);
     return rawRes.json();
   }
