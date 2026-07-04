@@ -1451,9 +1451,7 @@ async function _ghFetch(cfg) {
   // GitHub omits content and provides download_url when file exceeds 1 MB
   if (!json.content || json.content.trim() === '') {
     if (!json.download_url) throw new Error('File too large and no download_url provided by GitHub.');
-    const rawRes = await fetch(json.download_url, {
-      headers: { 'Authorization': `Bearer ${cfg.token}` }
-    });
+    const rawRes = await fetch(json.download_url); // token is already embedded in the signed URL
     if (!rawRes.ok) throw new Error(`Failed to fetch file content: ${rawRes.status}`);
     return rawRes.json();
   }
