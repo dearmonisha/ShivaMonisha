@@ -7398,9 +7398,9 @@ function renderActualsGrid() {
   const getActual = (catId, m) => budgetGetCatActuals(catId, m);
 
   const z    = () => `<span class="ann-zero">—</span>`;
-  const fAct = v  => v > 0 ? `<span class="ann-act-val">${fmtC(v).replace('$','').replace(/\.00$/,'')}</span>` : z();
+  const fAct = v  => v > 0 ? `<span class="ann-act-val">${fmtC(v).replace('$','')}</span>` : z();
   const fNet = v  => {
-    const s = fmtC(Math.abs(v)).replace('$','').replace(/\.00$/,'');
+    const s = fmtC(Math.abs(v)).replace('$','');
     return `<span class="${v>=0?'ann-positive':'ann-negative'}">${v<0?'-':''}${s}</span>`;
   };
 
@@ -7435,10 +7435,6 @@ function renderActualsGrid() {
     const gActM = new Array(12).fill(0);
     let gActTot = 0, catRowsHtml = '';
 
-    // Skip groups with no actuals this year
-    const hasAny = gcats.some(c => MONTHS.some((_,i) => getActual(c.id, ym(i)) > 0));
-    if (!hasAny) continue;
-
     for (const cat of gcats) {
       const isReimb = !!cat.reimbursable;
       let cAct = 0;
@@ -7452,7 +7448,6 @@ function renderActualsGrid() {
       }).join('');
       if (!isReimb) gActTot += cAct;
       else          grandReimbTotal += cAct;
-      if (cAct === 0) continue; // skip zero-spend cats
       catRowsHtml += `
         <tr class="ann-row-cat"${isReimb?' style="background:color-mix(in srgb,var(--info) 4%,transparent);opacity:.85"':''}>
           <td class="ann-label ann-indent" style="${isReimb?'color:var(--info)':''}">
