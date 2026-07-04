@@ -10221,7 +10221,7 @@ function recomputeTxnActuals() {
       return; // don't also process the top-level categoryId
     }
     // ── Normal transaction ────────────────────────────────────────────────
-    if (!t.categoryId || t.categoryId === '__income__') return;
+    if (!t.categoryId || t.categoryId === '__income__' || t.categoryId === '__family_deposits__') return;
     const key = t.categoryId + '::' + month;
     if (!groups[key]) groups[key] = { categoryId: t.categoryId, month, amount: 0 };
     // Net expense = debit (spending) minus credit (refund/return)
@@ -10240,6 +10240,7 @@ function txnCatOptions(selectedId) {
   const cats   = D.budget.categories || [];
   let html = `<option value="">— Select expense type —</option>`;
   html += `<option value="__income__"${selectedId === '__income__' ? ' selected' : ''}>💰 Income</option>`;
+  html += `<option value="__family_deposits__"${selectedId === '__family_deposits__' ? ' selected' : ''}>🏦 Family Deposits (not counted as income)</option>`;
   if (!cats.length) return html;
   html += `<optgroup label="────────────────"></optgroup>`;
   groups.forEach(g => {
@@ -10266,6 +10267,7 @@ function txnCatOptions(selectedId) {
 function txnCatLabel(catId) {
   if (!catId) return '';
   if (catId === '__income__') return '💰 Income';
+  if (catId === '__family_deposits__') return '🏦 Family Deposits';
   const cat   = (D.budget.categories||[]).find(c => c.id === catId);
   const group = cat ? (D.budget.groups||[]).find(g => g.id === cat.groupId) : null;
   return cat ? (group ? group.name + ' › ' : '') + cat.name : '';
@@ -11292,7 +11294,7 @@ function renderTxnRight() {
     const isSplit    = t.splits && t.splits.length > 0;
     const isTransfer = !!t.isTransfer;
     const catLabel   = (isSplit || isTransfer) ? null : txnCatLabel(t.categoryId);
-    const isIncome   = !isSplit && !isTransfer && t.categoryId === '__income__';
+    const isIncome   = !isSplit && !isTransfer && (t.categoryId === '__income__' || t.categoryId === '__family_deposits__');
     const isLoanAcct = acct?.type === 'Loans';
     const balColor  = isCC
       ? (t._bal > 0 ? 'var(--danger)' : 'var(--ok)')
