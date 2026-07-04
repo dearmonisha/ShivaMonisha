@@ -555,7 +555,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .ann-zero{color:var(--text3)}
 .ann-head{background:var(--text);color:#fff;padding:6px 8px;text-align:center;font-weight:700;border-right:1px solid rgba(255,255,255,.1)}
 .ann-head.ann-label{text-align:left;z-index:4;position:sticky;left:0}
-.ann-month-head{font-size:.73rem;letter-spacing:.03em}
+.ann-month-head{font-size:.82rem;letter-spacing:.04em;text-transform:uppercase}
 .ann-subhead{font-size:.62rem;color:rgba(255,255,255,.6);font-weight:500;padding-top:3px;padding-bottom:5px}
 .ann-future-head{background:var(--surface3);color:var(--text2)}
 .ann-today{background:var(--primary)!important;color:#fff!important}
@@ -7202,12 +7202,12 @@ function renderAnnual() {
   };
 
   const hRow1 = MONTHS.map((mo, i) => {
-    const cls = ['ann-head ann-month-head', isToday(i)?'ann-today':'', isFuture(i)?'ann-future-head':''].filter(Boolean).join(' ');
+    const cls = ['ann-head ann-month-head', isToday(i)?'ann-today':'ann-future-head'].join(' ');
     return `<th class="${cls}" colspan="2">${mo}</th>`;
   }).join('') + `<th class="ann-head ann-month-head ann-total-head" colspan="2" style="border-left:2px solid rgba(255,255,255,.15)">Year Total</th>`;
 
   const hRow2 = MONTHS.map((_, i) => {
-    const base = `ann-head ann-subhead${isToday(i)?' ann-today-sub':''}${isFuture(i)?' ann-future-head':''}`;
+    const base = `ann-head ann-subhead${isToday(i)?' ann-today-sub':' ann-future-head'}`;
     return `<th class="${base} ann-bud-col">Bud</th><th class="${base} ann-act-col">Act</th>`;
   }).join('') + `<th class="ann-head ann-subhead ann-total-head ann-bud-col">Bud</th><th class="ann-head ann-subhead ann-total-head ann-act-col">Act</th>`;
 
@@ -7406,7 +7406,7 @@ function renderActualsGrid() {
 
   // Single-row header — one column per month + year total
   const hRow = MONTHS.map((mo, i) => {
-    const cls = ['ann-head ann-month-head ann-act-col', isToday(i)?'ann-today':'', isFuture(i)?'ann-future-head':''].filter(Boolean).join(' ');
+    const cls = ['ann-head ann-month-head ann-act-col', isToday(i)?'ann-today':'ann-future-head'].join(' ');
     return `<th class="${cls}">${mo}</th>`;
   }).join('') + `<th class="ann-head ann-month-head ann-total-head ann-act-col" style="border-left:2px solid rgba(255,255,255,.15)">Total</th>`;
 
@@ -7507,7 +7507,7 @@ function renderActualsGrid() {
   });
 
   // CC balance change per month: net increase (+) or decrease (-) in total CC balances
-  // Positive = charged more than paid (accumulated debt), Negative = paid down more than charged
+  // Positive = charged more than paid (debt up), Negative = net paydown
   const ccAcctIds = new Set((D.txnAccounts||[]).filter(a => a.type==='Credit Card').map(a => a.id));
   const ccCells = [];
   let ccYearTotal = 0;
@@ -7555,23 +7555,23 @@ function renderActualsGrid() {
       ${expTotCells.join('')}
       <td class="ann-num ann-total-col ann-act-col">${fAct(grandActTotal)}</td>
     </tr>
-    ${reimbRow}
     <tr class="ann-summary-divider"><td colspan="${TOTAL_COLS}"></td></tr>
     <tr class="ann-row-net">
       <td class="ann-label">📊 Net (Income − Exp)</td>
       ${netCells.join('')}
       <td class="ann-num ann-total-col">${fNet(annNetAct)}</td>
     </tr>
-    <tr style="background:color-mix(in srgb,var(--warn) 4%,transparent)">
-      <td class="ann-label" style="font-size:.82rem" title="Month-over-month change in total CC balances. Positive = more charged than paid (debt up). Negative = net paydown.">💳 CC Balance Change</td>
-      ${ccCells.join('')}
-      <td class="ann-num ann-total-col">${ccYearLbl}</td>
-    </tr>
     <tr class="ann-row-cumul">
       <td class="ann-label">🏦 Cumulative Balance</td>
       ${cumulCells.join('')}
       <td class="ann-num ann-total-col">${fNet(cumulAct)}</td>
-    </tr>`;
+    </tr>
+    <tr style="background:color-mix(in srgb,var(--warn) 4%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Month-over-month CC balance change. Positive = more charged than paid (capitalizing). Income + CC↑ ≈ Expenses">💳 CC Bal Change</td>
+      ${ccCells.join('')}
+      <td class="ann-num ann-total-col">${ccYearLbl}</td>
+    </tr>
+    ${reimbRow}`;
 
   wrap.innerHTML = `
     <div class="ann-scroll-wrap">
