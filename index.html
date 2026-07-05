@@ -822,7 +822,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
         <button class="btn btn-sm" onclick="BA.openIncomeScheduleModal()">⚙ Pay Schedules</button>
         <button class="btn btn-sm" onclick="BA.copyBudgetFromPrior()">📋 Copy Prior Month</button>
-        <button class="btn btn-sm" onclick="BA.importBudgetData()">⬆ Import Budget</button>
+        <button class="btn btn-sm" onclick="BA.importBudgetData()" style="display:none">⬆ Import Budget</button>
         <span style="width:1px;height:18px;background:var(--border);display:inline-block;margin:0 2px;"></span>
         <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.expandAllBudgetGroups()">⊞ Expand All</button>
         <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.collapseAllBudgetGroups()">⊟ Collapse All</button>
@@ -900,10 +900,8 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px;padding-bottom:6px">
         <span style="font-size:.95rem;font-weight:700;color:var(--text)">Transactions</span>
         <div style="display:flex;gap:6px;align-items:center">
-          <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border);color:var(--text2);font-size:.78rem;padding:4px 11px;border-radius:6px;cursor:pointer" onclick="txnImportModal()" title="Import transactions from CSV (YNAB-compatible)">⬆ Import CSV</button>
         </div>
       </div>
-      <input type="file" id="txn-import-file" accept=".csv,.tsv,text/csv" style="display:none" onchange="txnHandleImportFile(this)">
       <div id="txn-kpi-row" class="sum-row" style="margin-bottom:0;padding-top:4px"></div>
     </div>
     <div style="padding:6px 0 2px;display:flex;align-items:center;gap:8px">
@@ -6642,7 +6640,6 @@ function renderBudgetTable(month) {
           </button>
         </div>
         <span style="font-size:.7rem;color:var(--text3)">Click any value to edit · drag ⠿ to reorder</span>
-        <button class="btn btn-sm" onclick="BA.manualUpdateActuals()" title="Recompute actuals from Transactions tab" style="font-size:.73rem;padding:3px 10px;background:color-mix(in srgb,var(--primary) 8%,transparent);border:1px solid color-mix(in srgb,var(--primary) 30%,var(--border));color:var(--primary)">🔄 Update Actuals</button>
       </div>
     </div>
     <div class="btable-wrap">
