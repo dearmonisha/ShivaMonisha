@@ -7303,23 +7303,72 @@ function renderAnnual() {
     if (famDR > 0) { mReimbTotals[i] += famDR; grandReimbTotal += famDR; }
   });
 
+  // Pot account detection (same as Actuals Grid)
+  const potAcctIds = new Set([
+    (D.savingsPots||{}).growthAccountId,
+    (D.reservePots||{}).reserveAccountId
+  ].filter(Boolean));
+  const getPotW = m => (D.transactions||[])
+    .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
+                 t.status !== 'rejected' &&
+                 potAcctIds.has(t.transferFromAcctId) && !potAcctIds.has(t.accountId))
+    .reduce((s,t) => s + (parseFloat(t.credit)||0) - (parseFloat(t.debit)||0), 0);
+  const getPotD = m => (D.transactions||[])
+    .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
+                 t.status !== 'rejected' &&
+                 potAcctIds.has(t.transferToAcctId) && !potAcctIds.has(t.accountId))
+    .reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
+
+  // CC detection
+  const ccAcctIds = new Set((D.txnAccounts||[]).filter(a => a.type==='Credit Card').map(a => a.id));
+
   let cumulBud = 0, cumulAct = 0;
+  let potWYearTotal = 0, potDYearTotal = 0;
+  let ccYearTotal = 0, ccRunning = 0;
   const expTotCells = [], reimbCells = [], netCells = [], cumulCells = [];
+  const potWCells = [], potDCells = [], ccCells = [], ccTotalCells = [];
   MONTHS.forEach((_,i) => {
     const inc   = getIncome(ym(i));
     const bud   = mBudTotals[i];   // excludes reimbursable
     const act   = mActTotals[i];   // excludes reimbursable
-    const reimb = mReimbTotals[i]; // reimbursable actuals only (category-linked + Family DR)
-    const netBud = inc - bud, netAct = inc - act;
-    cumulBud += netBud; cumulAct += netAct;
+    const reimb = mReimbTotals[i]; // reimbursable actuals only
+    const potW  = getPotW(ym(i));
+    const potD  = getPotD(ym(i));
+    potWYearTotal += potW;
+    potDYearTotal += potD;
+    const ccChange = (D.transactions||[])
+      .filter(t => t.date && t.date.slice(0,7)===ym(i) && ccAcctIds.has(t.accountId))
+      .reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
+    ccYearTotal += ccChange;
     const f = isFuture(i);
+    if (!f) ccRunning += ccChange;
+    const netBud = inc - bud;
+    const netAct = (inc + potW - potD) - act;
+    cumulBud += netBud; cumulAct += netAct;
     expTotCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${fBud(bud)}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`);
     reimbCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${z()}</td><td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--info)">${reimb > 0 ? fAct(reimb) : z()}</td>`);
     netCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${fNet(netBud)}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(netAct)}</td>`);
     cumulCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${fNet(cumulBud)}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(cumulAct)}</td>`);
+    potWCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${z()}</td><td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--ok)">${potW>0.005?fAct(potW):z()}</td>`);
+    potDCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${z()}</td><td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--danger)">${potD>0.005?fAct(potD):z()}</td>`);
+    const absC = Math.round(Math.abs(ccChange)*100)/100;
+    const colorC = ccChange > 0.005 ? 'var(--warn)' : ccChange < -0.005 ? 'var(--ok)' : '';
+    const lblC   = absC < 0.005 ? z() : `<span style="color:${colorC};font-weight:600">${ccChange>0?'+':'−'}${fmtC(absC).replace('$','').replace(/\.00$/,'')}</span>`;
+    ccCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${z()}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${f?z():lblC}</td>`);
+    const absR = Math.round(Math.abs(ccRunning)*100)/100;
+    const colorR = ccRunning > 0.005 ? 'var(--warn)' : ccRunning < -0.005 ? 'var(--ok)' : '';
+    const lblR   = absR < 0.005 ? z() : `<span style="color:${colorR};font-weight:600">${ccRunning>0?'+':'−'}${fmtC(absR).replace('$','').replace(/\.00$/,'')}</span>`;
+    ccTotalCells.push(`<td class="ann-num ann-bud-col${f?' ann-future':''}">${z()}</td><td class="ann-num ann-act-col${f?' ann-future':''}">${f?z():lblR}</td>`);
   });
+  const ccYearAbs   = Math.round(Math.abs(ccYearTotal)*100)/100;
+  const ccYearColor = ccYearTotal > 0.005 ? 'var(--warn)' : ccYearTotal < -0.005 ? 'var(--ok)' : '';
+  const ccYearLbl   = ccYearAbs < 0.005 ? z() : `<span style="color:${ccYearColor};font-weight:600">${ccYearTotal>0?'+':'−'}${fmtC(ccYearAbs).replace('$','').replace(/\.00$/,'')}</span>`;
+  const ccRunAbs    = Math.round(Math.abs(ccRunning)*100)/100;
+  const ccRunColor  = ccRunning > 0.005 ? 'var(--warn)' : ccRunning < -0.005 ? 'var(--ok)' : '';
+  const ccRunLbl    = ccRunAbs < 0.005 ? z() : `<span style="color:${ccRunColor};font-weight:600">${ccRunning>0?'+':'−'}${fmtC(ccRunAbs).replace('$','').replace(/\.00$/,'')}</span>`;
 
-  const annNetBud = incActTotal - grandBudTotal, annNetAct = incActTotal - grandActTotal;
+  const annNetBud = incActTotal - grandBudTotal;
+  const annNetAct = (incActTotal + potWYearTotal - potDYearTotal) - grandActTotal;
   const _annReimbRcvd   = grandReimbTotal > 0 ? getReimbReceived(`${year}-12`) : 0;
   const _annNetPending  = Math.max(0, grandReimbTotal - _annReimbRcvd);
   const reimbRow = grandReimbTotal > 0 ? `
@@ -7341,16 +7390,27 @@ function renderAnnual() {
       <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
       <td class="ann-num ann-total-col ann-act-col">${fAct(incActTotal)}</td>
     </tr>
+    <tr style="background:color-mix(in srgb,var(--ok) 6%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Cash withdrawn from Savings/Reserve pots and used to cover expenses. Counts toward your net but is not earned income.">🪣 Pot Withdrawal</td>
+      ${potWCells.join('')}
+      <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
+      <td class="ann-num ann-total-col ann-act-col" style="color:var(--ok)">${potWYearTotal>0.005?fAct(potWYearTotal):z()}</td>
+    </tr>
+    <tr style="background:color-mix(in srgb,var(--danger) 5%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Cash moved into Savings/Reserve pots this month. Reduces net — money left your pocket into savings.">🏦 Pot Deposit</td>
+      ${potDCells.join('')}
+      <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
+      <td class="ann-num ann-total-col ann-act-col" style="color:var(--danger)">${potDYearTotal>0.005?fAct(potDYearTotal):z()}</td>
+    </tr>
     <tr class="ann-row-expenses">
       <td class="ann-label">📤 Total Expenses</td>
       ${expTotCells.join('')}
       <td class="ann-num ann-total-col ann-bud-col">${fBud(grandBudTotal)}</td>
       <td class="ann-num ann-total-col ann-act-col">${fAct(grandActTotal)}</td>
     </tr>
-    ${reimbRow}
     <tr class="ann-summary-divider"><td colspan="${TOTAL_COLS}"></td></tr>
     <tr class="ann-row-net">
-      <td class="ann-label">📊 Net (Income − Exp)</td>
+      <td class="ann-label">📊 Net (Income + Pot W − Pot Dep − Exp)</td>
       ${netCells.join('')}
       <td class="ann-num ann-total-col">${fNet(annNetBud)}</td>
       <td class="ann-num ann-total-col">${fNet(annNetAct)}</td>
@@ -7360,7 +7420,20 @@ function renderAnnual() {
       ${cumulCells.join('')}
       <td class="ann-num ann-total-col">${fNet(cumulBud)}</td>
       <td class="ann-num ann-total-col">${fNet(cumulAct)}</td>
-    </tr>`;
+    </tr>
+    <tr style="background:color-mix(in srgb,var(--warn) 4%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Month-over-month CC balance change. Positive = more charged than paid (capitalizing). Income + CC↑ ≈ Expenses">💳 CC Bal Change</td>
+      ${ccCells.join('')}
+      <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
+      <td class="ann-num ann-total-col ann-act-col">${ccYearLbl}</td>
+    </tr>
+    <tr style="background:color-mix(in srgb,var(--warn) 7%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Running CC balance change from Jan 1. Positive = CC debt has grown vs start of year; Negative = net paydown.">💳 CC YTD Total</td>
+      ${ccTotalCells.join('')}
+      <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
+      <td class="ann-num ann-total-col ann-act-col">${ccRunLbl}</td>
+    </tr>
+    ${reimbRow}`;
 
   wrap.innerHTML = `
     <div class="ann-scroll-wrap">
@@ -7545,24 +7618,34 @@ function renderActualsGrid() {
   // CC balance change per month: net increase (+) or decrease (-) in total CC balances
   // Positive = charged more than paid (debt up), Negative = net paydown
   const ccAcctIds = new Set((D.txnAccounts||[]).filter(a => a.type==='Credit Card').map(a => a.id));
-  const ccCells = [];
-  let ccYearTotal = 0;
+  const ccCells = [], ccTotalCells = [];
+  let ccYearTotal = 0, ccRunning = 0;
   MONTHS.forEach((_,i) => {
     const f = isFuture(i);
     const change = (D.transactions||[])
       .filter(t => t.date && t.date.slice(0,7)===ym(i) && ccAcctIds.has(t.accountId))
       .reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
     ccYearTotal += change;
+    if (!f) ccRunning += change;
     const absC = Math.round(Math.abs(change)*100)/100;
     const color = change > 0.005 ? 'var(--warn)' : change < -0.005 ? 'var(--ok)' : '';
     const lbl   = absC < 0.005 ? z()
       : `<span style="color:${color};font-weight:600">${change>0?'+':'−'}${fmtC(absC).replace('$','').replace(/\.00$/,'')}</span>`;
     ccCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${f?z():lbl}</td>`);
+    const absR = Math.round(Math.abs(ccRunning)*100)/100;
+    const colorR = ccRunning > 0.005 ? 'var(--warn)' : ccRunning < -0.005 ? 'var(--ok)' : '';
+    const lblR   = absR < 0.005 ? z()
+      : `<span style="color:${colorR};font-weight:600">${ccRunning>0?'+':'−'}${fmtC(absR).replace('$','').replace(/\.00$/,'')}</span>`;
+    ccTotalCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${f?z():lblR}</td>`);
   });
   const ccYearAbs   = Math.round(Math.abs(ccYearTotal)*100)/100;
   const ccYearColor = ccYearTotal > 0.005 ? 'var(--warn)' : ccYearTotal < -0.005 ? 'var(--ok)' : '';
   const ccYearLbl   = ccYearAbs < 0.005 ? z()
     : `<span style="color:${ccYearColor};font-weight:600">${ccYearTotal>0?'+':'−'}${fmtC(ccYearAbs).replace('$','').replace(/\.00$/,'')}</span>`;
+  const ccRunAbs    = Math.round(Math.abs(ccRunning)*100)/100;
+  const ccRunColor  = ccRunning > 0.005 ? 'var(--warn)' : ccRunning < -0.005 ? 'var(--ok)' : '';
+  const ccRunLbl    = ccRunAbs < 0.005 ? z()
+    : `<span style="color:${ccRunColor};font-weight:600">${ccRunning>0?'+':'−'}${fmtC(ccRunAbs).replace('$','').replace(/\.00$/,'')}</span>`;
 
   const annNetAct = (incActTotal + potWYearTotal - potDYearTotal) - grandActTotal;
   const _annReimbRcvd  = grandReimbTotal > 0 ? getReimbReceived(`${year}-12`) : 0;
@@ -7616,6 +7699,11 @@ function renderActualsGrid() {
       <td class="ann-label" style="font-size:.82rem" title="Month-over-month CC balance change. Positive = more charged than paid (capitalizing). Income + CC↑ ≈ Expenses">💳 CC Bal Change</td>
       ${ccCells.join('')}
       <td class="ann-num ann-total-col">${ccYearLbl}</td>
+    </tr>
+    <tr style="background:color-mix(in srgb,var(--warn) 7%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Running CC balance change from Jan 1. Positive = CC debt has grown vs start of year; Negative = net paydown.">💳 CC YTD Total</td>
+      ${ccTotalCells.join('')}
+      <td class="ann-num ann-total-col">${ccRunLbl}</td>
     </tr>
     ${reimbRow}`;
 
