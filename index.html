@@ -7499,17 +7499,27 @@ function renderActualsGrid() {
     if (famDR > 0) { mReimbTotals[i] += famDR; grandReimbTotal += famDR; }
   });
 
+  // Pot withdrawals: __pot_withdrawal__ tagged credit transactions (from reserves into checking)
+  const getPotW = m => (D.transactions||[])
+    .filter(t => t.date && t.date.slice(0,7)===m && !t.isTransfer &&
+                 t.status !== 'rejected' && t.categoryId === '__pot_withdrawal__')
+    .reduce((s,t) => s + (parseFloat(t.credit)||0) - (parseFloat(t.debit)||0), 0);
+
   let cumulAct = 0;
-  const expTotCells = [], reimbCells = [], netCells = [], cumulCells = [];
+  const expTotCells = [], reimbCells = [], netCells = [], cumulCells = [], potWCells = [];
+  let potWYearTotal = 0;
   MONTHS.forEach((_,i) => {
     const inc   = getIncome(ym(i));
     const act   = mActTotals[i];
     const reimb = mReimbTotals[i];
-    cumulAct += inc - act;
+    const potW  = getPotW(ym(i));
+    potWYearTotal += potW;
+    cumulAct += (inc + potW) - act;
     const f = isFuture(i);
     expTotCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`);
     reimbCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--info)">${reimb>0?fAct(reimb):z()}</td>`);
-    netCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(inc-act)}</td>`);
+    potWCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--ok)">${potW>0.005?fAct(potW):z()}</td>`);
+    netCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fNet((inc+potW)-act)}</td>`);
     cumulCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(cumulAct)}</td>`);
   });
 
@@ -7535,7 +7545,7 @@ function renderActualsGrid() {
   const ccYearLbl   = ccYearAbs < 0.005 ? z()
     : `<span style="color:${ccYearColor};font-weight:600">${ccYearTotal>0?'+':'−'}${fmtC(ccYearAbs).replace('$','').replace(/\.00$/,'')}</span>`;
 
-  const annNetAct = incActTotal - grandActTotal;
+  const annNetAct = (incActTotal + potWYearTotal) - grandActTotal;
   const _annReimbRcvd  = grandReimbTotal > 0 ? getReimbReceived(`${year}-12`) : 0;
   const _annNetPending = Math.max(0, grandReimbTotal - _annReimbRcvd);
 
@@ -7557,6 +7567,11 @@ function renderActualsGrid() {
       ${incomeCells}
       <td class="ann-num ann-total-col ann-act-col">${fAct(incActTotal)}</td>
     </tr>
+    <tr style="background:color-mix(in srgb,var(--ok) 6%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Cash withdrawn from Savings/Reserve pots and used to cover expenses. Counts toward your net but is not earned income.">🪣 Pot Withdrawal</td>
+      ${potWCells.join('')}
+      <td class="ann-num ann-total-col ann-act-col" style="color:var(--ok)">${potWYearTotal>0.005?fAct(potWYearTotal):z()}</td>
+    </tr>
     <tr class="ann-row-expenses">
       <td class="ann-label">📤 Total Expenses</td>
       ${expTotCells.join('')}
@@ -7564,7 +7579,7 @@ function renderActualsGrid() {
     </tr>
     <tr class="ann-summary-divider"><td colspan="${TOTAL_COLS}"></td></tr>
     <tr class="ann-row-net">
-      <td class="ann-label">📊 Net (Income − Exp)</td>
+      <td class="ann-label">📊 Net (Income + Pot W − Exp)</td>
       ${netCells.join('')}
       <td class="ann-num ann-total-col">${fNet(annNetAct)}</td>
     </tr>
@@ -10233,7 +10248,7 @@ function recomputeTxnActuals() {
       return; // don't also process the top-level categoryId
     }
     // ── Normal transaction ────────────────────────────────────────────────
-    if (!t.categoryId || t.categoryId === '__income__' || t.categoryId === '__family_deposits__') return;
+    if (!t.categoryId || t.categoryId === '__income__' || t.categoryId === '__family_deposits__' || t.categoryId === '__pot_withdrawal__') return;
     const key = t.categoryId + '::' + month;
     if (!groups[key]) groups[key] = { categoryId: t.categoryId, month, amount: 0 };
     // Net expense = debit (spending) minus credit (refund/return)
@@ -10253,6 +10268,7 @@ function txnCatOptions(selectedId) {
   let html = `<option value="">— Select expense type —</option>`;
   html += `<option value="__income__"${selectedId === '__income__' ? ' selected' : ''}>💰 Income</option>`;
   html += `<option value="__family_deposits__"${selectedId === '__family_deposits__' ? ' selected' : ''}>🏦 Family Deposits (not counted as income)</option>`;
+  html += `<option value="__pot_withdrawal__"${selectedId === '__pot_withdrawal__' ? ' selected' : ''}>🪣 Pot Withdrawal (counts toward net, not earned income)</option>`;
   if (!cats.length) return html;
   html += `<optgroup label="────────────────"></optgroup>`;
   groups.forEach(g => {
@@ -10280,6 +10296,7 @@ function txnCatLabel(catId) {
   if (!catId) return '';
   if (catId === '__income__') return '💰 Income';
   if (catId === '__family_deposits__') return '🏦 Family Deposits';
+  if (catId === '__pot_withdrawal__') return '🪣 Pot Withdrawal';
   const cat   = (D.budget.categories||[]).find(c => c.id === catId);
   const group = cat ? (D.budget.groups||[]).find(g => g.id === cat.groupId) : null;
   return cat ? (group ? group.name + ' › ' : '') + cat.name : '';
@@ -11306,7 +11323,7 @@ function renderTxnRight() {
     const isSplit    = t.splits && t.splits.length > 0;
     const isTransfer = !!t.isTransfer;
     const catLabel   = (isSplit || isTransfer) ? null : txnCatLabel(t.categoryId);
-    const isIncome   = !isSplit && !isTransfer && (t.categoryId === '__income__' || t.categoryId === '__family_deposits__');
+    const isIncome   = !isSplit && !isTransfer && (t.categoryId === '__income__' || t.categoryId === '__family_deposits__' || t.categoryId === '__pot_withdrawal__');
     const isLoanAcct = acct?.type === 'Loans';
     const balColor  = isCC
       ? (t._bal > 0 ? 'var(--danger)' : 'var(--ok)')
