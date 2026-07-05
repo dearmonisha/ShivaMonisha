@@ -7499,27 +7499,46 @@ function renderActualsGrid() {
     if (famDR > 0) { mReimbTotals[i] += famDR; grandReimbTotal += famDR; }
   });
 
-  // Pot withdrawals: __pot_withdrawal__ tagged credit transactions (from reserves into checking)
+  // Pot account IDs (growth + reserve) — used for both deposit and withdrawal detection
+  const potAcctIds = new Set([
+    (D.savingsPots||{}).growthAccountId,
+    (D.reservePots||{}).reserveAccountId
+  ].filter(Boolean));
+
+  // Pot withdrawals: isTransfer credit transactions coming FROM a pot account into a non-pot account
+  // No manual category needed — identified purely by transferFromAcctId
   const getPotW = m => (D.transactions||[])
-    .filter(t => t.date && t.date.slice(0,7)===m && !t.isTransfer &&
-                 t.status !== 'rejected' && t.categoryId === '__pot_withdrawal__')
+    .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
+                 t.status !== 'rejected' &&
+                 potAcctIds.has(t.transferFromAcctId) && !potAcctIds.has(t.accountId))
     .reduce((s,t) => s + (parseFloat(t.credit)||0) - (parseFloat(t.debit)||0), 0);
 
+  // Pot deposits: isTransfer debit transactions going TO a pot account from a non-pot account
+  // No manual category needed — identified purely by transferToAcctId
+  const getPotD = m => (D.transactions||[])
+    .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
+                 t.status !== 'rejected' &&
+                 potAcctIds.has(t.transferToAcctId) && !potAcctIds.has(t.accountId))
+    .reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
+
   let cumulAct = 0;
-  const expTotCells = [], reimbCells = [], netCells = [], cumulCells = [], potWCells = [];
-  let potWYearTotal = 0;
+  const expTotCells = [], reimbCells = [], netCells = [], cumulCells = [], potWCells = [], potDCells = [];
+  let potWYearTotal = 0, potDYearTotal = 0;
   MONTHS.forEach((_,i) => {
     const inc   = getIncome(ym(i));
     const act   = mActTotals[i];
     const reimb = mReimbTotals[i];
     const potW  = getPotW(ym(i));
+    const potD  = getPotD(ym(i));
     potWYearTotal += potW;
-    cumulAct += (inc + potW) - act;
+    potDYearTotal += potD;
+    cumulAct += (inc + potW - potD) - act;
     const f = isFuture(i);
     expTotCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`);
     reimbCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--info)">${reimb>0?fAct(reimb):z()}</td>`);
     potWCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--ok)">${potW>0.005?fAct(potW):z()}</td>`);
-    netCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fNet((inc+potW)-act)}</td>`);
+    potDCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}" style="color:var(--danger)">${potD>0.005?fAct(potD):z()}</td>`);
+    netCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fNet((inc+potW-potD)-act)}</td>`);
     cumulCells.push(`<td class="ann-num ann-act-col${f?' ann-future':''}">${fNet(cumulAct)}</td>`);
   });
 
@@ -7545,7 +7564,7 @@ function renderActualsGrid() {
   const ccYearLbl   = ccYearAbs < 0.005 ? z()
     : `<span style="color:${ccYearColor};font-weight:600">${ccYearTotal>0?'+':'−'}${fmtC(ccYearAbs).replace('$','').replace(/\.00$/,'')}</span>`;
 
-  const annNetAct = (incActTotal + potWYearTotal) - grandActTotal;
+  const annNetAct = (incActTotal + potWYearTotal - potDYearTotal) - grandActTotal;
   const _annReimbRcvd  = grandReimbTotal > 0 ? getReimbReceived(`${year}-12`) : 0;
   const _annNetPending = Math.max(0, grandReimbTotal - _annReimbRcvd);
 
@@ -7572,6 +7591,11 @@ function renderActualsGrid() {
       ${potWCells.join('')}
       <td class="ann-num ann-total-col ann-act-col" style="color:var(--ok)">${potWYearTotal>0.005?fAct(potWYearTotal):z()}</td>
     </tr>
+    <tr style="background:color-mix(in srgb,var(--danger) 5%,transparent)">
+      <td class="ann-label" style="font-size:.82rem" title="Cash moved into Savings/Reserve pots this month. Reduces net — money left your pocket into savings.">🏦 Pot Deposit</td>
+      ${potDCells.join('')}
+      <td class="ann-num ann-total-col ann-act-col" style="color:var(--danger)">${potDYearTotal>0.005?fAct(potDYearTotal):z()}</td>
+    </tr>
     <tr class="ann-row-expenses">
       <td class="ann-label">📤 Total Expenses</td>
       ${expTotCells.join('')}
@@ -7579,7 +7603,7 @@ function renderActualsGrid() {
     </tr>
     <tr class="ann-summary-divider"><td colspan="${TOTAL_COLS}"></td></tr>
     <tr class="ann-row-net">
-      <td class="ann-label">📊 Net (Income + Pot W − Exp)</td>
+      <td class="ann-label">📊 Net (Income + Pot W − Pot Dep − Exp)</td>
       ${netCells.join('')}
       <td class="ann-num ann-total-col">${fNet(annNetAct)}</td>
     </tr>
