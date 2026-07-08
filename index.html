@@ -11001,11 +11001,10 @@ function _renderAllAccountsView(panel) {
       <input type="text" value="${esc(_pf)}" placeholder="Payee…" list="txn-payee-list"
         style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
         title="Filter by payee — type to filter, Enter or click away to apply"
-        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();renderTxnRight();},350)"
-        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight();}"
-        onblur="clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight()">
+        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();},350)"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();}"
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear All</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear All</button>
         <span style="color:var(--primary);font-weight:600">${allTxns.length} of ${totalCommitted} shown</span>
         <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,${_fltNetColor} 10%,transparent);border:1px solid color-mix(in srgb,${_fltNetColor} 30%,transparent);font-size:.76rem;font-weight:700;color:${_fltNetColor};white-space:nowrap" title="Net amount of filtered transactions (Debits − Credits)">
           Net ${_fltNetLabel}
@@ -11596,11 +11595,10 @@ function renderTxnRight() {
       <input type="text" id="txn-pf-inp" value="${esc(_pf)}" placeholder="Payee…" list="txn-payee-list"
         style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
         title="Filter by payee — type to filter, Enter or click away to apply"
-        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();renderTxnRight();},350)"
-        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight();}"
-        onblur="clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight()">
+        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();},350)"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();}"
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
         <span style="color:var(--primary);font-weight:600">${filteredRows.length} of ${committedTxns.length} shown</span>` :
         `<span style="color:var(--text3);opacity:.6">${committedTxns.length} transaction${committedTxns.length!==1?'s':''}</span>`}
       <div style="margin-left:auto">
@@ -13830,9 +13828,8 @@ Object.assign(BA, {
     if (!UI.txnSelected) UI.txnSelected = [];
     const ids = Array.isArray(idsJson) ? idsJson : (typeof idsJson === 'string' ? JSON.parse(idsJson) : []);
     if (checked) {
-      const sel = new Set(UI.txnSelected);
-      ids.forEach(id => sel.add(id));
-      UI.txnSelected = [...sel];
+      // Replace (not merge) — user selects "these visible items", not "add to whatever was selected before"
+      UI.txnSelected = [...ids];
     } else {
       const remove = new Set(ids);
       UI.txnSelected = UI.txnSelected.filter(id => !remove.has(id));
