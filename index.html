@@ -10997,7 +10997,13 @@ function _renderAllAccountsView(panel) {
         ${_catFilterOpts}
       </select>
       <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleAll}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
-      ${_pf ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,var(--primary) 12%,transparent);border:1px solid color-mix(in srgb,var(--primary) 35%,transparent);font-size:.76rem;font-weight:600;color:var(--primary);white-space:nowrap">👤 ${esc(_pf)} <button onclick="BA.txnClearPayeeFilter()" style="background:none;border:none;cursor:pointer;color:var(--primary);font-size:.8rem;padding:0;line-height:1" title="Clear payee filter">✕</button></span>` : ''}
+      <span style="color:var(--text3);margin-left:4px">👤</span>
+      <input type="text" value="${esc(_pf)}" placeholder="Payee…" list="txn-payee-list"
+        style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
+        title="Filter by payee — type to filter, Enter or click away to apply"
+        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();renderTxnRight();},350)"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight();}"
+        onblur="clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight()">
       ${anyFilterActive ? `
         <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear All</button>
         <span style="color:var(--primary);font-weight:600">${allTxns.length} of ${totalCommitted} shown</span>
@@ -11026,6 +11032,8 @@ function _renderAllAccountsView(panel) {
   const _allAcctPayees = [...new Set((D.transactions||[]).map(t => t.payee).filter(Boolean))].sort();
   const _allAcctDatalist = `<datalist id="txn-payee-list">${_allAcctPayees.map(p => `<option value="${esc(p)}">`).join('')}</datalist>`;
 
+  const _savedScrollAll = panel.querySelector('.txn-tbl-wrap')?.scrollTop || 0;
+
   panel.innerHTML = `
     ${_allAcctDatalist}
     <div class="txn-ledger-hdr">
@@ -11051,7 +11059,13 @@ function _renderAllAccountsView(panel) {
         <tbody>${rows}</tbody>
       </table>` : `<div class="txn-empty"><div class="txn-empty-icon">📋</div><strong>No transactions match the current filter</strong></div>`}
     </div>`;
-  requestAnimationFrame(() => initTxnColResize(panel));
+  requestAnimationFrame(() => {
+    initTxnColResize(panel);
+    if (_savedScrollAll) {
+      const wrap = panel.querySelector('.txn-tbl-wrap');
+      if (wrap) wrap.scrollTop = _savedScrollAll;
+    }
+  });
 }
 
 // ── Column resize defaults & init ────────────────────────────────────────────
@@ -11276,6 +11290,8 @@ function _renderTxnSearchResults(panel, query) {
       <button onclick="UI.txnSelected=[];renderTxnRight()" style="font-size:.73rem;padding:2px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Deselect All</button>
     </div>` : '';
 
+  const _savedScrollSR = panel.querySelector('.txn-tbl-wrap')?.scrollTop || 0;
+
   panel.innerHTML = `
     ${_srDatalist}
     <div class="txn-ledger-hdr">
@@ -11300,7 +11316,13 @@ function _renderTxnSearchResults(panel, query) {
         <tbody>${rows}</tbody>
       </table>` : `<div class="txn-empty"><strong>No transactions match "${esc(query)}"</strong></div>`}
     </div>`;
-  requestAnimationFrame(() => initTxnColResize(panel));
+  requestAnimationFrame(() => {
+    initTxnColResize(panel);
+    if (_savedScrollSR) {
+      const wrap = panel.querySelector('.txn-tbl-wrap');
+      if (wrap) wrap.scrollTop = _savedScrollSR;
+    }
+  });
 }
 
 function renderTxnRight() {
@@ -11570,7 +11592,13 @@ function renderTxnRight() {
         ${_catFilterOpts}
       </select>
       <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleSingle}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
-      ${_pf ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,var(--primary) 12%,transparent);border:1px solid color-mix(in srgb,var(--primary) 35%,transparent);font-size:.76rem;font-weight:600;color:var(--primary);white-space:nowrap">👤 ${esc(_pf)} <button onclick="BA.txnClearPayeeFilter()" style="background:none;border:none;cursor:pointer;color:var(--primary);font-size:.8rem;padding:0;line-height:1" title="Clear payee filter">✕</button></span>` : ''}
+      <span style="color:var(--text3);margin-left:4px">👤</span>
+      <input type="text" id="txn-pf-inp" value="${esc(_pf)}" placeholder="Payee…" list="txn-payee-list"
+        style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
+        title="Filter by payee — type to filter, Enter or click away to apply"
+        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();renderTxnRight();},350)"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight();}"
+        onblur="clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();renderTxnRight()">
       ${anyFilterActive ? `
         <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
         <span style="color:var(--primary);font-weight:600">${filteredRows.length} of ${committedTxns.length} shown</span>` :
