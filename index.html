@@ -1026,8 +1026,9 @@ let UI = {
   txnPendingCollapsed: false,
   txnDateFrom:   '',
   txnDateTo:     '',
-  txnCatFilter:  '',   // expense type filter for ledger
+  txnCatFilter:   '',    // expense type filter for ledger
   txnReimbFilter: false, // true = show only reimbursable/reimbursement transactions
+  txnPayeeFilter: '',    // payee name filter — click a payee cell to set
   reportsMonth:  '',   // selected month for spending breakdown chart
 };
 
@@ -10902,7 +10903,7 @@ function _renderAllAccountsView(panel) {
     if (t.categoryId) _catIdsAll.add(t.categoryId);
     (t.splits||[]).forEach(s => { if (s.categoryId) _catIdsAll.add(s.categoryId); });
   });
-  const _cf = UI.txnCatFilter, _df = UI.txnDateFrom, _dt = UI.txnDateTo, _rf = !!UI.txnReimbFilter;
+  const _cf = UI.txnCatFilter, _df = UI.txnDateFrom, _dt = UI.txnDateTo, _rf = !!UI.txnReimbFilter, _pf = UI.txnPayeeFilter||'';
   const _reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
   const _catFilterOpts = [..._catIdsAll]
     .map(cid => ({ cid, lbl: txnCatLabel(cid)||cid }))
@@ -10921,18 +10922,18 @@ function _renderAllAccountsView(panel) {
         if (!mainMatch && !splitMatch) return false;
       }
       if (_rf) {
-        // Reimbursable = flagged ♻ received, OR assigned to a reimbursable expense type
         const flagged    = !!t.isReimbursement;
         const reimbCat   = _reimbCatIds.has(t.categoryId);
         const reimbSplit = (t.splits||[]).some(s => _reimbCatIds.has(s.categoryId));
         if (!flagged && !reimbCat && !reimbSplit) return false;
       }
+      if (_pf && (t.payee||'').toLowerCase() !== _pf.toLowerCase()) return false;
       return true;
     })
     .sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
   const totalCommitted = committed.length;
-  const anyFilterActive = !!(_df || _dt || _cf || _rf);
+  const anyFilterActive = !!(_df || _dt || _cf || _rf || _pf);
 
   // ── Net amount across filtered results ─────────────────────────────────
   // When a category filter is active, split transactions contribute only
@@ -10954,18 +10955,22 @@ function _renderAllAccountsView(panel) {
   const _fltNetColor = _fltNet >= 0 ? 'var(--danger)' : 'var(--ok)';
   const _fltNetLabel = (_fltNet < 0 ? '−' : '') + fmtC(Math.abs(_fltNet));
 
+  const _selSetAll = new Set(UI.txnSelected||[]);
+  const _visibleIds = allTxns.map(t => t.id);
   const rows = allTxns.map(t => {
     const acctName = acctMap[t.accountId]?.name || '—';
     const isSplit  = t.splits && t.splits.length > 0;
     const isXfer   = !!t.isTransfer;
+    const _isSel   = _selSetAll.has(t.id);
     let catBadge   = '';
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
-    return `<tr>
+    return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
+      <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
       <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
-      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')}">${esc(t.payee||'')}</td>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
       <td>${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
       <td class="r">${t.debit>0?`<span class="txn-debit">${fmtCurrency(t.debit)}</span>`:''}</td>
@@ -10992,8 +10997,9 @@ function _renderAllAccountsView(panel) {
         ${_catFilterOpts}
       </select>
       <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleAll}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
+      ${_pf ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,var(--primary) 12%,transparent);border:1px solid color-mix(in srgb,var(--primary) 35%,transparent);font-size:.76rem;font-weight:600;color:var(--primary);white-space:nowrap">👤 ${esc(_pf)} <button onclick="BA.txnClearPayeeFilter()" style="background:none;border:none;cursor:pointer;color:var(--primary);font-size:.8rem;padding:0;line-height:1" title="Clear payee filter">✕</button></span>` : ''}
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear All</button>
         <span style="color:var(--primary);font-weight:600">${allTxns.length} of ${totalCommitted} shown</span>
         <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,${_fltNetColor} 10%,transparent);border:1px solid color-mix(in srgb,${_fltNetColor} 30%,transparent);font-size:.76rem;font-weight:700;color:${_fltNetColor};white-space:nowrap" title="Net amount of filtered transactions (Debits − Credits)">
           Net ${_fltNetLabel}
@@ -11004,15 +11010,34 @@ function _renderAllAccountsView(panel) {
       </div>
     </div>`;
 
+  const _selCountAll = _visibleIds.filter(id => _selSetAll.has(id)).length;
+  const _allCheckedAll = _visibleIds.length > 0 && _selCountAll === _visibleIds.length;
+  const _visIdsJsonAll = JSON.stringify(_visibleIds);
+
+  const bulkBarAll = _selCountAll > 0 ? `
+    <div style="display:flex;align-items:center;gap:8px;padding:5px 10px;background:color-mix(in srgb,var(--primary) 9%,var(--surface2));border-bottom:1px solid var(--border);font-size:.78rem;flex-wrap:wrap">
+      <span style="font-weight:600;color:var(--primary)">${_selCountAll} selected</span>
+      <button onclick="BA.txnBulkRenamePayee()" style="font-size:.76rem;padding:3px 10px;border-radius:5px;border:1px solid var(--primary);background:color-mix(in srgb,var(--primary) 10%,transparent);color:var(--primary);cursor:pointer;font-weight:600">✏ Rename Payee</button>
+      <button onclick="BA.txnBulkAssignExpType()" style="font-size:.76rem;padding:3px 10px;border-radius:5px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer">🏷 Assign Expense Type</button>
+      <button onclick="BA.txnBulkDelete()" style="font-size:.76rem;padding:3px 10px;border-radius:5px;border:1px solid var(--danger);background:color-mix(in srgb,var(--danger) 8%,transparent);color:var(--danger);cursor:pointer;font-weight:600">🗑 Delete</button>
+      <button onclick="UI.txnSelected=[];renderTxnRight()" style="font-size:.73rem;padding:2px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Deselect All</button>
+    </div>` : '';
+
+  const _allAcctPayees = [...new Set((D.transactions||[]).map(t => t.payee).filter(Boolean))].sort();
+  const _allAcctDatalist = `<datalist id="txn-payee-list">${_allAcctPayees.map(p => `<option value="${esc(p)}">`).join('')}</datalist>`;
+
   panel.innerHTML = `
+    ${_allAcctDatalist}
     <div class="txn-ledger-hdr">
       <span class="txn-ledger-title">🏛 All Accounts <span style="font-size:.72rem;font-weight:400;color:var(--text3)">${anyFilterActive ? allTxns.length+' filtered / '+totalCommitted+' total' : totalCommitted+' transactions'}</span></span>
     </div>
     ${filterBar}
+    ${bulkBarAll}
     <div class="txn-tbl-wrap">
       ${allTxns.length ? `
       <table class="txn-tbl">
         <thead><tr>
+          <th style="width:30px;text-align:center;padding:0 4px"><input type="checkbox" title="Select all visible" ${_allCheckedAll?'checked':''} onchange="BA.txnSelectAllVisible(this.checked,${_visIdsJsonAll.replace(/"/g,'&quot;')})"></th>
           <th data-col="txn-date">Date</th>
           <th data-col="txn-acct">Account</th>
           <th data-col="txn-payee">Payee</th>
@@ -11210,6 +11235,12 @@ function _renderTxnSearchResults(panel, query) {
   if (cnt) { cnt.textContent = allTxns.length + ' result' + (allTxns.length!==1?'s':''); cnt.style.display=''; }
   if (clr) clr.style.display = '';
 
+  const _selSetSR   = new Set(UI.txnSelected||[]);
+  const _visIdsSR   = allTxns.map(t => t.id);
+  const _selCountSR = _visIdsSR.filter(id => _selSetSR.has(id)).length;
+  const _allChkSR   = _visIdsSR.length > 0 && _selCountSR === _visIdsSR.length;
+  const _visIdsJsonSR = JSON.stringify(_visIdsSR);
+
   const rows = allTxns.map(t => {
     // Inline edit mode for this row
     if (UI.txnEditRow === t.id) return txnSearchInlineRow(t, acctMap[t.accountId]);
@@ -11217,14 +11248,16 @@ function _renderTxnSearchResults(panel, query) {
     const acctName = acctMap[t.accountId]?.name || '—';
     const isSplit  = t.splits && t.splits.length > 0;
     const isXfer   = !!t.isTransfer;
+    const _isSel   = _selSetSR.has(t.id);
     let catBadge   = '';
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
-    return `<tr>
+    return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
+      <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
       <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
-      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')}">${esc(t.payee||'')}</td>
+      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
       <td>${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis">${esc(t.notes||'')}</td>
       <td class="r">${t.debit>0?`<span class="txn-debit">${fmtCurrency(t.debit)}</span>`:''}</td>
@@ -11233,6 +11266,16 @@ function _renderTxnSearchResults(panel, query) {
       <td><button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnSearchStartEdit('${t.id}','${t.accountId}')" title="Edit inline">✎</button></td>
     </tr>`;
   }).join('');
+
+  const bulkBarSR = _selCountSR > 0 ? `
+    <div style="display:flex;align-items:center;gap:8px;padding:5px 10px;background:color-mix(in srgb,var(--primary) 9%,var(--surface2));border-bottom:1px solid var(--border);font-size:.78rem;flex-wrap:wrap">
+      <span style="font-weight:600;color:var(--primary)">${_selCountSR} selected</span>
+      <button onclick="BA.txnBulkRenamePayee()" style="font-size:.76rem;padding:3px 10px;border-radius:5px;border:1px solid var(--primary);background:color-mix(in srgb,var(--primary) 10%,transparent);color:var(--primary);cursor:pointer;font-weight:600">✏ Rename Payee</button>
+      <button onclick="BA.txnBulkAssignExpType()" style="font-size:.76rem;padding:3px 10px;border-radius:5px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer">🏷 Assign Expense Type</button>
+      <button onclick="BA.txnBulkDelete()" style="font-size:.76rem;padding:3px 10px;border-radius:5px;border:1px solid var(--danger);background:color-mix(in srgb,var(--danger) 8%,transparent);color:var(--danger);cursor:pointer;font-weight:600">🗑 Delete</button>
+      <button onclick="UI.txnSelected=[];renderTxnRight()" style="font-size:.73rem;padding:2px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Deselect All</button>
+    </div>` : '';
+
   panel.innerHTML = `
     ${_srDatalist}
     <div class="txn-ledger-hdr">
@@ -11242,10 +11285,12 @@ function _renderTxnSearchResults(panel, query) {
         ${_srNetPill}
       </div>
     </div>
+    ${bulkBarSR}
     <div class="txn-tbl-wrap">
       ${allTxns.length ? `
       <table class="txn-tbl">
         <thead><tr>
+          <th style="width:30px;text-align:center;padding:0 4px"><input type="checkbox" title="Select all visible" ${_allChkSR?'checked':''} onchange="BA.txnSelectAllVisible(this.checked,${_visIdsJsonSR.replace(/"/g,'&quot;')})"></th>
           <th data-col="txn-date">Date</th><th data-col="txn-acct">Account</th>
           <th data-col="txn-payee">Payee</th><th data-col="txn-exptype">Expense Type</th>
           <th data-col="txn-notes">Notes</th>
@@ -11388,14 +11433,13 @@ function renderTxnRight() {
       </div>`;
   }
 
-  // Date + expense type + reimbursable filter
-  const _df  = UI.txnDateFrom, _dt = UI.txnDateTo, _cf = UI.txnCatFilter, _rf = !!UI.txnReimbFilter;
+  // Date + expense type + reimbursable + payee filter
+  const _df  = UI.txnDateFrom, _dt = UI.txnDateTo, _cf = UI.txnCatFilter, _rf = !!UI.txnReimbFilter, _pf = UI.txnPayeeFilter||'';
   const _reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
   const filteredRows = withBal.filter(t => {
     if (_df && (t.date||'') < _df) return false;
     if (_dt && (t.date||'') > _dt) return false;
     if (_cf) {
-      // match on categoryId or any split line's categoryId
       const mainMatch = t.categoryId === _cf;
       const splitMatch = (t.splits||[]).some(s => s.categoryId === _cf);
       if (!mainMatch && !splitMatch) return false;
@@ -11406,9 +11450,10 @@ function renderTxnRight() {
       const reimbSplit = (t.splits||[]).some(s => _reimbCatIds.has(s.categoryId));
       if (!flagged && !reimbCat && !reimbSplit) return false;
     }
+    if (_pf && (t.payee||'').toLowerCase() !== _pf.toLowerCase()) return false;
     return true;
   });
-  const anyFilterActive = !!(_df || _dt || _cf || _rf);
+  const anyFilterActive = !!(_df || _dt || _cf || _rf || _pf);
 
   // Build expense type options for filter dropdown (unique cats in this account)
   const _catIdsInAcct = new Set();
@@ -11477,7 +11522,7 @@ function renderTxnRight() {
       <tr data-txn-id="${t.id}" ondblclick="BA.txnStartEdit('${t.id}')" style="${_rowTint}${_isHl?'background:color-mix(in srgb,var(--primary) 12%,transparent);outline:2px solid var(--primary);outline-offset:-2px;':_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
         <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
         <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
-        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')}">${esc(t.payee||'')}</td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
         <td>${catCellContent}${_famBadge}${_reimbBadge}</td>
         <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;font-size:.75rem;color:var(--text3)" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
         <td class="r">${debitTd}</td>
@@ -11525,8 +11570,9 @@ function renderTxnRight() {
         ${_catFilterOpts}
       </select>
       <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleSingle}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
+      ${_pf ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,var(--primary) 12%,transparent);border:1px solid color-mix(in srgb,var(--primary) 35%,transparent);font-size:.76rem;font-weight:600;color:var(--primary);white-space:nowrap">👤 ${esc(_pf)} <button onclick="BA.txnClearPayeeFilter()" style="background:none;border:none;cursor:pointer;color:var(--primary);font-size:.8rem;padding:0;line-height:1" title="Clear payee filter">✕</button></span>` : ''}
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
         <span style="color:var(--primary);font-weight:600">${filteredRows.length} of ${committedTxns.length} shown</span>` :
         `<span style="color:var(--text3);opacity:.6">${committedTxns.length} transaction${committedTxns.length!==1?'s':''}</span>`}
       <div style="margin-left:auto">
@@ -11564,6 +11610,7 @@ function renderTxnRight() {
       <div id="txn-bulk-bar" style="display:flex;align-items:center;gap:10px;padding:6px 12px;background:color-mix(in srgb,var(--primary) 8%,transparent);border:1px solid color-mix(in srgb,var(--primary) 30%,var(--border));border-radius:6px;margin-bottom:6px">
         <span style="font-size:.8rem;font-weight:600;color:var(--primary)">${(UI.txnSelected||[]).length} selected</span>
         <span style="font-size:.78rem;font-weight:700;color:${_netColor};padding:2px 9px;background:color-mix(in srgb,${_netColor} 10%,transparent);border:1px solid color-mix(in srgb,${_netColor} 25%,transparent);border-radius:5px">${_netLbl} $${_netAbs}</span>
+        <button class="btn btn-sm" style="font-size:.76rem;padding:3px 11px;background:color-mix(in srgb,var(--primary) 15%,transparent);color:var(--primary);border:1px solid color-mix(in srgb,var(--primary) 35%,transparent);font-weight:600" onclick="BA.txnBulkRenamePayee()">✏ Rename Payee</button>
         <button class="btn btn-sm" style="font-size:.76rem;padding:3px 11px;background:var(--primary);color:#fff;border:none" onclick="BA.txnBulkAssignExpType()">🏷 Assign Expense Type</button>
         <button class="btn btn-sm" style="font-size:.76rem;padding:3px 11px;background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent)" onclick="BA.txnBulkDelete()">🗑 Delete</button>
         <button class="btn btn-sm btn-ghost" style="font-size:.74rem;padding:3px 9px" onclick="BA.txnClearSelection()">✕ Clear</button>
@@ -12823,6 +12870,14 @@ Object.assign(BA, {
     if (clr) clr.style.display = 'none';
     renderTxnRight();
   },
+  txnSetPayeeFilter(payee) {
+    UI.txnPayeeFilter = payee;
+    renderTxnRight();
+  },
+  txnClearPayeeFilter() {
+    UI.txnPayeeFilter = '';
+    renderTxnRight();
+  },
   // Edit a transaction inline inside search results (stays in search mode)
   txnSearchStartEdit(txnId, acctId) {
     // Close any open edit first
@@ -13301,7 +13356,7 @@ Object.assign(BA, {
     BA._resetSplitState();
     renderTxnRight();
   },
-  txnSaveInline(editId, openNew=false) {
+  txnSaveInline(editId, openNew=false, dupConfirmed=false) {
     const date  = (id('ti-date')?.value || '').trim();
     const payee = (id('ti-payee')?.value || '').trim();
     if (!date)  { toast('Date is required','err'); return; }
@@ -13309,6 +13364,33 @@ Object.assign(BA, {
     const debit  = parseFloat(id('ti-debit')?.value)  || 0;
     const credit = parseFloat(id('ti-credit')?.value) || 0;
     if (!debit && !credit) { toast('Enter a debit or credit amount','err'); return; }
+
+    // ── Duplicate detection (new transactions only) ──────────────
+    if (!editId && !dupConfirmed) {
+      const amt = debit || credit;
+      const dup = (D.transactions||[]).find(t =>
+        t.accountId === UI.txnAccount &&
+        t.date === date &&
+        (t.payee||'').toLowerCase() === payee.toLowerCase() &&
+        Math.abs(((t.debit||0) + (t.credit||0)) - amt) < 0.01 &&
+        (!t.status || t.status === 'approved')
+      );
+      if (dup) {
+        showModal(`
+          <div class="modal-title" style="color:var(--warn)">⚠ Possible Duplicate</div>
+          <p style="color:var(--text2);font-size:14px;margin:0 0 12px">A transaction with the same date, payee, and amount already exists:</p>
+          <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:.85rem;margin-bottom:16px">
+            <strong>${esc(dup.payee||'')}</strong> &middot; ${fmtDate(dup.date)} &middot; ${fmtCurrency(debit||credit)}
+            ${dup.notes ? `<div style="font-size:.75rem;color:var(--text3);margin-top:3px">${esc(dup.notes)}</div>` : ''}
+          </div>
+          <p style="color:var(--text3);font-size:13px;margin:0 0 20px">Is this a new transaction or a duplicate entry?</p>
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="closeModal();BA.txnSaveInline('',${openNew},true)">Save Anyway</button>
+          </div>`);
+        return;
+      }
+    }
 
     // ── Split mode: gather lines and validate ────────────────────
     let splitLines = null;
@@ -13714,6 +13796,62 @@ Object.assign(BA, {
       : [];
     UI.txnSelected = checked ? txns.map(t => t.id) : [];
     renderTxnRight();
+  },
+  // Select/deselect a specific list of visible IDs (for All Accounts / Search views)
+  txnSelectAllVisible(checked, idsJson) {
+    if (!UI.txnSelected) UI.txnSelected = [];
+    const ids = Array.isArray(idsJson) ? idsJson : (typeof idsJson === 'string' ? JSON.parse(idsJson) : []);
+    if (checked) {
+      const sel = new Set(UI.txnSelected);
+      ids.forEach(id => sel.add(id));
+      UI.txnSelected = [...sel];
+    } else {
+      const remove = new Set(ids);
+      UI.txnSelected = UI.txnSelected.filter(id => !remove.has(id));
+    }
+    renderTxnRight();
+  },
+  txnBulkRenamePayee() {
+    const sel = UI.txnSelected || [];
+    if (!sel.length) { toast('No transactions selected', 'err'); return; }
+    // Determine if all selected txns share the same payee (pre-fill if so)
+    const selTxns = (D.transactions||[]).filter(t => sel.includes(t.id));
+    const uniquePayees = [...new Set(selTxns.map(t => t.payee||''))];
+    const prefill = uniquePayees.length === 1 ? uniquePayees[0] : '';
+    showModal(`
+      <div class="modal-title">✏ Rename Payee</div>
+      <p style="font-size:.85rem;color:var(--text2);margin:0 0 12px">Rename payee for <strong>${sel.length}</strong> selected transaction${sel.length!==1?'s':''}${prefill ? ` (current: <em>${esc(prefill)}</em>)` : ''}.</p>
+      <div style="margin-bottom:14px">
+        <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:4px">New Payee Name</label>
+        <input id="bulk-rename-payee-inp" class="finput" type="text" value="${esc(prefill)}" placeholder="Enter new payee name…" style="width:100%;box-sizing:border-box"
+          list="txn-payee-list"
+          onkeydown="if(event.key==='Enter')BA._bulkRenamePayeeConfirm()">
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="BA._bulkRenamePayeeConfirm()">Rename</button>
+      </div>
+    `);
+    setTimeout(() => {
+      const inp = document.getElementById('bulk-rename-payee-inp');
+      if (inp) { inp.focus(); inp.select(); }
+    }, 80);
+  },
+  _bulkRenamePayeeConfirm() {
+    const inp = document.getElementById('bulk-rename-payee-inp');
+    if (!inp) return;
+    const newPayee = inp.value.trim();
+    if (!newPayee) { inp.style.border='1px solid var(--danger)'; inp.focus(); return; }
+    const sel = new Set(UI.txnSelected || []);
+    let changed = 0;
+    (D.transactions||[]).forEach(t => {
+      if (sel.has(t.id)) { t.payee = newPayee; changed++; }
+    });
+    closeModal();
+    UI.txnSelected = [];
+    saveData();
+    renderTxnRight();
+    toast(`Renamed payee to "${newPayee}" on ${changed} transaction${changed!==1?'s':''}`, 'ok');
   },
   txnClearSelection() {
     UI.txnSelected = [];
