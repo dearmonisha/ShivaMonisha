@@ -12102,7 +12102,12 @@ function renderCatTrends() {
     </tr>`;
   }
 
-  const tableBodyHtml = groupedRows.map(gr => {
+  // ── Table: filter to selected category or show all ───────────────────
+  const tblGroupedRows = UI.ctSelCat
+    ? groupedRows.map(g => ({ ...g, rows: g.rows.filter(r => r.cat.id === UI.ctSelCat) })).filter(g => g.rows.length > 0)
+    : groupedRows;
+
+  const tableBodyHtml = tblGroupedRows.map(gr => {
     if (!gr.rows.length) return '';
     const grpVarColor = gr.grpVar < -0.5 ? 'var(--danger)' : gr.grpVar > 0.5 ? 'var(--ok)' : 'var(--text3)';
     const grpVarSign  = gr.grpVar < -0.5 ? '−' : gr.grpVar > 0.5 ? '+' : '';
@@ -12118,23 +12123,23 @@ function renderCatTrends() {
         <td colspan="${tblMonths.length+4}" style="padding:5px 10px;font-size:.78rem;font-weight:700;color:var(--primary)">${esc(gr.group.name)}</td>
       </tr>
       ${gr.rows.map(r => catRow(r)).join('')}
-      <tr style="background:color-mix(in srgb,var(--primary) 3%,transparent);border-top:1px solid var(--border)">
+      ${!UI.ctSelCat ? `<tr style="background:color-mix(in srgb,var(--primary) 3%,transparent);border-top:1px solid var(--border)">
         <td style="padding:4px 10px;font-size:.75rem;font-weight:600;color:var(--text2)">↳ Group Total</td>
         ${grpCells}
         <td style="text-align:right;padding:4px 8px;font-size:.76rem;font-weight:700;border-left:1px solid var(--border)">${gr.grpAct>0.005?'$'+fmtC(gr.grpAct):''}</td>
         <td style="text-align:right;padding:4px 8px;font-size:.75rem;color:var(--text3)">${gr.grpBud>0.005?'$'+fmtC(gr.grpBud):''}</td>
         <td style="text-align:right;padding:4px 8px;font-size:.76rem;font-weight:700;color:${grpVarColor}">${(gr.grpAct>0.005||gr.grpBud>0.005)?grpVarSign+'$'+fmtC(Math.abs(gr.grpVar)):''}</td>
-      </tr>`;
+      </tr>` : ''}`;
   }).join('');
 
-  const grandAct      = groupedRows.reduce((s,g) => s+g.grpAct, 0);
-  const grandBud      = groupedRows.reduce((s,g) => s+g.grpBud, 0);
+  const grandAct      = tblGroupedRows.reduce((s,g) => s+g.grpAct, 0);
+  const grandBud      = tblGroupedRows.reduce((s,g) => s+g.grpBud, 0);
   const grandVar      = grandBud - grandAct;
   const grandVarColor = grandVar < -0.5 ? 'var(--danger)' : grandVar > 0.5 ? 'var(--ok)' : 'var(--text3)';
   const grandVarSign  = grandVar < -0.5 ? '−' : grandVar > 0.5 ? '+' : '';
   const grandCells    = tblMonths.map((m,i) => {
-    const act      = groupedRows.reduce((s,g) => s+g.rows.reduce((ss,r) => ss+r.actuals[i], 0), 0);
-    const bud      = groupedRows.reduce((s,g) => s+g.rows.reduce((ss,r) => ss+r.budgets[i], 0), 0);
+    const act      = tblGroupedRows.reduce((s,g) => s+g.rows.reduce((ss,r) => ss+r.actuals[i], 0), 0);
+    const bud      = tblGroupedRows.reduce((s,g) => s+g.rows.reduce((ss,r) => ss+r.budgets[i], 0), 0);
     const isFuture = m > futureYM;
     const txt      = isFuture ? (bud>0.005?`<span style="color:var(--text3);font-size:.7rem">$${fmtC(bud)}</span>`:'') : (act>0.005?'$'+fmtC(act):'');
     return `<td style="text-align:right;padding:5px 6px;font-size:.78rem;font-weight:700">${txt}</td>`;
@@ -12146,11 +12151,25 @@ function renderCatTrends() {
     return `<th style="text-align:right;padding:5px 6px;font-size:.72rem;font-weight:600;white-space:nowrap;color:${isFut?'var(--text3)':'var(--text2)'}">${lbl}</th>`;
   }).join('');
 
-  // Stats summary for chart
-  const totalAct = trendActuals.reduce((a,b)=>a+b,0);
-  const totalBud = trendBudgets.reduce((a,b)=>a+b,0);
-  const avgAct   = trendMonths.length ? totalAct/trendMonths.length : 0;
+  // ── Stats pills for chart header ────────────────────────────────────
+  const totalAct  = trendActuals.reduce((a,b)=>a+b,0);
+  const totalBud  = trendBudgets.reduce((a,b)=>a+b,0);
+  const avgAct    = trendMonths.length ? totalAct/trendMonths.length : 0;
   const overUnder = totalAct - totalBud;
+  const ovClr     = overUnder > 0.5 ? 'var(--danger)' : overUnder < -0.5 ? 'var(--ok)' : 'var(--text3)';
+  const ovLbl     = overUnder > 0.5 ? 'Over budget' : overUnder < -0.5 ? 'Under budget' : 'On budget';
+  const statsPills = totalAct > 0 ? `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <span style="display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:99px;background:color-mix(in srgb,var(--primary) 10%,transparent);border:1px solid color-mix(in srgb,var(--primary) 25%,transparent);font-size:.76rem;font-weight:600;color:var(--primary)">
+        Total <strong>$${fmtC(Math.round(totalAct))}</strong>
+      </span>
+      <span style="display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:99px;background:color-mix(in srgb,var(--text2) 8%,transparent);border:1px solid var(--border);font-size:.76rem;color:var(--text2)">
+        Avg/mo <strong>$${fmtC(Math.round(avgAct))}</strong>
+      </span>
+      ${totalBud > 0 ? `<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:99px;background:color-mix(in srgb,${ovClr} 8%,transparent);border:1px solid color-mix(in srgb,${ovClr} 25%,transparent);font-size:.76rem;font-weight:600;color:${ovClr}">
+        ${ovLbl} <strong>$${fmtC(Math.abs(Math.round(overUnder)))}</strong>
+      </span>` : ''}
+    </div>` : '';
 
   wrap.innerHTML = `
     <!-- ── TREND CHART ───────────────────────────────────────────── -->
@@ -12170,31 +12189,31 @@ function renderCatTrends() {
           <span style="color:var(--text3)">→</span>
           <input type="month" value="${UI.ctEndYM}" onchange="UI.ctEndYM=this.value;renderCatTrends()"
             style="font-size:.74rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)">
+          <button onclick="UI.ctSelCat='';UI.ctStartYM='${cy}-01';UI.ctEndYM='${futureYM}';UI.ctTableYear='${cy}';renderCatTrends()"
+            style="font-size:.72rem;padding:2px 10px;border:1px solid var(--border);border-radius:99px;cursor:pointer;background:var(--surface2);color:var(--text2)" title="Reset chart and table">↺ Reset</button>
         </div>
       </div>
+      ${statsPills}
       <div style="height:240px"><canvas id="ct-trend-chart"></canvas></div>
       <div style="display:flex;gap:16px;margin-top:10px;font-size:.73rem;color:var(--text3);flex-wrap:wrap;align-items:center">
         <span><span style="display:inline-block;width:12px;height:10px;background:#3b82f6;border-radius:2px;margin-right:4px;vertical-align:middle"></span>Actual</span>
         <span><span style="display:inline-block;width:18px;border-top:2px dashed #f59e0b;margin-right:4px;vertical-align:middle"></span>Budget</span>
         <span><span style="display:inline-block;width:18px;border-top:2px dotted #a855f7;margin-right:4px;vertical-align:middle"></span>3-mo avg</span>
-        <span style="margin-left:auto;display:flex;gap:12px;flex-wrap:wrap">
-          <span>Period total: <strong style="color:var(--text)">$${fmtC(totalAct)}</strong></span>
-          <span>Avg/mo: <strong style="color:var(--text)">$${fmtC(Math.round(avgAct))}</strong></span>
-          ${totalBud > 0 ? `<span style="color:${overUnder>0.5?'var(--danger)':overUnder<-0.5?'var(--ok)':'var(--text3)'}">
-            vs Budget: ${overUnder>0.5?'<strong>Over</strong>':'<strong>Under</strong>'} $${fmtC(Math.abs(overUnder))}
-          </span>` : ''}
-        </span>
       </div>
     </div>
 
     <!-- ── ANNUAL TABLE ──────────────────────────────────────────── -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-        <span style="font-size:.9rem;font-weight:700;color:var(--text2)">📋 All Categories —</span>
+        <span style="font-size:.9rem;font-weight:700;color:var(--text2)">
+          ${UI.ctSelCat && selCat ? `📋 ${esc(selCat.name)}` : '📋 All Categories'} —
+        </span>
         <select onchange="UI.ctTableYear=this.value;renderCatTrends()"
           style="font-size:.78rem;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text)">
           ${yearOpts}
         </select>
+        ${UI.ctSelCat ? `<button onclick="UI.ctSelCat='';renderCatTrends()"
+          style="font-size:.72rem;padding:2px 8px;border:1px solid var(--primary);border-radius:99px;cursor:pointer;background:color-mix(in srgb,var(--primary) 10%,transparent);color:var(--primary)">✕ Show All</button>` : ''}
         <span style="font-size:.73rem;color:var(--text3)">Click any category name to load its trend above</span>
         <span style="margin-left:auto;font-size:.71rem;color:var(--text3)">
           <span style="display:inline-block;width:9px;height:9px;background:color-mix(in srgb,var(--danger) 8%,transparent);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);margin-right:3px;vertical-align:middle"></span>Over budget &nbsp;|&nbsp; Greyed = future (shows planned budget)
