@@ -683,7 +683,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-pot-name{font-size:.9rem;font-weight:700;color:var(--text1)}
 .mob-pot-bal{font-size:1rem;font-weight:800}
 .mob-total-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
-.mob-tabs{display:flex;border-bottom:2px solid var(--border);background:var(--bg);position:sticky;top:97px;z-index:49}
+.mob-tabs{display:flex;border-bottom:2px solid var(--border);background:var(--bg);position:sticky;top:87px;z-index:49}
 .mob-tab{flex:1;padding:9px 4px;font-size:.78rem;font-weight:700;color:var(--text3);background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;transition:color .15s}
 .mob-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
 .mob-txn-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-light)}
@@ -692,13 +692,45 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-txn-payee{font-size:.85rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mob-txn-meta{font-size:.7rem;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mob-txn-amt{font-size:.9rem;font-weight:700;white-space:nowrap}
+.mob-fab{position:fixed;bottom:24px;right:20px;z-index:300;width:54px;height:54px;border-radius:50%;background:var(--primary);color:#fff;font-size:1.6rem;border:none;box-shadow:0 4px 18px rgba(0,0,0,.3);cursor:pointer;display:none;align-items:center;justify-content:center;line-height:1;padding:0}
+.mob-summary-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px;margin-bottom:14px}
+.mob-bill-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)}
+.mob-bill-row:last-child{border-bottom:none}
+.mob-acct-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.mob-acct-name{font-size:.88rem;font-weight:700;color:var(--text1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mob-acct-bal{font-size:.96rem;font-weight:800;white-space:nowrap}
+.mob-drill-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
 @media(max-width:767px){
   .nav-pills{display:none!important}
   .hdr-space{display:none!important}
   .save-info{display:none!important}
+  .save-btn{display:none!important}
+  .exit-btn{display:none!important}
+  .hdr{height:40px;padding:0 12px;gap:8px}
+  .logo{font-size:.82rem;gap:5px}
+  .logo svg{width:17px;height:17px}
   main>div:not(#view-mobile){display:none!important}
   #view-mobile{display:block!important}
   #file-overlay .fo-card{width:92vw;max-width:420px}
+  .mob-fab{display:flex}
+  /* Tighter cards on mobile */
+  .mob-cat-card{padding:9px 12px;margin-bottom:5px}
+  .mob-cat-name{font-size:.83rem}
+  .mob-cat-remain{font-size:.9rem}
+  .mob-cat-sub{font-size:.67rem;margin-bottom:5px}
+  .mob-pot-card{padding:9px 12px;margin-bottom:5px}
+  .mob-total-card{padding:9px 12px;margin-bottom:5px}
+  .mob-group-hdr{font-size:.66rem;margin:12px 0 5px}
+  .mob-tab{padding:7px 3px;font-size:.72rem}
+  .mob-hdr{padding:7px 14px}
+  .mob-month{font-size:.9rem;font-weight:800}
+  .mob-section{padding:10px 12px 0}
+  .mob-section-title{font-size:.63rem;margin-bottom:7px}
+  .mob-summary-card{padding:11px 13px;margin-bottom:10px}
+  .mob-txn-row{padding:8px 0}
+  .mob-txn-payee{font-size:.81rem}
+  .mob-txn-meta{font-size:.67rem}
+  .mob-txn-amt{font-size:.86rem}
 }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
@@ -8646,16 +8678,31 @@ function renderMobileView() {
   const groups = D.budget?.groups     || [];
   const cats   = D.budget?.categories || [];
 
-  // ── Tab bar ────────────────────────────────────────────────
+  // ── Pre-compute budget totals + overage count (used in tab badge + summary) ──
+  let totalBudgeted = 0, totalSpent = 0, overBudgetCount = 0;
+  cats.forEach(cat => {
+    const bud  = budgetGetAdjustedPlan(cat.id, month);
+    const spnt = budgetGetCatActuals(cat.id, month);
+    totalBudgeted += bud;
+    totalSpent    += spnt;
+    if (spnt > bud + 0.005) overBudgetCount++;
+  });
+  const overBadge = overBudgetCount > 0
+    ? `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:99px;font-size:.58rem;font-weight:800;background:var(--danger);color:#fff;margin-left:3px;vertical-align:middle">${overBudgetCount}</span>` : '';
+
+  // ── Tab bar ─────────────────────────────────────────────────
+  const hasMonthNav  = tab !== 'cards' && tab !== 'accounts';
+  const tabStickyTop = hasMonthNav ? '87px' : '40px'; // header(40) + optional monthNav(47)
   const tabBar = `
-    <div class="mob-tabs">
-      <button class="mob-tab${tab==='budget'?' active':''}"       onclick="BA.setMobileTab('budget')">📊 Budget</button>
-      <button class="mob-tab${tab==='transactions'?' active':''}" onclick="BA.setMobileTab('transactions')">💸 Transactions</button>
+    <div class="mob-tabs" style="top:${tabStickyTop}">
+      <button class="mob-tab${tab==='budget'?' active':''}"       onclick="BA.setMobileTab('budget')">📊 Budget${overBadge}</button>
+      <button class="mob-tab${tab==='transactions'?' active':''}" onclick="BA.setMobileTab('transactions')">💸 Txns</button>
       <button class="mob-tab${tab==='cards'?' active':''}"        onclick="BA.setMobileTab('cards')">💳 Cards</button>
+      <button class="mob-tab${tab==='accounts'?' active':''}"     onclick="BA.setMobileTab('accounts')">🏦 Accounts</button>
     </div>`;
 
   // ── Month nav (hidden on Cards tab) ───────────────────────
-  const monthNav = tab === 'cards' ? '' : `
+  const monthNav = (tab === 'cards' || tab === 'accounts') ? '' : `
     <div class="mob-hdr">
       <button class="arrow-btn" onclick="BA.mobilePrevMonth()">&#8249;</button>
       <div class="mob-month">${monthLabel}</div>
@@ -8665,33 +8712,101 @@ function renderMobileView() {
   // ── Budget section ─────────────────────────────────────────
   let budgetHTML = '', hasAnyBudget = false;
   if (tab === 'budget') {
-    for (const group of groups) {
-      const gcats = cats.filter(c => c.groupId === group.id);
-      if (!gcats.length) continue;
+
+    // ── Category drill-through (tap a category → see its transactions) ──
+    const drillCatId = UI.mobileDrillCat || '';
+    const drillCat   = drillCatId ? cats.find(c => c.id === drillCatId) : null;
+
+    if (drillCat) {
+      // Show transactions for selected category this month
+      const drillTxns = (D.transactions || [])
+        .filter(t => {
+          if ((t.date || '').slice(0,7) !== month) return false;
+          if (t.status && t.status !== 'approved') return false;
+          if (t.categoryId === drillCatId) return true;
+          if (t.splits && t.splits.some(s => s.categoryId === drillCatId)) return true;
+          return false;
+        })
+        .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      const drillTotal = drillTxns.reduce((s, t) => s + ((parseFloat(t.debit)||0) - (parseFloat(t.credit)||0)), 0);
+      const drillBud   = budgetGetAdjustedPlan(drillCatId, month);
+      const drillRows  = drillTxns.length ? drillTxns.map(t => {
+        const acct = (D.txnAccounts || []).find(a => a.id === t.accountId);
+        const amt  = (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
+        const clr  = amt < 0 ? 'var(--ok)' : 'var(--text)';
+        return `<div class="mob-txn-row">
+          <div class="mob-txn-left">
+            <div class="mob-txn-payee">${esc(t.payee || '(no payee)')}</div>
+            <div class="mob-txn-meta">${esc([fmtDate(t.date), acct?.name].filter(Boolean).join(' · '))}</div>
+          </div>
+          <div class="mob-txn-amt" style="color:${clr}">${amt<0?'+':''}${fmtC(Math.abs(amt))}</div>
+        </div>`;
+      }).join('') : `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.85rem">No transactions this month</div>`;
+      budgetHTML = `
+        <div class="mob-drill-header">
+          <button onclick="UI.mobileDrillCat='';renderMobileView()"
+            style="padding:6px 12px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text2);font-size:.82rem;font-weight:700;cursor:pointer">← Back</button>
+          <span style="font-size:.95rem;font-weight:800;color:var(--text1)">${esc(drillCat.name)}</span>
+        </div>
+        <div class="mob-summary-card" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+            <span style="font-size:.78rem;color:var(--text3);font-weight:700">SPENT THIS MONTH</span>
+            <span style="font-size:1.1rem;font-weight:800;color:${drillTotal > drillBud + 0.005 ? 'var(--danger)' : 'var(--ok)'}">${fmtCurrency(drillTotal)}</span>
+          </div>
+          ${drillBud > 0 ? `<div style="font-size:.73rem;color:var(--text3)">Budget: ${fmtCurrency(drillBud)} · ${drillTotal > drillBud + 0.005 ? `<span style="color:var(--danger)">Over by ${fmtCurrency(drillTotal - drillBud)}</span>` : `<span style="color:var(--ok)">${fmtCurrency(drillBud - drillTotal)} left</span>`}</div>` : ''}
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:0 14px">${drillRows}</div>`;
       hasAnyBudget = true;
-      budgetHTML += `<div class="mob-group-hdr">${esc(group.name)}</div>`;
-      for (const cat of gcats) {
-        const budget = budgetGetAdjustedPlan(cat.id, month);
-        const spent  = budgetGetCatActuals(cat.id, month);
-        const remain = Math.round((budget - spent) * 100) / 100;
-        const pct    = budget > 0 ? Math.min(100, spent / budget * 100) : (spent > 0 ? 100 : 0);
-        const isOver = remain < -0.005;
-        const isWarn = !isOver && pct >= 80;
-        const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : 'var(--ok)';
-        const borderColor = isOver ? 'color-mix(in srgb,var(--danger) 35%,transparent)'
-                          : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)' : 'var(--border)';
-        const remainLabel = isOver
-          ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
-          : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
-        budgetHTML += `
-          <div class="mob-cat-card" style="border-color:${borderColor}">
-            <div class="mob-cat-row"><span class="mob-cat-name">${esc(cat.name)}</span>${remainLabel}</div>
-            <div class="mob-cat-sub">${fmtC(spent)} spent of ${fmtC(budget)} planned</div>
-            <div class="mob-bar-track"><div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div></div>
-          </div>`;
+    } else {
+      // ── Budget summary header ──
+      const sumPct   = totalBudgeted > 0 ? Math.min(100, totalSpent / totalBudgeted * 100) : (totalSpent > 0 ? 100 : 0);
+      const sumColor = totalSpent > totalBudgeted + 0.005 ? 'var(--danger)' : sumPct >= 80 ? '#d97706' : 'var(--ok)';
+      const remain   = totalBudgeted - totalSpent;
+      budgetHTML += `
+        <div class="mob-summary-card">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+            <span style="font-size:.75rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">This Month</span>
+            <span style="font-size:1.05rem;font-weight:800;color:${sumColor}">${Math.round(sumPct)}% used</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:.8rem;color:var(--text2);margin-bottom:8px">
+            <span>${fmtCurrency(totalSpent)} spent</span>
+            <span style="color:${sumColor};font-weight:700">${remain < -0.005 ? 'Over ' : ''} ${fmtCurrency(Math.abs(remain))} ${remain >= 0 ? 'left' : ''}</span>
+          </div>
+          <div class="mob-bar-track" style="height:7px">
+            <div class="mob-bar-fill" style="width:${sumPct}%;background:${sumColor}"></div>
+          </div>
+          <div style="font-size:.7rem;color:var(--text3);margin-top:5px;text-align:right">Budget: ${fmtCurrency(totalBudgeted)}</div>
+        </div>`;
+
+      // ── Per-category cards ──
+      for (const group of groups) {
+        const gcats = cats.filter(c => c.groupId === group.id);
+        if (!gcats.length) continue;
+        hasAnyBudget = true;
+        budgetHTML += `<div class="mob-group-hdr">${esc(group.name)}</div>`;
+        for (const cat of gcats) {
+          const budget = budgetGetAdjustedPlan(cat.id, month);
+          const spent  = budgetGetCatActuals(cat.id, month);
+          const remain = Math.round((budget - spent) * 100) / 100;
+          const pct    = budget > 0 ? Math.min(100, spent / budget * 100) : (spent > 0 ? 100 : 0);
+          const isOver = remain < -0.005;
+          const isWarn = !isOver && pct >= 80;
+          const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : 'var(--ok)';
+          const borderColor = isOver ? 'color-mix(in srgb,var(--danger) 35%,transparent)'
+                            : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)' : 'var(--border)';
+          const remainLabel = isOver
+            ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
+            : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
+          budgetHTML += `
+            <div class="mob-cat-card" style="border-color:${borderColor};cursor:pointer" onclick="BA.mobileDrillCat('${cat.id}')">
+              <div class="mob-cat-row"><span class="mob-cat-name">${esc(cat.name)}</span>${remainLabel}</div>
+              <div class="mob-cat-sub">${fmtC(spent)} spent of ${fmtC(budget)} planned</div>
+              <div class="mob-bar-track"><div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+            </div>`;
+        }
       }
+      if (!hasAnyBudget) budgetHTML += `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.88rem">No budget categories set up yet</div>`;
     }
-    if (!hasAnyBudget) budgetHTML = `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.88rem">No budget categories set up yet</div>`;
   }
 
   // ── Savings Pots section ───────────────────────────────────
@@ -8839,8 +8954,9 @@ function renderMobileView() {
     if (!ccCards.length) {
       cardsHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No credit cards configured</div>`;
     } else {
-      // Enrich cards
+      // Enrich cards with balance + due date
       let totLim = 0, totOS = 0;
+      const today = centralToday();
       const enrichedCards = ccCards.map(card => {
         const txnAcct = (D.txnAccounts || []).find(a => a.ccCardId === card.id);
         const os      = txnAcct ? txnCurrentBalance(txnAcct) : null;
@@ -8848,10 +8964,45 @@ function renderMobileView() {
         const osVal   = os !== null ? Math.max(0, os) : 0;
         const avail   = lim > 0 ? Math.max(0, lim - osVal) : null;
         const util    = lim > 0 && os !== null ? Math.round(osVal / lim * 100) : null;
+        // Compute due date for current month
+        const dueDay  = parseInt(card.dueDateEachMonth) || 0;
+        let dueDate = null, dl = null;
+        if (dueDay > 0) {
+          const maxDay = new Date(y, m, 0).getDate();
+          dueDate = `${month}-${String(Math.min(dueDay, maxDay)).padStart(2,'0')}`;
+          dl = daysLeft(dueDate);
+        }
         if (lim > 0) totLim += lim;
         if (os !== null) totOS += osVal;
-        return { card, os, lim, osVal, avail, util };
+        return { card, os, lim, osVal, avail, util, dueDate, dl };
       });
+
+      // ── Bills Due section ───────────────────────────────────
+      const billsDue = enrichedCards.filter(e => e.dueDate && e.osVal > 0.005);
+      billsDue.sort((a, b) => (a.dueDate||'').localeCompare(b.dueDate||''));
+      let billsHTML = '';
+      if (billsDue.length) {
+        const billRows = billsDue.map(({ card, osVal, dueDate, dl }) => {
+          const isOverdue = dl !== null && dl < 0;
+          const isSoon    = !isOverdue && dl !== null && dl <= 5;
+          const clr = isOverdue ? 'var(--danger)' : isSoon ? '#d97706' : 'var(--text2)';
+          const lbl = isOverdue ? `Overdue ${Math.abs(dl)}d`
+                    : dl === 0  ? 'Due today'
+                    : dl !== null ? `Due in ${dl}d` : fmtDate(dueDate);
+          return `<div class="mob-bill-row">
+            <div>
+              <div style="font-size:.87rem;font-weight:700;color:var(--text)">${esc(card.name)}</div>
+              <div style="font-size:.72rem;font-weight:700;color:${clr};margin-top:2px">${lbl} · ${fmtDate(dueDate)}</div>
+            </div>
+            <div style="font-size:.95rem;font-weight:800;color:${clr}">${fmtCurrency(osVal)}</div>
+          </div>`;
+        }).join('');
+        billsHTML = `
+          <div class="mob-section-title" style="margin-top:4px">📅 Bills Due This Month</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:0 14px;margin-bottom:16px">
+            ${billRows}
+          </div>`;
+      }
 
       // Sort
       const mcs = UI.mobileCardSort || 'outstanding';
@@ -8874,11 +9025,17 @@ function renderMobileView() {
       }).join('');
       const sortBar = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${sortPills}</div>`;
 
-      const cardItems = enrichedCards.map(({ card, os, osVal, avail, util }) => {
+      const cardItems = enrichedCards.map(({ card, os, osVal, avail, util, dl }) => {
         const color = util === null ? 'var(--text3)' : util >= 75 ? 'var(--danger)' : util >= 40 ? '#d97706' : 'var(--ok)';
+        const dueLabel = dl !== null
+          ? `<span style="font-size:.68rem;font-weight:700;color:${dl<0?'var(--danger)':dl<=5?'#d97706':'var(--text3)'}">Due${dl<0?` ${Math.abs(dl)}d ago`:dl===0?' today':` in ${dl}d`}</span>`
+          : '';
         return `<div class="mob-cat-card">
           <div class="mob-cat-row">
-            <span class="mob-cat-name">${esc(card.name)}</span>
+            <div style="display:flex;align-items:baseline;gap:8px;flex:1;min-width:0">
+              <span class="mob-cat-name">${esc(card.name)}</span>
+              ${dueLabel}
+            </div>
             <span style="font-size:.92rem;font-weight:800;color:${color}">${util !== null ? util+'%' : '—'}</span>
           </div>
           <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--text3);margin-bottom:6px">
@@ -8891,6 +9048,7 @@ function renderMobileView() {
 
       const totAvail = totLim > 0 ? Math.max(0, totLim - totOS) : null;
       cardsHTML = `
+        ${billsHTML}
         <div class="mob-total-card">
           <span style="font-size:.82rem;font-weight:700;color:var(--text2)">Total Outstanding</span>
           <span style="font-size:1rem;font-weight:800;color:var(--text)">${fmtCurrency(totOS)}</span>
@@ -8904,16 +9062,63 @@ function renderMobileView() {
     }
   }
 
+  // ── Accounts section ────────────────────────────────────────
+  let accountsHTML = '';
+  if (tab === 'accounts') {
+    const allAccts = (D.txnAccounts || []).filter(a => a.active !== false);
+    if (!allAccts.length) {
+      accountsHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No accounts set up yet</div>`;
+    } else {
+      const bankAccts = allAccts.filter(a => !a.ccCardId);
+      const ccAccts   = allAccts.filter(a => !!a.ccCardId);
+      let netWorth = 0;
+
+      const renderAcctCard = (acct) => {
+        const bal  = txnCurrentBalance(acct);
+        const isCC = !!acct.ccCardId;
+        const disp = isCC ? -Math.max(0, bal) : bal; // CC: show negative when owed
+        netWorth  += isCC ? -Math.max(0, bal) : bal;
+        const clr  = disp >= 0 ? 'var(--ok)' : 'var(--danger)';
+        const sub  = isCC ? (bal > 0 ? `${fmtCurrency(bal)} owed` : 'No balance') : (bal >= 0 ? 'Balance' : 'Overdrawn');
+        return `<div class="mob-acct-card">
+          <div style="flex:1;min-width:0">
+            <div class="mob-acct-name">${esc(acct.name)}</div>
+            <div style="font-size:.68rem;color:var(--text3);margin-top:1px">${isCC ? '💳 Credit Card' : '🏦 ' + sub}</div>
+          </div>
+          <div class="mob-acct-bal" style="color:${clr}">${isCC ? (bal>0?fmtCurrency(bal):'$0') : fmtCurrency(Math.abs(bal))}</div>
+        </div>`;
+      };
+
+      const bankCards = bankAccts.map(renderAcctCard).join('');
+      const ccCards2  = ccAccts.map(renderAcctCard).join('');
+      // netWorth is now computed (sum of bank balances minus CC debt)
+      const nwClr = netWorth >= 0 ? 'var(--ok)' : 'var(--danger)';
+
+      accountsHTML = `
+        <div class="mob-summary-card" style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.75rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Net Position</span>
+            <span style="font-size:1.2rem;font-weight:900;color:${nwClr}">${fmtCurrency(netWorth)}</span>
+          </div>
+          <div style="font-size:.7rem;color:var(--text3);margin-top:4px">Bank balances minus credit card debt</div>
+        </div>
+        ${bankAccts.length ? `<div class="mob-section-title">🏦 Bank Accounts</div>${bankCards}` : ''}
+        ${ccAccts.length   ? `<div class="mob-section-title" style="margin-top:12px">💳 Credit Cards</div>${ccCards2}` : ''}`;
+    }
+  }
+
   wrap.innerHTML = `
     ${monthNav}
     ${tabBar}
     <div class="mob-section">
-      ${tab === 'budget'       ? `<div class="mob-section-title">📊 Budget Remaining</div>${budgetHTML}` : ''}
+      ${tab === 'budget'       ? budgetHTML : ''}
       ${tab === 'transactions' ? txnHTML : ''}
-      ${tab === 'cards'        ? `<div class="mob-section-title" style="margin-top:14px">💳 Card Balances</div>${cardsHTML}` : ''}
+      ${tab === 'cards'        ? `<div class="mob-section-title" style="margin-top:4px">💳 Card Balances</div>${cardsHTML}` : ''}
+      ${tab === 'accounts'     ? accountsHTML : ''}
     </div>
-    ${potsHTML}
-    <div style="height:40px"></div>
+    ${tab === 'budget' && !UI.mobileDrillCat ? potsHTML : ''}
+    <div style="height:80px"></div>
+    <button class="mob-fab" onclick="BA.mobileAddTxn()" title="Add transaction">＋</button>
   `;
 }
 
@@ -8964,10 +9169,106 @@ const BA = {
     UI.treemapLevel = level;
     renderTreemap();
   },
-  setMobileTab(tab) { UI.mobileTab = tab; renderMobileView(); },
+  setMobileTab(tab) { UI.mobileTab = tab; UI.mobileDrillCat = ''; renderMobileView(); },
   setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; UI.mobileTxnSearch = ''; renderMobileView(); },
   setMobileTxnSearch(q) { UI.mobileTxnSearch = q || ''; renderMobileView(); },
   setMobileCardSort(s) { UI.mobileCardSort = s; renderMobileView(); },
+  mobileDrillCat(catId) { UI.mobileDrillCat = catId || ''; renderMobileView(); },
+
+  mobileAddTxn() {
+    const month  = UI.budgetMonth || ymNow();
+    const today  = centralToday();
+    const defDate = today.slice(0,7) === month ? today : month + '-01';
+    const accts  = (D.txnAccounts || []).filter(a => a.active !== false);
+    const acctOpts = accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+    const cats   = (D.budget?.categories || []);
+    const grps   = (D.budget?.groups || []);
+    let catOpts  = `<option value="">— Uncategorised —</option>`;
+    grps.forEach(g => {
+      const gc = cats.filter(c => c.groupId === g.id);
+      if (!gc.length) return;
+      catOpts += `<optgroup label="${esc(g.name)}">${gc.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</optgroup>`;
+    });
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;display:flex;align-items:flex-end;justify-content:center';
+    overlay.id = 'mob-add-txn-overlay';
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border-radius:18px 18px 0 0;padding:20px 18px 36px;width:100%;max-width:520px;box-shadow:0 -4px 24px rgba(0,0,0,.2)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <span style="font-size:1rem;font-weight:800;color:var(--text1)">➕ Add Transaction</span>
+          <button onclick="document.getElementById('mob-add-txn-overlay').remove()"
+            style="background:none;border:none;font-size:1.3rem;color:var(--text3);cursor:pointer;line-height:1;padding:4px">✕</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div>
+            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">DATE</label>
+            <input id="mob-at-date" type="date" value="${defDate}"
+              style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
+          </div>
+          <div>
+            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">AMOUNT</label>
+            <input id="mob-at-amt" type="number" min="0" step="0.01" placeholder="0.00"
+              style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
+          </div>
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">PAYEE</label>
+          <input id="mob-at-payee" type="text" placeholder="Payee name"
+            style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div>
+            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">ACCOUNT</label>
+            <select id="mob-at-acct" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.82rem;box-sizing:border-box">
+              <option value="">Select…</option>${acctOpts}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">TYPE</label>
+            <select id="mob-at-type" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.82rem;box-sizing:border-box">
+              <option value="debit">Expense (−)</option>
+              <option value="credit">Income (+)</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-bottom:16px">
+          <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">CATEGORY</label>
+          <select id="mob-at-cat" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.82rem;box-sizing:border-box">
+            ${catOpts}
+          </select>
+        </div>
+        <button onclick="BA.mobileAddTxnSubmit()"
+          style="width:100%;padding:12px;background:var(--primary);color:#fff;border:none;border-radius:var(--r1);font-size:.95rem;font-weight:800;cursor:pointer">
+          Save Transaction
+        </button>
+      </div>`;
+    document.body.appendChild(overlay);
+    setTimeout(() => { const el = document.getElementById('mob-at-payee'); if (el) el.focus(); }, 100);
+  },
+
+  mobileAddTxnSubmit() {
+    const date   = (document.getElementById('mob-at-date')?.value  || '').trim();
+    const payee  = (document.getElementById('mob-at-payee')?.value || '').trim();
+    const amt    = parseFloat(document.getElementById('mob-at-amt')?.value || '0');
+    const acctId = document.getElementById('mob-at-acct')?.value || '';
+    const type   = document.getElementById('mob-at-type')?.value || 'debit';
+    const catId  = document.getElementById('mob-at-cat')?.value  || null;
+    if (!date)  { const el = document.getElementById('mob-at-date');  if (el) el.style.borderColor='var(--danger)'; return; }
+    if (!acctId){ const el = document.getElementById('mob-at-acct'); if (el) el.style.borderColor='var(--danger)'; return; }
+    if (!amt || amt <= 0) { const el = document.getElementById('mob-at-amt'); if (el) el.style.borderColor='var(--danger)'; return; }
+    const txn = {
+      id: uid(), accountId: acctId, date, payee: payee || '(no payee)',
+      debit:  type === 'debit'  ? Math.round(amt * 100) / 100 : 0,
+      credit: type === 'credit' ? Math.round(amt * 100) / 100 : 0,
+      categoryId: catId || null, notes: '', cleared: false, status: 'approved'
+    };
+    if (!D.transactions) D.transactions = [];
+    D.transactions.push(txn);
+    saveData();
+    document.getElementById('mob-add-txn-overlay')?.remove();
+    renderMobileView();
+    toast(`Added: ${payee||'transaction'} ${type==='debit'?'−':'+'}${fmtC(amt)}`, 'ok');
+  },
   ccBalSort(col) {
     const cur = UI.ccBalSort || { col: 'name', dir: 'asc' };
     UI.ccBalSort = { col, dir: cur.col === col && cur.dir === 'asc' ? 'desc' : 'asc' };
