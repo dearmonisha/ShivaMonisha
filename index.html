@@ -9118,7 +9118,7 @@ function renderMobileView() {
     </div>
     ${tab === 'budget' && !UI.mobileDrillCat ? potsHTML : ''}
     <div style="height:80px"></div>
-    <button class="mob-fab" onclick="BA.mobileAddTxn()" title="Add transaction">＋</button>
+    ${tab === 'transactions' ? `<button class="mob-fab" onclick="BA.mobileAddTxn()" title="Add transaction" style="font-size:1.8rem;font-weight:300">+</button>` : ''}
   `;
 }
 
@@ -9176,98 +9176,134 @@ const BA = {
   mobileDrillCat(catId) { UI.mobileDrillCat = catId || ''; renderMobileView(); },
 
   mobileAddTxn() {
-    const month  = UI.budgetMonth || ymNow();
-    const today  = centralToday();
+    // Remove any existing overlay first
+    document.getElementById('mob-add-txn-overlay')?.remove();
+
+    const month   = UI.budgetMonth || ymNow();
+    const today   = centralToday();
     const defDate = today.slice(0,7) === month ? today : month + '-01';
-    const accts  = (D.txnAccounts || []).filter(a => a.active !== false);
-    const acctOpts = accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
-    const cats   = (D.budget?.categories || []);
-    const grps   = (D.budget?.groups || []);
-    let catOpts  = `<option value="">— Uncategorised —</option>`;
+    const accts   = (D.txnAccounts || []).filter(a => a.active !== false);
+    const cats    = D.budget?.categories || [];
+    const grps    = D.budget?.groups     || [];
+
+    // Build options as arrays to avoid any HTML injection issues
+    let acctOptsHtml = '<option value="">Select account…</option>';
+    accts.forEach(a => { acctOptsHtml += `<option value="${esc(a.id)}">${esc(a.name)}</option>`; });
+
+    let catOptsHtml = '<option value="">— Uncategorised —</option>';
     grps.forEach(g => {
       const gc = cats.filter(c => c.groupId === g.id);
       if (!gc.length) return;
-      catOpts += `<optgroup label="${esc(g.name)}">${gc.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</optgroup>`;
+      catOptsHtml += `<optgroup label="${esc(g.name)}">`;
+      gc.forEach(c => { catOptsHtml += `<option value="${esc(c.id)}">${esc(c.name)}</option>`; });
+      catOptsHtml += '</optgroup>';
     });
+
+    const fldStyle = 'width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.9rem;box-sizing:border-box;font-family:inherit';
+    const lblStyle = 'font-size:.68rem;font-weight:800;color:var(--text3);display:block;margin-bottom:5px;letter-spacing:.04em;text-transform:uppercase';
+    const rowStyle = 'margin-bottom:13px';
+
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;display:flex;align-items:flex-end;justify-content:center';
-    overlay.id = 'mob-add-txn-overlay';
-    overlay.innerHTML = `
-      <div style="background:var(--bg);border-radius:18px 18px 0 0;padding:20px 18px 36px;width:100%;max-width:520px;box-shadow:0 -4px 24px rgba(0,0,0,.2)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <span style="font-size:1rem;font-weight:800;color:var(--text1)">➕ Add Transaction</span>
-          <button onclick="document.getElementById('mob-add-txn-overlay').remove()"
-            style="background:none;border:none;font-size:1.3rem;color:var(--text3);cursor:pointer;line-height:1;padding:4px">✕</button>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-          <div>
-            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">DATE</label>
-            <input id="mob-at-date" type="date" value="${defDate}"
-              style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
-          </div>
-          <div>
-            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">AMOUNT</label>
-            <input id="mob-at-amt" type="number" min="0" step="0.01" placeholder="0.00"
-              style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
-          </div>
-        </div>
-        <div style="margin-bottom:10px">
-          <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">PAYEE</label>
-          <input id="mob-at-payee" type="text" placeholder="Payee name"
-            style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;box-sizing:border-box">
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-          <div>
-            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">ACCOUNT</label>
-            <select id="mob-at-acct" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.82rem;box-sizing:border-box">
-              <option value="">Select…</option>${acctOpts}
-            </select>
-          </div>
-          <div>
-            <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">TYPE</label>
-            <select id="mob-at-type" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.82rem;box-sizing:border-box">
-              <option value="debit">Expense (−)</option>
-              <option value="credit">Income (+)</option>
-            </select>
-          </div>
-        </div>
-        <div style="margin-bottom:16px">
-          <label style="font-size:.71rem;font-weight:700;color:var(--text3);display:block;margin-bottom:4px">CATEGORY</label>
-          <select id="mob-at-cat" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.82rem;box-sizing:border-box">
-            ${catOpts}
-          </select>
-        </div>
-        <button onclick="BA.mobileAddTxnSubmit()"
-          style="width:100%;padding:12px;background:var(--primary);color:#fff;border:none;border-radius:var(--r1);font-size:.95rem;font-weight:800;cursor:pointer">
-          Save Transaction
-        </button>
-      </div>`;
+    overlay.id    = 'mob-add-txn-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;display:flex;align-items:flex-end;justify-content:center';
+
+    // Tap backdrop to close
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+
+    const sheet = document.createElement('div');
+    sheet.style.cssText = 'background:var(--bg);border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 -4px 28px rgba(0,0,0,.22);padding:20px 18px 40px';
+    sheet.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <span style="font-size:1.05rem;font-weight:800;color:var(--text1)">Add Transaction</span>
+        <button id="mob-at-close" style="background:none;border:none;font-size:1.4rem;color:var(--text3);cursor:pointer;line-height:1;padding:4px 6px">✕</button>
+      </div>
+      <div style="${rowStyle}">
+        <label style="${lblStyle}">Date <span style="color:var(--danger)">*</span></label>
+        <input id="mob-at-date" type="date" value="${defDate}" style="${fldStyle}">
+      </div>
+      <div style="${rowStyle}">
+        <label style="${lblStyle}">Payee</label>
+        <input id="mob-at-payee" type="text" placeholder="Who did you pay?" style="${fldStyle}">
+      </div>
+      <div style="${rowStyle}">
+        <label style="${lblStyle}">Amount <span style="color:var(--danger)">*</span></label>
+        <input id="mob-at-amt" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" style="${fldStyle}">
+      </div>
+      <div style="${rowStyle}">
+        <label style="${lblStyle}">Transaction Type <span style="color:var(--danger)">*</span></label>
+        <select id="mob-at-type" style="${fldStyle}">
+          <option value="debit">Expense (money out −)</option>
+          <option value="credit">Income (money in +)</option>
+        </select>
+      </div>
+      <div style="${rowStyle}">
+        <label style="${lblStyle}">Account <span style="color:var(--danger)">*</span></label>
+        <select id="mob-at-acct" style="${fldStyle}">${acctOptsHtml}</select>
+      </div>
+      <div style="${rowStyle}">
+        <label style="${lblStyle}">Category</label>
+        <select id="mob-at-cat" style="${fldStyle}">${catOptsHtml}</select>
+      </div>
+      <div style="${rowStyle}">
+        <label style="${lblStyle}">Notes</label>
+        <textarea id="mob-at-notes" rows="2" placeholder="Add notes for later — e.g. needs splitting, receipt info…"
+          style="${fldStyle};resize:none;line-height:1.4"></textarea>
+      </div>
+      <div id="mob-at-err" style="display:none;background:color-mix(in srgb,var(--danger) 10%,transparent);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:7px;padding:8px 12px;font-size:.82rem;color:var(--danger);margin-bottom:12px;font-weight:600"></div>
+      <button id="mob-at-save" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:800;cursor:pointer;letter-spacing:.01em">
+        Save Transaction
+      </button>`;
+
+    overlay.appendChild(sheet);
     document.body.appendChild(overlay);
-    setTimeout(() => { const el = document.getElementById('mob-at-payee'); if (el) el.focus(); }, 100);
+
+    // Wire up close button with DOM ref (no getElementById dependency)
+    sheet.querySelector('#mob-at-close').addEventListener('click', () => overlay.remove());
+    sheet.querySelector('#mob-at-save').addEventListener('click', () => BA.mobileAddTxnSubmit(sheet, overlay));
+
+    setTimeout(() => { sheet.querySelector('#mob-at-payee')?.focus(); }, 120);
   },
 
-  mobileAddTxnSubmit() {
-    const date   = (document.getElementById('mob-at-date')?.value  || '').trim();
-    const payee  = (document.getElementById('mob-at-payee')?.value || '').trim();
-    const amt    = parseFloat(document.getElementById('mob-at-amt')?.value || '0');
-    const acctId = document.getElementById('mob-at-acct')?.value || '';
-    const type   = document.getElementById('mob-at-type')?.value || 'debit';
-    const catId  = document.getElementById('mob-at-cat')?.value  || null;
-    if (!date)  { const el = document.getElementById('mob-at-date');  if (el) el.style.borderColor='var(--danger)'; return; }
-    if (!acctId){ const el = document.getElementById('mob-at-acct'); if (el) el.style.borderColor='var(--danger)'; return; }
-    if (!amt || amt <= 0) { const el = document.getElementById('mob-at-amt'); if (el) el.style.borderColor='var(--danger)'; return; }
+  mobileAddTxnSubmit(sheet, overlay) {
+    const get  = id => sheet.querySelector('#' + id);
+    const errEl = get('mob-at-err');
+    const showErr = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
+
+    const date   = (get('mob-at-date')?.value   || '').trim();
+    const payee  = (get('mob-at-payee')?.value  || '').trim();
+    const amtRaw = get('mob-at-amt')?.value || '';
+    const amt    = parseFloat(amtRaw);
+    const acctId = get('mob-at-acct')?.value || '';
+    const type   = get('mob-at-type')?.value || 'debit';
+    const catId  = get('mob-at-cat')?.value  || null;
+    const notes  = (get('mob-at-notes')?.value || '').trim();
+
+    if (!date)        { showErr('Please select a date.');           return; }
+    if (!acctId)      { showErr('Please select an account.');       return; }
+    if (!amtRaw || isNaN(amt) || amt <= 0) { showErr('Please enter a valid amount greater than 0.'); return; }
+
+    errEl.style.display = 'none';
+
     const txn = {
-      id: uid(), accountId: acctId, date, payee: payee || '(no payee)',
+      id: uid(),
+      accountId: acctId,
+      date,
+      payee: payee || '(no payee)',
       debit:  type === 'debit'  ? Math.round(amt * 100) / 100 : 0,
       credit: type === 'credit' ? Math.round(amt * 100) / 100 : 0,
-      categoryId: catId || null, notes: '', cleared: false, status: 'approved'
+      categoryId: catId || null,
+      notes,
+      cleared: false,
+      status: 'approved',
+      source: 'mobile'
     };
+
     if (!D.transactions) D.transactions = [];
     D.transactions.push(txn);
     saveData();
-    document.getElementById('mob-add-txn-overlay')?.remove();
+    overlay.remove();
     renderMobileView();
-    toast(`Added: ${payee||'transaction'} ${type==='debit'?'−':'+'}${fmtC(amt)}`, 'ok');
+    toast(`Saved: ${txn.payee} ${type === 'debit' ? '−' : '+'}$${fmtC(amt)}`, 'ok');
   },
   ccBalSort(col) {
     const cur = UI.ccBalSort || { col: 'name', dir: 'asc' };
@@ -11270,11 +11306,12 @@ function _renderAllAccountsView(panel) {
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
+    const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:4px;margin-left:4px;white-space:nowrap" title="Added from mobile — review, split, or assign as needed">📱 Mobile</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
       <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
-      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span>${_mobBadge}</td>
       <td>${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
       <td class="r">${t.debit>0?`<span class="txn-debit">${fmtCurrency(t.debit)}</span>`:''}</td>
@@ -11570,11 +11607,12 @@ function _renderTxnSearchResults(panel, query) {
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
+    const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:4px;margin-left:4px;white-space:nowrap" title="Added from mobile — review, split, or assign as needed">📱 Mobile</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
       <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
-      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
+      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span>${_mobBadge}</td>
       <td>${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis">${esc(t.notes||'')}</td>
       <td class="r">${t.debit>0?`<span class="txn-debit">${fmtCurrency(t.debit)}</span>`:''}</td>
@@ -11836,6 +11874,7 @@ function renderTxnRight() {
     const _isHl  = UI.txnHighlightRow === t.id;
     const _famPerson = t.familyMemberId ? famPersons().find(p => p.id === t.familyMemberId) : null;
     const _famBadge  = _famPerson ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.67rem;font-weight:600;padding:1px 6px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:99px;margin-left:4px;cursor:pointer;white-space:nowrap" onclick="BA.txnNavToLinkedFamily('${t.familyMemberId}')" title="Family: ${esc(_famPerson.name)} — click to view in Family tab">👤 ${esc(_famPerson.name)}</span>` : '';
+    const _mobBadge  = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:4px;margin-left:4px;white-space:nowrap" title="Added from mobile — review, split, or assign as needed">📱 Mobile</span>` : '';
     // ♻ Reimbursement flag — only relevant on credit (incoming) transactions on non-CC accounts
     const _canReimb = t.credit > 0 && !isCC; // transfers received (credits) are valid reimbursements
     const _isReimb  = !!t.isReimbursement;
@@ -11848,7 +11887,7 @@ function renderTxnRight() {
         <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
         <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
-        <td>${catCellContent}${_famBadge}${_reimbBadge}</td>
+        <td>${catCellContent}${_famBadge}${_reimbBadge}${_mobBadge}</td>
         <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;font-size:.75rem;color:var(--text3)" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
         <td class="r">${debitTd}</td>
         <td class="r">${creditTd}</td>
