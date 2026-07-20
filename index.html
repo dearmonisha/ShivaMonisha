@@ -704,9 +704,10 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   .nav-pills{display:none!important}
   .hdr-space{display:none!important}
   .save-info{display:none!important}
-  .save-btn{display:none!important}
   .exit-btn{display:none!important}
   .hdr{height:40px;padding:0 12px;gap:8px}
+  .save-btn{padding:4px 10px;font-size:.72rem;gap:3px}
+  .save-btn svg{width:11px;height:11px}
   .logo{font-size:.82rem;gap:5px}
   .logo svg{width:17px;height:17px}
   main>div:not(#view-mobile){display:none!important}
@@ -9206,16 +9207,16 @@ const BA = {
     const overlay = document.createElement('div');
     overlay.id    = 'mob-add-txn-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;display:flex;align-items:flex-end;justify-content:center';
-
     // Tap backdrop to close
-    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+    overlay.addEventListener('click', e => { if (e.target === overlay) BA.mobileCloseTxnSheet(); });
 
     const sheet = document.createElement('div');
     sheet.style.cssText = 'background:var(--bg);border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 -4px 28px rgba(0,0,0,.22);padding:20px 18px 40px';
+    // All buttons use onclick="BA.*" so they always find the overlay by ID — no closure issues
     sheet.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
         <span style="font-size:1.05rem;font-weight:800;color:var(--text1)">Add Transaction</span>
-        <button id="mob-at-close" style="background:none;border:none;font-size:1.4rem;color:var(--text3);cursor:pointer;line-height:1;padding:4px 6px">✕</button>
+        <button onclick="BA.mobileCloseTxnSheet()" style="background:none;border:none;font-size:1.4rem;color:var(--text3);cursor:pointer;line-height:1;padding:4px 6px">✕</button>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Date <span style="color:var(--danger)">*</span></label>
@@ -9246,43 +9247,42 @@ const BA = {
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Notes</label>
-        <textarea id="mob-at-notes" rows="2" placeholder="Add notes for later — e.g. needs splitting, receipt info…"
+        <textarea id="mob-at-notes" rows="2" placeholder="e.g. needs splitting, receipt info…"
           style="${fldStyle};resize:none;line-height:1.4"></textarea>
       </div>
       <div id="mob-at-err" style="display:none;background:color-mix(in srgb,var(--danger) 10%,transparent);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:7px;padding:8px 12px;font-size:.82rem;color:var(--danger);margin-bottom:12px;font-weight:600"></div>
-      <button id="mob-at-save" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:800;cursor:pointer;letter-spacing:.01em">
+      <button onclick="BA.mobileAddTxnSubmit()" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:800;cursor:pointer;letter-spacing:.01em">
         Save Transaction
       </button>`;
 
     overlay.appendChild(sheet);
     document.body.appendChild(overlay);
-
-    // Wire up close button with DOM ref (no getElementById dependency)
-    sheet.querySelector('#mob-at-close').addEventListener('click', () => overlay.remove());
-    sheet.querySelector('#mob-at-save').addEventListener('click', () => BA.mobileAddTxnSubmit(sheet, overlay));
-
-    setTimeout(() => { sheet.querySelector('#mob-at-payee')?.focus(); }, 120);
+    setTimeout(() => { document.getElementById('mob-at-payee')?.focus(); }, 120);
   },
 
-  mobileAddTxnSubmit(sheet, overlay) {
-    const get  = id => sheet.querySelector('#' + id);
-    const errEl = get('mob-at-err');
-    const showErr = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
+  mobileCloseTxnSheet() {
+    document.getElementById('mob-add-txn-overlay')?.remove();
+  },
 
-    const date   = (get('mob-at-date')?.value   || '').trim();
-    const payee  = (get('mob-at-payee')?.value  || '').trim();
-    const amtRaw = get('mob-at-amt')?.value || '';
+  mobileAddTxnSubmit() {
+    const g      = id => document.getElementById(id);
+    const errEl  = g('mob-at-err');
+    const showErr = msg => { if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; } };
+
+    const date   = (g('mob-at-date')?.value   || '').trim();
+    const payee  = (g('mob-at-payee')?.value  || '').trim();
+    const amtRaw =  g('mob-at-amt')?.value    || '';
     const amt    = parseFloat(amtRaw);
-    const acctId = get('mob-at-acct')?.value || '';
-    const type   = get('mob-at-type')?.value || 'debit';
-    const catId  = get('mob-at-cat')?.value  || null;
-    const notes  = (get('mob-at-notes')?.value || '').trim();
+    const acctId =  g('mob-at-acct')?.value   || '';
+    const type   =  g('mob-at-type')?.value   || 'debit';
+    const catId  =  g('mob-at-cat')?.value    || null;
+    const notes  = (g('mob-at-notes')?.value  || '').trim();
 
-    if (!date)        { showErr('Please select a date.');           return; }
-    if (!acctId)      { showErr('Please select an account.');       return; }
-    if (!amtRaw || isNaN(amt) || amt <= 0) { showErr('Please enter a valid amount greater than 0.'); return; }
+    if (!date)                             { showErr('Please select a date.');                          return; }
+    if (!acctId)                           { showErr('Please select an account.');                      return; }
+    if (!amtRaw || isNaN(amt) || amt <= 0) { showErr('Please enter a valid amount greater than 0.');   return; }
 
-    errEl.style.display = 'none';
+    if (errEl) errEl.style.display = 'none';
 
     const txn = {
       id: uid(),
@@ -9300,8 +9300,8 @@ const BA = {
 
     if (!D.transactions) D.transactions = [];
     D.transactions.push(txn);
-    saveData();
-    overlay.remove();
+    dirty();                     // mark unsaved so the Save → GitHub button activates
+    BA.mobileCloseTxnSheet();    // always closes by ID — no closure dependency
     renderMobileView();
     toast(`Saved: ${txn.payee} ${type === 'debit' ? '−' : '+'}$${fmtC(amt)}`, 'ok');
   },
@@ -14532,7 +14532,7 @@ Object.assign(BA, {
     });
     closeModal();
     UI.txnSelected = [];
-    saveData();
+    dirty();
     renderTxnRight();
     toast(`Renamed payee to "${newPayee}" on ${changed} transaction${changed!==1?'s':''}`, 'ok');
   },
