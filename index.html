@@ -11306,7 +11306,7 @@ function _renderAllAccountsView(panel) {
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
-    const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:4px;margin-left:4px;white-space:nowrap" title="Added from mobile — review, split, or assign as needed">📱 Mobile</span>` : '';
+    const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;font-size:.85rem;margin-left:4px;opacity:.85" title="Added from mobile — review, split, or assign as needed">📱</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
@@ -11607,7 +11607,7 @@ function _renderTxnSearchResults(panel, query) {
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
-    const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:4px;margin-left:4px;white-space:nowrap" title="Added from mobile — review, split, or assign as needed">📱 Mobile</span>` : '';
+    const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;font-size:.85rem;margin-left:4px;opacity:.85" title="Added from mobile — review, split, or assign as needed">📱</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
@@ -11874,7 +11874,7 @@ function renderTxnRight() {
     const _isHl  = UI.txnHighlightRow === t.id;
     const _famPerson = t.familyMemberId ? famPersons().find(p => p.id === t.familyMemberId) : null;
     const _famBadge  = _famPerson ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:.67rem;font-weight:600;padding:1px 6px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:99px;margin-left:4px;cursor:pointer;white-space:nowrap" onclick="BA.txnNavToLinkedFamily('${t.familyMemberId}')" title="Family: ${esc(_famPerson.name)} — click to view in Family tab">👤 ${esc(_famPerson.name)}</span>` : '';
-    const _mobBadge  = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:4px;margin-left:4px;white-space:nowrap" title="Added from mobile — review, split, or assign as needed">📱 Mobile</span>` : '';
+    const _mobBadge  = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;font-size:.85rem;margin-left:4px;opacity:.85" title="Added from mobile — review, split, or assign as needed">📱</span>` : '';
     // ♻ Reimbursement flag — only relevant on credit (incoming) transactions on non-CC accounts
     const _canReimb = t.credit > 0 && !isCC; // transfers received (credits) are valid reimbursements
     const _isReimb  = !!t.isReimbursement;
