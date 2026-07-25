@@ -605,6 +605,10 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 /* Value colours */
 .ann-bud-val{color:color-mix(in srgb,var(--ann-bud-accent) 85%,var(--text));font-weight:600}
 .ann-act-val{color:color-mix(in srgb,var(--ann-act-accent) 80%,var(--text));font-weight:500}
+/* Same amount-hyperlink concept as the Budget tab's Actual column — click a non-zero
+   monthly actual to see the transactions behind it. */
+.ann-act-link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-decoration-color:currentColor}
+.ann-act-link:hover{text-decoration-style:solid}
 .ann-positive{color:var(--ok);font-weight:600}
 .ann-negative{color:var(--danger);font-weight:600}
 /* Income schedule styles */
@@ -7276,6 +7280,16 @@ function renderAnnual() {
       ? `<span class="ann-act-val">${s}</span>`
       : `<span class="ann-act-val" style="color:var(--ok)" title="Refund / credit">−${s}</span>`;
   };
+  // Same amount-hyperlink concept as the Budget tab: a non-zero per-category/month
+  // actual is clickable and opens the transaction drilldown popup for that cell.
+  const fActLink = (catId, month, v) => {
+    if (Math.abs(v) < 0.005) return z();
+    const s = fmtC(Math.abs(v)).replace('$','').replace(/\.00$/,'');
+    const style = v < 0 ? 'color:var(--ok)' : '';
+    const title = v < 0 ? 'Refund / credit — click to see transactions' : 'Click to see transactions';
+    return `<span class="ann-act-val ann-act-link" style="${style}" title="${title}"
+      onclick="event.stopPropagation();BA.showActualDrillDown('${catId}','${month}')">${v<0?'−':''}${s}</span>`;
+  };
   const fNet = v  => {
     const s = fmtC(Math.abs(v)).replace('$','').replace(/\.00$/,'');
     return `<span class="${v>=0?'ann-positive':'ann-negative'}">${v<0?'-':''}${s}</span>`;
@@ -7340,7 +7354,7 @@ function renderAnnual() {
         }
         const f = isFuture(i);
         return `<td class="ann-num ann-bud-col${f?' ann-future':''}">${isReimb ? `<span class="ann-zero">♻</span>` : isTrack ? `<span class="ann-zero">👁</span>` : fBud(bud)}</td>`
-             + `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`;
+             + `<td class="ann-num ann-act-col${f?' ann-future':''}">${f ? fAct(act) : fActLink(cat.id, ym(i), act)}</td>`;
       }).join('');
       if (!isReimb && !isTrack) { gBudTot += cBud; gActTot += cAct; }
       else if (isReimb)         { grandReimbTotal += cAct; }
@@ -7582,6 +7596,16 @@ function renderActualsGrid() {
       ? `<span class="ann-act-val">${s}</span>`
       : `<span class="ann-act-val" style="color:var(--ok)" title="Refund / credit">−${s}</span>`;
   };
+  // Same amount-hyperlink concept as the Budget tab: a non-zero per-category/month
+  // actual is clickable and opens the transaction drilldown popup for that cell.
+  const fActLink = (catId, month, v) => {
+    if (Math.abs(v) < 0.005) return z();
+    const s = fmtC(Math.abs(v)).replace('$','');
+    const style = v < 0 ? 'color:var(--ok)' : '';
+    const title = v < 0 ? 'Refund / credit — click to see transactions' : 'Click to see transactions';
+    return `<span class="ann-act-val ann-act-link" style="${style}" title="${title}"
+      onclick="event.stopPropagation();BA.showActualDrillDown('${catId}','${month}')">${v<0?'−':''}${s}</span>`;
+  };
   const fNet = v  => {
     const s = fmtC(Math.abs(v)).replace('$','');
     return `<span class="${v>=0?'ann-positive':'ann-negative'}">${v<0?'-':''}${s}</span>`;
@@ -7634,7 +7658,7 @@ function renderActualsGrid() {
         else if (isTrack) mTrackTotals[i] += act;
         else              gActM[i] += act;
         const f = isFuture(i);
-        return `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`;
+        return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f ? fAct(act) : fActLink(cat.id, ym(i), act)}</td>`;
       }).join('');
       if (isReimb)      grandReimbTotal += cAct;
       else if (isTrack) grandTrackTotal += cAct;
