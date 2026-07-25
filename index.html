@@ -6452,7 +6452,7 @@ function renderBudgetTable(month) {
 
   const _filterOver = (UI.budgetFilter || 'all') === 'over';
 
-  let grandBudget = 0, grandSpent = 0, grandReimbSpent = 0, tbody = '';
+  let grandBudget = 0, grandSpent = 0, grandReimbSpent = 0, grandTrackSpent = 0, tbody = '';
   for (const group of groups) {
     const gcats = cats.filter(c => c.groupId===group.id);
     let gBudget = 0, gSpent = 0, gReimbSpent = 0;
@@ -6524,7 +6524,12 @@ function renderBudgetTable(month) {
       if (isReimbursable) {
         gReimbSpent    += Math.round(spent * 100) / 100;
         grandReimbSpent += Math.round(spent * 100) / 100;
-      } else if (!isTracking && budget > 0) {
+      } else if (isTracking) {
+        // Tracking-only: actuals still recorded (shown per-row), but no budget target
+        // so it's excluded from the group/grand totals — tallied separately below,
+        // same treatment as reimbursable.
+        grandTrackSpent += Math.round(spent * 100) / 100;
+      } else if (budget > 0) {
         // Mirror the individual row rule: only count a category in the group total
         // when it has an actual budget (budget > 0). Categories with budget = 0
         // display '—' on the individual row; including their spending in gSpent
@@ -6686,6 +6691,17 @@ function renderBudgetTable(month) {
       <td colspan="1"></td>
     </tr>`;
     })() : ''}
+    ${grandTrackSpent > 0 && !_filterOver ? `
+    <tr style="background:color-mix(in srgb,#8b5cf6 4%,transparent);border-top:1px dashed color-mix(in srgb,#8b5cf6 25%,transparent)">
+      <td></td>
+      <td class="btable-name" colspan="2" style="font-size:.75rem;color:#7c3aed;padding-left:18px">
+        <span style="font-weight:600">👁 Tracking only</span>
+        <span style="opacity:.7;font-weight:400"> — excluded from totals (no budget target)</span>
+      </td>
+      <td class="btable-num" style="color:#7c3aed;font-size:.8rem">${fmtC(grandTrackSpent)}</td>
+      <td colspan="2" style="font-size:.73rem;padding:0 8px;color:var(--text3)">Recorded for visibility only</td>
+      <td colspan="1"></td>
+    </tr>` : ''}
     ${!_filterOver ? `<tr id="btable-add-group-row" style="background:var(--surface2)">
       <td colspan="7" style="padding:7px 10px">
         <button class="btn btn-ghost btn-xs" onclick="BA.startInlineAddGroup()" style="color:var(--text3);font-size:.75rem">＋ Add group</button>
