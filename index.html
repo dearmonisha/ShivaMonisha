@@ -1247,8 +1247,9 @@ function _applyData(raw) {
   if (!D.txnAccounts)   D.txnAccounts   = [];
   if (!D.transactions)  D.transactions  = [];
   if (!D.budget.txnActuals)    D.budget.txnActuals    = [];
-  if (!D.budget.rolloverCats)  D.budget.rolloverCats  = [];
-  if (!D.budget.adjustments)   D.budget.adjustments   = [];
+  if (!D.budget.rolloverCats)   D.budget.rolloverCats   = [];
+  if (!D.budget.trackingCats)   D.budget.trackingCats   = [];
+  if (!D.budget.adjustments)    D.budget.adjustments    = [];
   if (!D.savingsPots)  D.savingsPots  = { growthAccountId: '', trackedGroupId: '' };
   if (!D.reservePots)  D.reservePots  = { reserveAccountId: '' };
   if (!D.settings)   D.settings   = { theme: 'terracotta', iconStyle: 'emoji' };
@@ -6087,8 +6088,10 @@ function renderBudgetPanel(month) {
   const usedPct       = totalBudgeted > 0 ? Math.round(totalSpent / totalBudgeted * 100) : 0;
   const usedColor     = usedPct >= 100 ? 'var(--danger)' : usedPct >= 85 ? 'var(--warn)' : 'var(--ok)';
 
+  const _panelTrackingIds = new Set(D.budget.trackingCats || []);
   cats.forEach(c => {
-    if (_panelReimbIds.has(c.id)) return; // skip reimbursable
+    if (_panelReimbIds.has(c.id)) return;    // skip reimbursable
+    if (_panelTrackingIds.has(c.id)) return; // skip tracking-only — no budget target to evaluate
     const b    = budgetGetAdjustedPlan(c.id, month);
     const a    = budgetGetCatActuals(c.id, month);
     if (b <= 0) { noBudget++; return; }
@@ -6443,6 +6446,7 @@ function renderBudgetTable(month) {
 
     for (const cat of gcats) {
       const isReimbursable = !!cat.reimbursable;
+      const isTracking   = (D.budget.trackingCats || []).includes(cat.id);
       const basePlan     = budgetGetPlan(cat.id, month);
       const effPlan      = budgetGetEffectivePlan(cat.id, month); // includes rollover
       const budget       = budgetGetAdjustedPlan(cat.id, month);  // includes adjustments
@@ -6459,10 +6463,10 @@ function renderBudgetTable(month) {
       const rawPct  = budget > 0 ? (spent / budget * 100) : (spent > 0 ? Infinity : 0);
       const pct     = Math.min(rawPct, 100);  // clamped for bar fill width
       // isOver: half-cent epsilon prevents -0.00 / Cover-button ghost after an exact Cover
-      // Reimbursable cats never show as "over" — they're pass-through spend
-      const isOver  = !isReimbursable && spent - Math.max(0, budget) > 0.005;
+      // Reimbursable and tracking-only cats never show as "over"
+      const isOver  = !isReimbursable && !isTracking && spent - Math.max(0, budget) > 0.005;
       const isFull  = !isOver && rawPct >= 99.5 && budget > 0;
-      const bar     = isReimbursable ? 'var(--info)' : isOver ? 'var(--danger)' : isFull ? 'var(--info)' : rawPct >= 80 ? 'var(--warn)' : 'var(--ok)';
+      const bar     = isReimbursable ? 'var(--info)' : isTracking ? 'var(--text3)' : isOver ? 'var(--danger)' : isFull ? 'var(--info)' : rawPct >= 80 ? 'var(--warn)' : 'var(--ok)';
       // Progress bar fill: striped pattern when over budget, solid otherwise
       const barFillStyle = isOver
         ? `width:100%;background:repeating-linear-gradient(45deg,var(--danger),var(--danger) 5px,color-mix(in srgb,var(--danger) 55%,transparent) 5px,color-mix(in srgb,var(--danger) 55%,transparent) 10px)`
@@ -6470,6 +6474,8 @@ function renderBudgetTable(month) {
       // pctLabel: guard against Infinity when budget was fully reallocated away
       const pctLabel = isReimbursable
         ? `<span style="color:var(--info);font-size:.65rem;font-weight:600">♻</span>`
+        : isTracking
+        ? `<span style="color:var(--text3);font-size:.65rem;font-weight:600">👁 tracking</span>`
         : isOver
         ? `<span style="color:var(--danger);font-weight:700;white-space:nowrap">⚠ ${isFinite(rawPct) ? Math.round(rawPct) + '%' : 'Over budget'}</span>`
         : isFull
@@ -6478,11 +6484,11 @@ function renderBudgetTable(month) {
       // In "Over Budget" filter mode, skip non-over categories entirely
       if (_filterOver && !isOver) continue;
 
-      // Reimbursable cats are tracked separately and excluded from household totals
+      // Reimbursable/tracking cats excluded from household totals
       if (isReimbursable) {
         gReimbSpent    += Math.round(spent * 100) / 100;
         grandReimbSpent += Math.round(spent * 100) / 100;
-      } else if (budget > 0) {
+      } else if (!isTracking && budget > 0) {
         // Mirror the individual row rule: only count a category in the group total
         // when it has an actual budget (budget > 0). Categories with budget = 0
         // display '—' on the individual row; including their spending in gSpent
@@ -6494,7 +6500,7 @@ function renderBudgetTable(month) {
       }
 
       // ── Cover / Move action button ────────────────────────────
-      const hasAvail   = !isReimbursable && budget > 0 && remain > 0;
+      const hasAvail   = !isReimbursable && !isTracking && budget > 0 && remain > 0;
       const actionBtn  = isOver
         ? `<button class="budget-realloc-btn cover" onclick="event.stopPropagation();BA.budgetReallocModal('${cat.id}','${month}','cover')" title="Cover overspend from another category">Cover ↑</button>`
         : hasAvail
@@ -6516,8 +6522,10 @@ function renderBudgetTable(month) {
               <span class="btable-drag-handle" title="Drag to reorder" onclick="event.stopPropagation()">⠿</span>
               <span class="btable-edit" data-val="${esc(cat.name)}" onclick="event.stopPropagation();BA.startBudgetEdit(this,'catname','${cat.id}',null)">${esc(cat.name)}</span>
               ${isReimbursable ? `<span style="font-size:.62rem;font-weight:700;color:var(--info);background:color-mix(in srgb,var(--info) 12%,transparent);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;padding:1px 5px" title="Reimbursable — excluded from budget totals">♻ Reimb</span>` : ''}
+              ${isTracking ? `<span style="font-size:.62rem;font-weight:700;color:#7c3aed;background:color-mix(in srgb,#8b5cf6 12%,transparent);border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);border-radius:4px;padding:1px 5px" title="Tracking only — actuals recorded, no budget target enforced">👁 Track</span>` : ''}
               <button title="${hasRollover?'Rollover ON — unspent budget carries forward':'Rollover OFF — click to carry forward unspent budget'}" onclick="event.stopPropagation();BA.toggleBudgetRollover('${cat.id}')" style="font-size:.7rem;padding:1px 5px;border-radius:4px;cursor:pointer;border:1px solid ${hasRollover?'var(--ok)':'var(--border)'};background:${hasRollover?'color-mix(in srgb,var(--ok) 12%,transparent)':'transparent'};color:${hasRollover?'var(--ok)':'var(--text3)'};line-height:1.4">↺</button>
               <button title="${isReimbursable?'Reimbursable ON — excluded from totals, click to disable':'Mark as reimbursable — spend will be excluded from budget totals (others repay you)'}" onclick="event.stopPropagation();BA.toggleCatReimbursable('${cat.id}')" style="font-size:.7rem;padding:1px 5px;border-radius:4px;cursor:pointer;border:1px solid ${isReimbursable?'var(--info)':'var(--border)'};background:${isReimbursable?'color-mix(in srgb,var(--info) 12%,transparent)':'transparent'};color:${isReimbursable?'var(--info)':'var(--text3)'};line-height:1.4">♻</button>
+              <button title="${isTracking?'Tracking only ON — click to restore budget enforcement':'Mark as tracking only — actuals recorded but no budget target enforced'}" onclick="event.stopPropagation();BA.toggleBudgetTracking('${cat.id}')" style="font-size:.7rem;padding:1px 5px;border-radius:4px;cursor:pointer;border:1px solid ${isTracking?'#8b5cf6':'var(--border)'};background:${isTracking?'color-mix(in srgb,#8b5cf6 12%,transparent)':'transparent'};color:${isTracking?'#7c3aed':'var(--text3)'};line-height:1.4">👁</button>
             </div>
           </td>
           <td class="btable-num">
@@ -6531,12 +6539,12 @@ function renderBudgetTable(month) {
               ${budgetGetCatActualsHasTxn(cat.id,month)?'<span style="font-size:.65rem;vertical-align:middle;margin-right:3px" title="Sourced from Transactions">💳</span>':''}${spent>0?fmtC(spent):'— click to enter'}
             </span>
           </td>
-          <td class="btable-num ${remain<0?'btable-over':''}">${(budget>0||spent>0)?fmtC(remain):'—'}</td>
-          <td class="btable-bar">${budget>0||spent>0?`
+          <td class="btable-num ${(!isTracking&&remain<0)?'btable-over':''}">${isTracking?'—':(budget>0||spent>0)?fmtC(remain):'—'}</td>
+          <td class="btable-bar">${!isTracking&&(budget>0||spent>0)?`
             <div class="btable-bar-inner">
               <div class="btable-progress"><div class="btable-progress-fill" style="${barFillStyle}"></div></div>
               <span class="btable-pct" style="color:${bar}">${pctLabel}</span>
-            </div>`:''}</td>
+            </div>`:isTracking&&spent>0?`<span style="font-size:.72rem;color:var(--text3)">👁 ${fmtC(spent)} tracked</span>`:''}</td>
           <td style="text-align:right;white-space:nowrap;overflow:visible">
             ${actionBtn}
           </td>
@@ -8680,13 +8688,15 @@ function renderMobileView() {
   const cats   = D.budget?.categories || [];
 
   // ── Pre-compute budget totals + overage count (used in tab badge + summary) ──
+  const _mobTrackSet = new Set(D.budget.trackingCats || []);
   let totalBudgeted = 0, totalSpent = 0, overBudgetCount = 0;
   cats.forEach(cat => {
+    const isTracking = _mobTrackSet.has(cat.id);
     const bud  = budgetGetAdjustedPlan(cat.id, month);
     const spnt = budgetGetCatActuals(cat.id, month);
-    totalBudgeted += bud;
-    totalSpent    += spnt;
-    if (spnt > bud + 0.005) overBudgetCount++;
+    if (!isTracking) totalBudgeted += bud;
+    totalSpent += spnt;
+    if (!isTracking && spnt > bud + 0.005) overBudgetCount++;
   });
   const overBadge = overBudgetCount > 0
     ? `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:99px;font-size:.58rem;font-weight:800;background:var(--danger);color:#fff;margin-left:3px;vertical-align:middle">${overBudgetCount}</span>` : '';
@@ -8785,24 +8795,31 @@ function renderMobileView() {
         if (!gcats.length) continue;
         hasAnyBudget = true;
         budgetHTML += `<div class="mob-group-hdr">${esc(group.name)}</div>`;
+        const _mobTrackingIds = new Set(D.budget.trackingCats || []);
         for (const cat of gcats) {
+          const isTracking = _mobTrackingIds.has(cat.id);
           const budget = budgetGetAdjustedPlan(cat.id, month);
           const spent  = budgetGetCatActuals(cat.id, month);
           const remain = Math.round((budget - spent) * 100) / 100;
           const pct    = budget > 0 ? Math.min(100, spent / budget * 100) : (spent > 0 ? 100 : 0);
-          const isOver = remain < -0.005;
-          const isWarn = !isOver && pct >= 80;
-          const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : 'var(--ok)';
+          const isOver = !isTracking && remain < -0.005;
+          const isWarn = !isOver && !isTracking && pct >= 80;
+          const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : isTracking ? 'var(--text3)' : 'var(--ok)';
           const borderColor = isOver ? 'color-mix(in srgb,var(--danger) 35%,transparent)'
                             : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)' : 'var(--border)';
-          const remainLabel = isOver
+          const remainLabel = isTracking
+            ? `<span class="mob-cat-remain" style="color:var(--text3)">👁 tracking</span>`
+            : isOver
             ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
             : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
+          const subLabel = isTracking
+            ? `${fmtC(spent)} tracked (no budget target)`
+            : `${fmtC(spent)} spent of ${fmtC(budget)} planned`;
           budgetHTML += `
             <div class="mob-cat-card" style="border-color:${borderColor};cursor:pointer" onclick="BA.mobileDrillCat('${cat.id}')">
               <div class="mob-cat-row"><span class="mob-cat-name">${esc(cat.name)}</span>${remainLabel}</div>
-              <div class="mob-cat-sub">${fmtC(spent)} spent of ${fmtC(budget)} planned</div>
-              <div class="mob-bar-track"><div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+              <div class="mob-cat-sub">${subLabel}</div>
+              ${!isTracking ? `<div class="mob-bar-track"><div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div></div>` : ''}
             </div>`;
         }
       }
@@ -9944,6 +9961,19 @@ const BA = {
     } else {
       D.budget.rolloverCats.push(catId);
       toast('Rollover enabled — unspent budget will carry forward ↺', 'ok');
+    }
+    dirty(); renderBudget();
+  },
+
+  toggleBudgetTracking(catId) {
+    if (!D.budget.trackingCats) D.budget.trackingCats = [];
+    const idx = D.budget.trackingCats.indexOf(catId);
+    if (idx >= 0) {
+      D.budget.trackingCats.splice(idx, 1);
+      toast('Tracking-only mode off — category now counts toward budget totals', 'ok');
+    } else {
+      D.budget.trackingCats.push(catId);
+      toast('👁 Tracking only — actuals recorded, no budget target enforced', 'ok');
     }
     dirty(); renderBudget();
   },
