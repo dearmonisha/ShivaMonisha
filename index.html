@@ -274,10 +274,12 @@ table.pgrid{width:100%;border-collapse:collapse;font-size:14.67px}
 .modal{background:var(--surface);border-radius:var(--r2);padding:22px;width:540px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:var(--sh3)}
 .modal-title{font-size:15px;font-weight:800;margin-bottom:18px}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:18px}
-.fg{display:flex;flex-direction:column;gap:4px}
+.fg{display:flex;flex-direction:column;gap:4px;min-width:0}
 .fg.full{grid-column:1/-1}
 .flbl{font-size:11px;font-weight:700;color:var(--text2)}
-.finput{border:1px solid var(--border);border-radius:var(--r);padding:6px 9px;font-size:14.67px;outline:none;font-family:inherit;background:var(--surface);color:var(--text)}
+/* min-width:0 so a long <select> option (e.g. a lengthy category name) can't force
+   its grid column — and the whole modal — wider than the dialog's fixed width. */
+.finput{border:1px solid var(--border);border-radius:var(--r);padding:6px 9px;font-size:14.67px;outline:none;font-family:inherit;background:var(--surface);color:var(--text);width:100%;min-width:0;box-sizing:border-box}
 .finput:focus{border-color:var(--primary)}
 .fcheck{display:flex;align-items:center;gap:7px;padding:6px 0}
 .fcheck input{accent-color:var(--primary)}
