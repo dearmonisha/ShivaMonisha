@@ -1798,6 +1798,11 @@ function buildDates(t, cycleYM) {
 // VIEW SWITCHING
 // ════════════════════════════════════════════════════════════
 function switchView(v) {
+  // Leaving the Transactions view — clear any pending drilldown highlight so it
+  // can't reappear (stuck/locked) if the user navigates back to that account later.
+  if (v !== 'transactions' && UI.txnHighlightRow) {
+    UI.txnHighlightRow = null;
+  }
   UI.view = v;
   ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
@@ -5945,13 +5950,17 @@ function renderBudgetKpis(month) {
   // Budget-based income: scheduled + manual entries (used for "Planned" net)
   const budgetIncome  = budgetGetIncome(month);
 
-  // Reimbursable cats are excluded from household totals
+  // Reimbursable and tracking-only cats are excluded from household totals
+  // (tracking-only = actuals recorded for visibility, but no budget target and not real spend against income)
   const _reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
+  const _trackCatIds = new Set(D.budget.trackingCats || []);
+  const _excludedCatIds = new Set([..._reimbCatIds, ..._trackCatIds]);
   const totalBudgeted = (D.budget.plans || [])
-    .filter(p => p.month===month && !_reimbCatIds.has(p.categoryId))
+    .filter(p => p.month===month && !_excludedCatIds.has(p.categoryId))
     .reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
   const reimbSpent    = [..._reimbCatIds].reduce((s, cid) => s + budgetGetCatActuals(cid, month), 0);
-  const actualSpent   = budgetGetMonthTotal(month) - reimbSpent;
+  const trackSpent    = [..._trackCatIds].reduce((s, cid) => s + budgetGetCatActuals(cid, month), 0);
+  const actualSpent   = budgetGetMonthTotal(month) - reimbSpent - trackSpent;
   const plannedNet    = budgetIncome - totalBudgeted;   // budget vs budget
   const actualNet     = txnIncome   - actualSpent;      // actual income vs actual spend
 
@@ -5977,12 +5986,13 @@ function renderBudgetKpis(month) {
   const allMonths = [...monthSet].filter(m => m <= month).sort();
   const cumulPlanned = allMonths.reduce((sum, m) => {
     const inc = budgetGetIncome(m);
-    const bud = (D.budget.plans || []).filter(p => p.month===m && !_reimbCatIds.has(p.categoryId)).reduce((s,p) => s+(parseFloat(p.amount)||0), 0);
+    const bud = (D.budget.plans || []).filter(p => p.month===m && !_excludedCatIds.has(p.categoryId)).reduce((s,p) => s+(parseFloat(p.amount)||0), 0);
     return sum + inc - bud;
   }, 0);
   const cumulActual = allMonths.reduce((sum, m) => {
     const mReimbSpent = [..._reimbCatIds].reduce((s, cid) => s + budgetGetCatActuals(cid, m), 0);
-    return sum + getTotalActualIncome(m) - (budgetGetMonthTotal(m) - mReimbSpent);
+    const mTrackSpent = [..._trackCatIds].reduce((s, cid) => s + budgetGetCatActuals(cid, m), 0);
+    return sum + getTotalActualIncome(m) - (budgetGetMonthTotal(m) - mReimbSpent - mTrackSpent);
   }, 0);
 
   const usedPct = totalBudgeted > 0 ? Math.round(actualSpent/totalBudgeted*100) : null;
@@ -6081,14 +6091,15 @@ function renderBudgetPanel(month) {
 
   // ── Budget Health Scorecard (always visible) ──────────────
   let over = 0, overAmt = 0, onTrack = 0, noBudget = 0;
-  // Exclude reimbursable cats from health scorecard — they're pass-through spend
-  const _panelReimbIds = new Set(cats.filter(c => c.reimbursable).map(c => c.id));
-  const totalBudgeted = cats.filter(c => !_panelReimbIds.has(c.id)).reduce((s, c) => s + budgetGetAdjustedPlan(c.id, month), 0);
-  const totalSpent    = cats.filter(c => !_panelReimbIds.has(c.id)).reduce((s, c) => s + budgetGetCatActuals(c.id, month), 0);
+  // Exclude reimbursable (pass-through) and tracking-only (no budget target) cats from health scorecard
+  const _panelReimbIds    = new Set(cats.filter(c => c.reimbursable).map(c => c.id));
+  const _panelTrackingIds = new Set(D.budget.trackingCats || []);
+  const _panelExcludedIds = new Set([..._panelReimbIds, ..._panelTrackingIds]);
+  const totalBudgeted = cats.filter(c => !_panelExcludedIds.has(c.id)).reduce((s, c) => s + budgetGetAdjustedPlan(c.id, month), 0);
+  const totalSpent    = cats.filter(c => !_panelExcludedIds.has(c.id)).reduce((s, c) => s + budgetGetCatActuals(c.id, month), 0);
   const usedPct       = totalBudgeted > 0 ? Math.round(totalSpent / totalBudgeted * 100) : 0;
   const usedColor     = usedPct >= 100 ? 'var(--danger)' : usedPct >= 85 ? 'var(--warn)' : 'var(--ok)';
 
-  const _panelTrackingIds = new Set(D.budget.trackingCats || []);
   cats.forEach(c => {
     if (_panelReimbIds.has(c.id)) return;    // skip reimbursable
     if (_panelTrackingIds.has(c.id)) return; // skip tracking-only — no budget target to evaluate
@@ -7276,10 +7287,15 @@ function renderAnnual() {
          + `<td class="ann-num ann-act-col${f?' ann-future':''}">${f&&v===0?z():fAct(v)}</td>`;
   }).join('');
 
+  // Tracking-only cats — same treatment as reimbursable: actuals still shown per-row,
+  // but excluded from the expense/net/cumulative totals since they have no budget target.
+  const _trackCatIds = new Set(D.budget.trackingCats || []);
+
   const mBudTotals    = new Array(12).fill(0);
   const mActTotals    = new Array(12).fill(0);
   const mReimbTotals  = new Array(12).fill(0); // reimbursable actuals — excluded from main totals
-  let grandBudTotal = 0, grandActTotal = 0, grandReimbTotal = 0, expenseRows = '';
+  const mTrackTotals  = new Array(12).fill(0); // tracking-only actuals — excluded from main totals
+  let grandBudTotal = 0, grandActTotal = 0, grandReimbTotal = 0, grandTrackTotal = 0, expenseRows = '';
 
   for (const group of groups) {
     const gcats = cats.filter(c => c.groupId===group.id);
@@ -7288,30 +7304,34 @@ function renderAnnual() {
 
     for (const cat of gcats) {
       const isReimb = !!cat.reimbursable;
+      const isTrack = !isReimb && _trackCatIds.has(cat.id);
       let cBud = 0, cAct = 0;
       const cells = MONTHS.map((_,i) => {
         const bud = getBudget(cat.id, ym(i));
         const act = getActual(cat.id, ym(i));
         cBud += bud; cAct += act;
-        if (!isReimb) {
+        if (!isReimb && !isTrack) {
           gBudM[i] += bud; gActM[i] += act;
-        } else {
+        } else if (isReimb) {
           mReimbTotals[i] += act; // track reimbursable separately
+        } else {
+          mTrackTotals[i] += act; // track tracking-only separately
         }
         const f = isFuture(i);
-        return `<td class="ann-num ann-bud-col${f?' ann-future':''}">${isReimb ? `<span class="ann-zero">♻</span>` : fBud(bud)}</td>`
+        return `<td class="ann-num ann-bud-col${f?' ann-future':''}">${isReimb ? `<span class="ann-zero">♻</span>` : isTrack ? `<span class="ann-zero">👁</span>` : fBud(bud)}</td>`
              + `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`;
       }).join('');
-      if (!isReimb) { gBudTot += cBud; gActTot += cAct; }
-      else          { grandReimbTotal += cAct; }
+      if (!isReimb && !isTrack) { gBudTot += cBud; gActTot += cAct; }
+      else if (isReimb)         { grandReimbTotal += cAct; }
+      else                      { grandTrackTotal += cAct; }
       catRowsHtml += `
-        <tr class="ann-row-cat"${isReimb ? ' style="background:color-mix(in srgb,var(--info) 4%,transparent);opacity:.85"' : ''}>
-          <td class="ann-label ann-indent" style="${isReimb ? 'color:var(--info)' : ''}">
-            ${isReimb ? '<span style="font-size:.65rem;font-weight:700;margin-right:4px">♻</span>' : ''}${esc(cat.name)}
+        <tr class="ann-row-cat"${isReimb ? ' style="background:color-mix(in srgb,var(--info) 4%,transparent);opacity:.85"' : isTrack ? ' style="background:color-mix(in srgb,#8b5cf6 4%,transparent);opacity:.85"' : ''}>
+          <td class="ann-label ann-indent" style="${isReimb ? 'color:var(--info)' : isTrack ? 'color:#7c3aed' : ''}">
+            ${isReimb ? '<span style="font-size:.65rem;font-weight:700;margin-right:4px">♻</span>' : isTrack ? '<span style="font-size:.65rem;font-weight:700;margin-right:4px">👁</span>' : ''}${esc(cat.name)}
           </td>
           ${cells}
-          <td class="ann-num ann-total-col ann-bud-col">${isReimb ? `<span class="ann-zero">♻</span>` : fBud(cBud)}</td>
-          <td class="ann-num ann-total-col ann-act-col" style="${isReimb ? 'color:var(--info)' : ''}">${fAct(cAct)}</td>
+          <td class="ann-num ann-total-col ann-bud-col">${isReimb ? `<span class="ann-zero">♻</span>` : isTrack ? `<span class="ann-zero">👁</span>` : fBud(cBud)}</td>
+          <td class="ann-num ann-total-col ann-act-col" style="${isReimb ? 'color:var(--info)' : isTrack ? 'color:#7c3aed' : ''}">${fAct(cAct)}</td>
         </tr>`;
     }
 
@@ -7425,6 +7445,20 @@ function renderAnnual() {
       <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
       <td class="ann-num ann-total-col ann-act-col" style="color:var(--info)">${fAct(grandReimbTotal)}</td>
     </tr>` : '';
+  const trackCells = mTrackTotals.map((v,i) => {
+    const f = isFuture(i);
+    return `<td class="ann-num ann-bud-col${f?' ann-future':''}">${z()}</td><td class="ann-num ann-act-col${f?' ann-future':''}" style="color:#7c3aed">${v>0?fAct(v):z()}</td>`;
+  });
+  const trackRow = grandTrackTotal > 0 ? `
+    <tr style="background:color-mix(in srgb,#8b5cf6 4%,transparent);border-top:1px dashed color-mix(in srgb,#8b5cf6 25%,transparent)">
+      <td class="ann-label" style="color:#7c3aed;font-size:.78rem">
+        👁 Tracking only (excl.)
+        <span style="font-size:.68rem;opacity:.75;display:block;margin-top:1px">No budget target — recorded for visibility</span>
+      </td>
+      ${trackCells.join('')}
+      <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
+      <td class="ann-num ann-total-col ann-act-col" style="color:#7c3aed">${fAct(grandTrackTotal)}</td>
+    </tr>` : '';
   const summaryRows = `
     <tr class="ann-row-income">
       <td class="ann-label">💰 Income</td>
@@ -7475,7 +7509,8 @@ function renderAnnual() {
       <td class="ann-num ann-total-col ann-bud-col">${z()}</td>
       <td class="ann-num ann-total-col ann-act-col">${ccRunLbl}</td>
     </tr>
-    ${reimbRow}`;
+    ${reimbRow}
+    ${trackRow}`;
 
   wrap.innerHTML = `
     <div class="ann-scroll-wrap">
@@ -7553,9 +7588,14 @@ function renderActualsGrid() {
     return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f&&v===0?z():fAct(v)}</td>`;
   }).join('');
 
+  // Tracking-only cats — same treatment as reimbursable: actuals still shown per-row,
+  // but excluded from the expense/net/cumulative totals since they have no budget target.
+  const _trackCatIds = new Set(D.budget.trackingCats || []);
+
   const mActTotals   = new Array(12).fill(0);
   const mReimbTotals = new Array(12).fill(0);
-  let grandActTotal = 0, grandReimbTotal = 0, expenseRows = '';
+  const mTrackTotals = new Array(12).fill(0);
+  let grandActTotal = 0, grandReimbTotal = 0, grandTrackTotal = 0, expenseRows = '';
 
   for (const group of groups) {
     const gcats = cats.filter(c => c.groupId===group.id);
@@ -7564,24 +7604,27 @@ function renderActualsGrid() {
 
     for (const cat of gcats) {
       const isReimb = !!cat.reimbursable;
+      const isTrack = !isReimb && _trackCatIds.has(cat.id);
       let cAct = 0;
       const cells = MONTHS.map((_,i) => {
         const act = getActual(cat.id, ym(i));
         cAct += act;
-        if (!isReimb) gActM[i] += act;
-        else mReimbTotals[i] += act;
+        if (isReimb)      mReimbTotals[i] += act;
+        else if (isTrack) mTrackTotals[i] += act;
+        else              gActM[i] += act;
         const f = isFuture(i);
         return `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(act)}</td>`;
       }).join('');
-      if (!isReimb) gActTot += cAct;
-      else          grandReimbTotal += cAct;
+      if (isReimb)      grandReimbTotal += cAct;
+      else if (isTrack) grandTrackTotal += cAct;
+      else              gActTot += cAct;
       catRowsHtml += `
-        <tr class="ann-row-cat"${isReimb?' style="background:color-mix(in srgb,var(--info) 4%,transparent);opacity:.85"':''}>
-          <td class="ann-label ann-indent" style="${isReimb?'color:var(--info)':''}">
-            ${isReimb?'<span style="font-size:.65rem;font-weight:700;margin-right:4px">♻</span>':''}${esc(cat.name)}
+        <tr class="ann-row-cat"${isReimb?' style="background:color-mix(in srgb,var(--info) 4%,transparent);opacity:.85"':isTrack?' style="background:color-mix(in srgb,#8b5cf6 4%,transparent);opacity:.85"':''}>
+          <td class="ann-label ann-indent" style="${isReimb?'color:var(--info)':isTrack?'color:#7c3aed':''}">
+            ${isReimb?'<span style="font-size:.65rem;font-weight:700;margin-right:4px">♻</span>':isTrack?'<span style="font-size:.65rem;font-weight:700;margin-right:4px">👁</span>':''}${esc(cat.name)}
           </td>
           ${cells}
-          <td class="ann-num ann-total-col ann-act-col" style="${isReimb?'color:var(--info)':''}">${fAct(cAct)}</td>
+          <td class="ann-num ann-total-col ann-act-col" style="${isReimb?'color:var(--info)':isTrack?'color:#7c3aed':''}">${fAct(cAct)}</td>
         </tr>`;
     }
 
@@ -7705,6 +7748,20 @@ function renderActualsGrid() {
       <td class="ann-num ann-total-col ann-act-col" style="color:var(--info)">${fAct(grandReimbTotal)}</td>
     </tr>` : '';
 
+  const trackCells = mTrackTotals.map((v,i) => {
+    const f = isFuture(i);
+    return `<td class="ann-num ann-act-col${f?' ann-future':''}" style="color:#7c3aed">${v>0?fAct(v):z()}</td>`;
+  });
+  const trackRow = grandTrackTotal > 0 ? `
+    <tr style="background:color-mix(in srgb,#8b5cf6 4%,transparent);border-top:1px dashed color-mix(in srgb,#8b5cf6 25%,transparent)">
+      <td class="ann-label" style="color:#7c3aed;font-size:.78rem">
+        👁 Tracking only (excl.)
+        <span style="font-size:.68rem;opacity:.75;display:block;margin-top:1px">No budget target — recorded for visibility</span>
+      </td>
+      ${trackCells.join('')}
+      <td class="ann-num ann-total-col ann-act-col" style="color:#7c3aed">${fAct(grandTrackTotal)}</td>
+    </tr>` : '';
+
   const summaryRows = `
     <tr class="ann-row-income">
       <td class="ann-label">💰 Income</td>
@@ -7747,7 +7804,8 @@ function renderActualsGrid() {
       ${ccTotalCells.join('')}
       <td class="ann-num ann-total-col">${ccRunLbl}</td>
     </tr>
-    ${reimbRow}`;
+    ${reimbRow}
+    ${trackRow}`;
 
   wrap.innerHTML = `
     <div class="ann-scroll-wrap">
@@ -13685,13 +13743,26 @@ Object.assign(BA, {
     BA._resetSplitState();
     // Set highlight now — single render via switchView will pick it up
     UI.txnHighlightRow = txnId;
-    switchView('transactions');
-    // After 2.5s: remove highlight style directly from the DOM row (no re-render needed)
-    setTimeout(() => {
-      const row = document.querySelector(`#txn-right tr[data-txn-id="${txnId}"]`);
-      if (row) { row.style.background = ''; row.style.outline = ''; }
-      if (UI.txnHighlightRow === txnId) UI.txnHighlightRow = null;
-    }, 2500);
+    // Schedule the auto-clear BEFORE rendering, so it's guaranteed to run even if
+    // switchView/render throws partway through — otherwise the highlight can get
+    // stuck on permanently since nothing else would ever clear UI.txnHighlightRow.
+    const _clearHighlight = () => {
+      if (UI.txnHighlightRow === txnId) {
+        UI.txnHighlightRow = null;
+        const row = document.querySelector(`#txn-right tr[data-txn-id="${txnId}"]`);
+        if (row) { row.style.background = ''; row.style.outline = ''; }
+      }
+    };
+    setTimeout(_clearHighlight, 2500);
+    // Also clear as soon as the user interacts with the page again (click anywhere),
+    // so the highlight doesn't linger stuck if they navigate away before the timer fires.
+    document.addEventListener('pointerdown', _clearHighlight, { once: true, capture: true });
+    try {
+      switchView('transactions');
+    } catch (err) {
+      _clearHighlight();
+      throw err;
+    }
   },
 
   // ── Inline transaction editing ───────────────────────────────
