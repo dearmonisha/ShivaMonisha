@@ -12429,7 +12429,9 @@ function renderCatTrends() {
   const [cy, cm] = today.split('-').map(Number);
 
   // ── UI state ────────────────────────────────────────────────────────
-  if (!UI.ctSelCat)    UI.ctSelCat    = cats[0]?.id || '';
+  // Use undefined-check (not falsy-check) so an explicit "Show All" (ctSelCat = '')
+  // doesn't get silently overwritten back to the first category on the next render.
+  if (UI.ctSelCat === undefined) UI.ctSelCat = cats[0]?.id || '';
   if (!UI.ctStartYM)   UI.ctStartYM   = `${cy}-01`;
   if (!UI.ctEndYM)     UI.ctEndYM     = `${cy}-${String(cm).padStart(2,'0')}`;
   if (!UI.ctTableYear) UI.ctTableYear = String(cy);
