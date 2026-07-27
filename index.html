@@ -13871,10 +13871,32 @@ Object.assign(BA, {
 
   // Drilldown popup: all expense-typed transactions for a card in a month
   showCCChargeDrillDown(cardAccountId, month) {
+    // Fresh open: clear any prior category selection before rendering
+    UI._ccrDrillSel = new Set();
+    BA._renderCcrDrillModal(cardAccountId, month);
+  },
+
+  _ccrDrillToggleCat(catKey) {
+    if (!UI._ccrDrillSel) UI._ccrDrillSel = new Set();
+    if (UI._ccrDrillSel.has(catKey)) UI._ccrDrillSel.delete(catKey);
+    else UI._ccrDrillSel.add(catKey);
+    const d = UI._ccrDrillCtx;
+    if (d) BA._renderCcrDrillModal(d.cardAccountId, d.month, true);
+  },
+
+  _ccrDrillClearSel() {
+    UI._ccrDrillSel = new Set();
+    const d = UI._ccrDrillCtx;
+    if (d) BA._renderCcrDrillModal(d.cardAccountId, d.month, true);
+  },
+
+  _renderCcrDrillModal(cardAccountId, month, preserveScroll) {
     const card = (D.txnAccounts||[]).find(a => a.id === cardAccountId);
     const cardName = card ? card.name : cardAccountId;
     const [y, m] = month.split('-').map(Number);
     const monthLabel = new Date(y, m-1, 1).toLocaleString('default', { month:'long', year:'numeric' });
+    UI._ccrDrillCtx = { cardAccountId, month };
+    const sel = UI._ccrDrillSel || (UI._ccrDrillSel = new Set());
 
     // Same filter as computeCCChargesForMonth
     const txns = (D.transactions||[]).filter(t => {
@@ -13887,7 +13909,7 @@ Object.assign(BA, {
     }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
     let grandTotal = 0;
-    const catTotals = new Map(); // catId -> { label, total }
+    const catTotals = new Map(); // catKey -> { label, total }
     const bumpCat = (catId, label, amt) => {
       const key = catId || label;
       const existing = catTotals.get(key);
@@ -13935,11 +13957,40 @@ Object.assign(BA, {
       ? `<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--text3)">No expense-typed transactions found for ${monthLabel}</td></tr>`
       : '';
 
-    const catPills = [...catTotals.values()]
-      .sort((a,b) => b.total - a.total)
-      .map(c => `<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:.72rem;background:var(--surface2);border:1px solid var(--border);color:var(--text2);white-space:nowrap">
-        <span style="font-weight:500">${esc(c.label)}</span><span style="font-weight:700;color:var(--text)">${fmtC(c.total)}</span>
-      </span>`).join('');
+    // Keep selection keys that no longer exist in this render from silently inflating the total
+    const validKeys = new Set(catTotals.keys());
+    [...sel].forEach(k => { if (!validKeys.has(k)) sel.delete(k); });
+
+    const catPills = [...catTotals.entries()]
+      .sort((a,b) => b[1].total - a[1].total)
+      .map(([key, c]) => {
+        const isSel = sel.has(key);
+        return `<span onclick="BA._ccrDrillToggleCat('${esc(key).replace(/'/g,"\\'")}')"
+          title="Click to ${isSel?'remove from':'add to'} selection"
+          style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:.72rem;cursor:pointer;user-select:none;transition:background .1s,border-color .1s;
+                 background:${isSel?'color-mix(in srgb,var(--primary) 16%,transparent)':'var(--surface2)'};
+                 border:1px solid ${isSel?'var(--primary)':'var(--border)'};
+                 color:${isSel?'var(--primary)':'var(--text2)'}">
+          ${isSel?'✓ ':''}<span style="font-weight:500">${esc(c.label)}</span><span style="font-weight:700;${isSel?'':'color:var(--text)'}">${fmtC(c.total)}</span>
+        </span>`;
+      }).join('');
+
+    const selCount = sel.size;
+    const selTotal  = [...sel].reduce((s,k) => s + (catTotals.get(k)?.total || 0), 0);
+    const selBar = selCount > 0 ? `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+                  margin-bottom:12px;padding:8px 12px;border-radius:8px;
+                  background:color-mix(in srgb,var(--primary) 8%,transparent);
+                  border:1px solid color-mix(in srgb,var(--primary) 25%,transparent)">
+        <div style="font-size:.78rem;color:var(--text2)">
+          <strong style="color:var(--primary)">${selCount}</strong> categor${selCount!==1?'ies':'y'} selected ·
+          Total: <strong style="color:var(--text)">${fmtC(selTotal)}</strong>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" style="font-size:.72rem;padding:3px 9px" onclick="BA._ccrDrillClearSel()">✕ Clear</button>
+          <button class="btn btn-primary btn-sm" style="font-size:.72rem;padding:3px 9px" onclick="BA.ccrUseDrillSelectionAsPayment()">💸 Use as Payment Amount</button>
+        </div>
+      </div>` : '';
 
     showModal(`
       <div class="modal-title" style="display:flex;align-items:center;gap:8px">
@@ -13948,9 +13999,10 @@ Object.assign(BA, {
       </div>
       <div style="margin-bottom:10px;font-size:.78rem;color:var(--text3)">
         ${txns.length} transaction${txns.length!==1?'s':''} · Charged: <strong style="color:var(--text)">${fmtC(grandTotal)}</strong>
-        ${txns.length>0?' · <span style="font-size:.72rem;opacity:.7">click a row to go to the transaction</span>':''}
+        ${txns.length>0?' · <span style="font-size:.72rem;opacity:.7">click a pill to build a payment total · click a row to go to the transaction</span>':''}
       </div>
       ${catPills ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${catPills}</div>` : ''}
+      ${selBar}
       <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
         <table style="width:100%;border-collapse:collapse">
           <thead>
@@ -13971,6 +14023,49 @@ Object.assign(BA, {
     // Widen the modal so the category pills have room to breathe
     const _ccrM = document.querySelector('#modal-root .modal');
     if (_ccrM) { _ccrM.style.maxWidth = '760px'; _ccrM.style.width = '90vw'; }
+  },
+
+  ccrUseDrillSelectionAsPayment() {
+    const d = UI._ccrDrillCtx;
+    const sel = UI._ccrDrillSel;
+    if (!d || !sel || sel.size === 0) return;
+
+    // Recompute the same per-category totals to get an accurate sum for the current selection
+    const txns = (D.transactions||[]).filter(t => {
+      if (t.accountId !== d.cardAccountId) return false;
+      if (!t.date || t.date.slice(0,7) !== d.month) return false;
+      if (t.status === 'pending' || t.status === 'rejected') return false;
+      if (t.isTransfer) return false;
+      if (t.splits && t.splits.length > 0) return t.splits.some(s => s.categoryId && s.categoryId !== '__income__');
+      return t.categoryId && t.categoryId !== '__income__';
+    });
+    let total = 0;
+    txns.forEach(t => {
+      if (t.splits && t.splits.length > 0) {
+        t.splits.filter(s => s.categoryId && s.categoryId !== '__income__').forEach(sp => {
+          if (sel.has(sp.categoryId)) total += parseFloat(sp.amount)||0;
+        });
+      } else if (sel.has(t.categoryId)) {
+        total += (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
+      }
+    });
+
+    closeModal();
+
+    // Pre-select this card in the payment form (if a card dropdown is present) and drop in the total
+    const cardEl = id('ccr-form-card');
+    if (cardEl) cardEl.value = d.cardAccountId;
+    else UI.ccrSelectedCard = d.cardAccountId;
+
+    // Re-render so the right-hand payment form reflects the selected card, then fill the amount
+    renderCCRepaySection(d.month);
+    const amtEl = id('ccr-amt-form');
+    if (amtEl) {
+      amtEl.value = fmtCurrency(total);
+      amtEl.focus();
+      BA.ccrUpdateCapPreview(d.month);
+    }
+    toast(`${fmtCurrency(total)} dropped into the payment amount`, 'ok');
   },
 
   ccrUpdateCapPreview(month) {
