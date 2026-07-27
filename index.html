@@ -13890,6 +13890,12 @@ Object.assign(BA, {
     if (d) BA._renderCcrDrillModal(d.cardAccountId, d.month, true);
   },
 
+  _ccrDrillSelectAll(allKeys) {
+    UI._ccrDrillSel = new Set(allKeys);
+    const d = UI._ccrDrillCtx;
+    if (d) BA._renderCcrDrillModal(d.cardAccountId, d.month, true);
+  },
+
   _renderCcrDrillModal(cardAccountId, month, preserveScroll) {
     const card = (D.txnAccounts||[]).find(a => a.id === cardAccountId);
     const cardName = card ? card.name : cardAccountId;
@@ -13975,6 +13981,11 @@ Object.assign(BA, {
         </span>`;
       }).join('');
 
+    const allKeysJson = JSON.stringify([...catTotals.keys()]).replace(/"/g,'&quot;');
+    const selectAllBtn = catTotals.size > 0
+      ? `<button onclick="BA._ccrDrillSelectAll(${allKeysJson})" style="background:none;border:none;cursor:pointer;font-size:.72rem;color:var(--primary);padding:0;font-weight:600;text-decoration:underline;text-decoration-style:dotted">☑ Select all categories</button>`
+      : '';
+
     const selCount = sel.size;
     const selTotal  = [...sel].reduce((s,k) => s + (catTotals.get(k)?.total || 0), 0);
     const selBar = selCount > 0 ? `
@@ -14001,7 +14012,11 @@ Object.assign(BA, {
         ${txns.length} transaction${txns.length!==1?'s':''} · Charged: <strong style="color:var(--text)">${fmtC(grandTotal)}</strong>
         ${txns.length>0?' · <span style="font-size:.72rem;opacity:.7">click a pill to build a payment total · click a row to go to the transaction</span>':''}
       </div>
-      ${catPills ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${catPills}</div>` : ''}
+      ${catPills ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+          <div style="font-size:.72rem;color:var(--text3)">Tip: select all, then unselect the ones you want to exclude</div>
+          ${selectAllBtn}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${catPills}</div>` : ''}
       ${selBar}
       <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
         <table style="width:100%;border-collapse:collapse">
