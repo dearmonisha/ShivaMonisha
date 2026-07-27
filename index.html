@@ -271,7 +271,7 @@ table.pgrid{width:100%;border-collapse:collapse;font-size:14.67px}
 
 /* ─── MODAL ─── */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;display:flex;align-items:center;justify-content:center}
-.modal{background:var(--surface);border-radius:var(--r2);padding:22px;width:540px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:var(--sh3)}
+.modal{background:var(--surface);border-radius:var(--r2);padding:22px;width:clamp(540px,55vw,880px);max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:var(--sh3)}
 .modal-title{font-size:15px;font-weight:800;margin-bottom:18px}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:18px}
 .fg{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -13968,6 +13968,9 @@ Object.assign(BA, {
         <button class="btn btn-primary btn-sm" onclick="closeModal()" style="font-size:.78rem">Close</button>
       </div>
     `);
+    // Widen the modal so the category pills have room to breathe
+    const _ccrM = document.querySelector('#modal-root .modal');
+    if (_ccrM) { _ccrM.style.maxWidth = '760px'; _ccrM.style.width = '90vw'; }
   },
 
   ccrUpdateCapPreview(month) {
