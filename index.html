@@ -13887,6 +13887,13 @@ Object.assign(BA, {
     }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
     let grandTotal = 0;
+    const catTotals = new Map(); // catId -> { label, total }
+    const bumpCat = (catId, label, amt) => {
+      const key = catId || label;
+      const existing = catTotals.get(key);
+      if (existing) existing.total += amt;
+      else catTotals.set(key, { label, total: amt });
+    };
     const rows = txns.map(t => {
       let amt = 0;
       let catLabel = '';
@@ -13898,9 +13905,11 @@ Object.assign(BA, {
         const catNames = [...new Set(expLines.map(sp => txnCatLabel(sp.categoryId)||sp.categoryId))];
         catLabel = catNames.join(', ');
         splitNote = `<span style="font-size:.68rem;color:var(--text3);margin-left:3px">(split)</span>`;
+        expLines.forEach(sp => bumpCat(sp.categoryId, txnCatLabel(sp.categoryId)||sp.categoryId, parseFloat(sp.amount)||0));
       } else {
         amt = (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
         catLabel = txnCatLabel(t.categoryId) || t.categoryId || '—';
+        bumpCat(t.categoryId, catLabel, amt);
       }
       grandTotal += amt;
 
@@ -13926,6 +13935,12 @@ Object.assign(BA, {
       ? `<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--text3)">No expense-typed transactions found for ${monthLabel}</td></tr>`
       : '';
 
+    const catPills = [...catTotals.values()]
+      .sort((a,b) => b.total - a.total)
+      .map(c => `<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:.72rem;background:var(--surface2);border:1px solid var(--border);color:var(--text2);white-space:nowrap">
+        <span style="font-weight:500">${esc(c.label)}</span><span style="font-weight:700;color:var(--text)">${fmtC(c.total)}</span>
+      </span>`).join('');
+
     showModal(`
       <div class="modal-title" style="display:flex;align-items:center;gap:8px">
         <span>💳 ${esc(cardName)}</span>
@@ -13935,6 +13950,7 @@ Object.assign(BA, {
         ${txns.length} transaction${txns.length!==1?'s':''} · Charged: <strong style="color:var(--text)">${fmtC(grandTotal)}</strong>
         ${txns.length>0?' · <span style="font-size:.72rem;opacity:.7">click a row to go to the transaction</span>':''}
       </div>
+      ${catPills ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${catPills}</div>` : ''}
       <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
         <table style="width:100%;border-collapse:collapse">
           <thead>
