@@ -12510,6 +12510,10 @@ const FIN_LIABILITY_TYPES = ['Credit Card','Loans','Loan'];
 // Shared by the Balance Sheet's cash-flow lens and the Income & Expenditure statement so
 // both agree on what counts as "income."
 const FIN_NON_CASHFLOW_PAYEES = /adjustment|starting balance|vested|correction|reconciliation|contribution/i;
+// Categories that represent a real cost of holding the liability itself (annual/membership
+// fees, service fees) — counted alongside interest in the liability cost estimate. Matched by
+// category name rather than id since ids are data-specific and names are what you'd recognize.
+const FIN_FEE_CATEGORY_PATTERN = /membership fee|service fee/i;
 const FIN_CASHFLOW_META = {
   'income-asset':      { label: 'Income Asset',      color: '#22c55e' },
   'expense-liability': { label: 'Expense Liability',  color: '#ef4444' },
@@ -12638,11 +12642,32 @@ function renderBalanceSheet(c) {
     return keys;
   };
 
+  // Trailing-12-month monthly average of membership/service fee transactions posted to this
+  // account — a real cost of holding the card, counted alongside interest.
+  const feesFor = (acct) => {
+    const txns = (D.transactions||[]).filter(t =>
+      t.accountId === acct.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+      (!t.status || t.status === 'approved')
+    );
+    let total = 0;
+    txns.forEach(t => {
+      if (t.splits && t.splits.length) {
+        t.splits.forEach(s => {
+          if (FIN_FEE_CATEGORY_PATTERN.test(txnCatLabel(s.categoryId)||'')) total += parseFloat(s.amount)||0;
+        });
+      } else if (FIN_FEE_CATEGORY_PATTERN.test(txnCatLabel(t.categoryId)||'') && (parseFloat(t.debit)||0) > 0) {
+        total += parseFloat(t.debit)||0;
+      }
+    });
+    return total / 12;
+  };
+
   const monthlyCostFor = (acct) => {
     // Prefer real recorded interest over any rate-based estimate. A card paid in full every
     // cycle accrues $0 interest even though it carries a balance — an APR formula can't know
     // that, but the CC Tracker's actual monthly interest entries (Insights > Credit Card) do.
     if (acct.type === 'Credit Card') {
+      const feesAvg = feesFor(acct);
       const card = (D.ccTracker?.cards || []).find(cc => cc.linkedTxnAccountId === acct.id);
       const monthData = card && D.ccTracker?.data?.[card.id];
       if (monthData) {
@@ -12650,14 +12675,16 @@ function renderBalanceSheet(c) {
         const entries = months.map(m => monthData[m]).filter(Boolean);
         if (entries.length) {
           const total = entries.reduce((s,e) => s + (parseFloat(e.interest)||0), 0);
-          return { value: total / entries.length, actual: true };
+          return { value: (total / entries.length) + feesAvg, actual: true };
         }
       }
-      // No recorded history for this card yet — fall back to a rate-based estimate
+      // No recorded interest history for this card yet — fall back to a rate-based estimate,
+      // but real fee amounts (if any) still count as actual.
       if (acct.interestRate != null && acct.interestRate !== '') {
-        return { value: Math.max(0, acct._bal) * (parseFloat(acct.interestRate)/100) / 12, actual: false };
+        return { value: Math.max(0, acct._bal) * (parseFloat(acct.interestRate)/100) / 12 + feesAvg, actual: false };
       }
-      if (card && card.apr) return { value: Math.max(0, acct._bal) * (card.apr/100) / 12, actual: false };
+      if (card && card.apr) return { value: Math.max(0, acct._bal) * (card.apr/100) / 12 + feesAvg, actual: false };
+      if (feesAvg > 0) return { value: feesAvg, actual: true };
       return null;
     }
     if (acct.type === 'Loans') {
@@ -12729,7 +12756,8 @@ function renderBalanceSheet(c) {
       <div style="font-size:.75rem;color:var(--text3);margin-bottom:14px">
         Net worth counts everything you own. This view only counts accounts you've tagged — set each account's
         cash-flow class in the tables above. Income assets show trailing-12-month cash they generated; expense
-        liabilities show an estimated monthly cost from their interest rate (where known).
+        liabilities show their trailing-12-month interest, membership fees, and service fees where actually
+        recorded — falling back to a rate-based estimate only when no real history exists (marked "est.").
       </div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
         ${finCard('Monthly income from assets', fmtCurrency(incomeTotal), incomeAssetRows.length+' tagged accounts', '#22c55e')}
