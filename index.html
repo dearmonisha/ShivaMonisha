@@ -12290,6 +12290,8 @@ function txnEditAccountModal(editId) {
         </select></div>
       <div class="fg"><label class="flbl">Opening Balance</label><input id="tacct-bal" class="finput" type="number" step="0.01" value="${a ? (a.openingBalance||0) : 0}" placeholder="0.00"></div>
       <div class="fg"><label class="flbl">Opening Date</label><input id="tacct-date" class="finput" type="date" value="${a ? (a.openingDate||'') : new Date().toISOString().slice(0,10)}"></div>
+      <div class="fg"><label class="flbl">Interest Rate % (APR)</label><input id="tacct-rate" class="finput" type="number" step="0.01" value="${a && a.interestRate!=null ? a.interestRate : ''}" placeholder="e.g. 6.5"></div>
+      <div class="fg"></div>
       <div class="fg" style="grid-column:1/-1">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
           <input type="checkbox" id="tacct-ccrepay" ${a?.showInCCRepay ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
@@ -12630,6 +12632,13 @@ function renderBalanceSheet(c) {
     return txns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0) / 12;
   };
   const monthlyCostFor = (acct) => {
+    // A manually-set rate on the account itself always wins — it's the most direct source
+    // and doesn't require creating an Obligations/EMI record (which would also drive due-date
+    // tracking and auto-generated transactions, not appropriate for accounts like a mortgage
+    // that you already record payments for another way).
+    if (acct.interestRate != null && acct.interestRate !== '') {
+      return Math.max(0, acct._bal) * (parseFloat(acct.interestRate)/100) / 12;
+    }
     if (acct.type === 'Credit Card') {
       const card = (D.ccTracker?.cards || []).find(cc => cc.linkedTxnAccountId === acct.id);
       if (card && card.apr) return Math.max(0, acct._bal) * (card.apr/100) / 12;
@@ -13923,6 +13932,7 @@ Object.assign(BA, {
       showInCCRepay: id('tacct-ccrepay')?.checked || false,
       excludeFromNetWorth: id('tacct-exclude-nw')?.checked || false,
       cashflowClass: existing?.cashflowClass || 'neutral',
+      interestRate: id('tacct-rate')?.value !== '' ? parseFloat(id('tacct-rate').value) : null,
     };
     if (editId) {
       const idx = D.txnAccounts.findIndex(a => a.id === editId);
