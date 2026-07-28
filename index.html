@@ -770,6 +770,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
     <button class="np active" id="tab-monthly" onclick="switchView('monthly')">Monthly</button>
     <button class="np" id="tab-transactions" onclick="switchView('transactions')">Transactions</button>
     <button class="np" id="tab-family" onclick="switchView('family')">Family</button>
+    <button class="np" id="tab-financials" onclick="switchView('financials')">📑 Financial Statements</button>
 
     <!-- Budget group -->
     <div class="nav-dropdown" id="nav-dd-budget">
@@ -943,6 +944,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
     <div id="actualsTableWrap" style="background:var(--surface);border-radius:var(--r2);overflow:hidden"></div>
   </div>
   <div id="view-setup" style="display:none"></div>
+  <div id="view-financials" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-reports"     style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-cat-trends" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-savings-pots"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
@@ -1083,6 +1085,13 @@ let UI = {
   txnReimbFilter: false, // true = show only reimbursable/reimbursement transactions
   txnPayeeFilter: '',    // payee name filter — click a payee cell to set
   reportsMonth:  '',   // selected month for spending breakdown chart
+  // Financial Statements module
+  financialsSubview: 'balance-sheet',  // 'balance-sheet' | 'income-expenditure'
+  finBSAsOf:      '',       // as-of date for Balance Sheet (defaults to today)
+  finIEPeriod:    'month',  // 'month' | 'quarter' | 'year'
+  finIEMonth:     ymNow(),
+  finIEQuarter:   null,     // 'YYYY-Q1'..'YYYY-Q4', defaults to current quarter
+  finIEYear:      new Date().getFullYear(),
 };
 
 let editCtx = null; // active inline edit context
@@ -1831,7 +1840,7 @@ function switchView(v) {
     UI.txnHighlightRow = null;
   }
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','financials'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
@@ -1861,6 +1870,7 @@ function switchView(v) {
   if (v==='savings-pots')  renderSavingsPots();
   if (v==='reserve-pots')  renderReservePots();
   if (v==='debt-payoff')   renderDebtPayoff();
+  if (v==='financials')    renderFinancials();
 }
 
 function toggleNavDropdown(name, triggerEl) {
@@ -12478,6 +12488,335 @@ function renderReports() {
       id('rpt-cat').insertAdjacentHTML('afterend','<div style="text-align:center;color:var(--text3);padding:40px;font-size:.85rem">No expense transactions for this month</div>');
     }
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FINANCIAL STATEMENTS  (Balance Sheet + Income & Expenditure)
+// ══════════════════════════════════════════════════════════════════════
+const FIN_ASSET_TYPES     = ['Bank','Investment','Tracking'];
+const FIN_LIABILITY_TYPES = ['Credit Card','Loans','Loan'];
+const FIN_CASHFLOW_META = {
+  'income-asset':      { label: 'Income Asset',      color: '#22c55e' },
+  'expense-liability': { label: 'Expense Liability',  color: '#ef4444' },
+  'neutral':           { label: 'Neutral',            color: '#9ca3af' },
+};
+
+function renderFinancials() {
+  const wrap = id('view-financials');
+  if (!wrap) return;
+  wrap.innerHTML = `
+    <div class="stabs">
+      <button class="stab ${UI.financialsSubview==='balance-sheet'?'active':''}" onclick="switchFinancialsSubview('balance-sheet')">Balance Sheet</button>
+      <button class="stab ${UI.financialsSubview==='income-expenditure'?'active':''}" onclick="switchFinancialsSubview('income-expenditure')">Income &amp; Expenditure</button>
+    </div>
+    <div id="financials-content" style="margin-top:14px"></div>
+  `;
+  renderFinancialsContent();
+}
+
+function switchFinancialsSubview(v) {
+  UI.financialsSubview = v;
+  renderFinancials();
+}
+
+function renderFinancialsContent() {
+  const c = id('financials-content');
+  if (!c) return;
+  if (UI.financialsSubview === 'income-expenditure') renderIncomeExpenditure(c);
+  else renderBalanceSheet(c);
+}
+
+function finSetCashflowClass(acctId, val) {
+  const acct = (D.txnAccounts||[]).find(a => a.id === acctId);
+  if (!acct) return;
+  acct.cashflowClass = val;
+  dirty();
+  renderFinancialsContent();
+  toast('Cash-flow class updated', 'ok');
+}
+
+function finCard(label, value, sub, accent) {
+  return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px;flex:1;min-width:160px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:6px">${label}</div>
+      <div style="font-size:1.35rem;font-weight:800;color:${accent||'var(--text)'}">${value}</div>
+      ${sub ? `<div style="font-size:.72rem;color:var(--text3);margin-top:3px">${sub}</div>` : ''}
+    </div>`;
+}
+
+// ── BALANCE SHEET ─────────────────────────────────────────────────────
+function finBalanceAsOf(acct, asOf) {
+  const txns = (D.transactions||[]).filter(t =>
+    t.accountId === acct.id && (t.date||'') <= asOf && (!t.status || t.status === 'approved')
+  );
+  const rows = txnRunningBalances(acct, txns);
+  return rows.length ? rows[rows.length-1]._bal : (parseFloat(acct.openingBalance)||0);
+}
+
+function finMonthsAgoDate(asOf, monthsBack) {
+  const [y,m] = asOf.slice(0,7).split('-').map(Number);
+  let yy=y, mm=m-monthsBack; while (mm<=0) { mm+=12; yy--; }
+  return `${yy}-${String(mm).padStart(2,'0')}-01`;
+}
+
+function renderBalanceSheet(c) {
+  const asOf = UI.finBSAsOf || centralToday();
+  const accounts = D.txnAccounts || [];
+
+  const rows = accounts.map(a => ({
+    ...a,
+    _bal: finBalanceAsOf(a, asOf),
+    cashflowClass: a.cashflowClass || 'neutral',
+  }));
+
+  const assetRows     = rows.filter(a => FIN_ASSET_TYPES.includes(a.type));
+  const liabilityRows = rows.filter(a => FIN_LIABILITY_TYPES.includes(a.type));
+
+  const totalAssets      = assetRows.reduce((s,a) => s + a._bal, 0);
+  const totalLiabilities = liabilityRows.reduce((s,a) => s + Math.max(0, a._bal), 0);
+  const netWorth         = totalAssets - totalLiabilities;
+
+  const classSelect = (a) => `
+    <select onchange="finSetCashflowClass('${a.id}', this.value)"
+      style="font-size:.72rem;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+      <option value="income-asset" ${a.cashflowClass==='income-asset'?'selected':''}>💰 Income Asset</option>
+      <option value="expense-liability" ${a.cashflowClass==='expense-liability'?'selected':''}>📉 Expense Liability</option>
+      <option value="neutral" ${a.cashflowClass==='neutral'?'selected':''}>— Neutral</option>
+    </select>`;
+
+  const acctRow = (a, isLiability) => {
+    const bal = isLiability ? Math.max(0, a._bal) : a._bal;
+    return `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:8px 10px">${esc(a.name)}</td>
+      <td style="padding:8px 10px;color:var(--text3);font-size:.75rem">${esc(a.type)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:600;${bal<0?'color:#ef4444':''}">${fmtCurrency(bal)}</td>
+      <td style="padding:8px 10px">${classSelect(a)}</td>
+    </tr>`;
+  };
+
+  const tableHead = `
+    <tr style="text-align:left;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
+      <th style="padding:6px 10px">Account</th><th style="padding:6px 10px">Type</th>
+      <th style="padding:6px 10px;text-align:right">Balance</th><th style="padding:6px 10px">Cash-flow class</th>
+    </tr>`;
+
+  // ── Cash-flow lens (Rich Dad, Poor Dad framing) ──
+  const incomeAssetRows = rows.filter(a => a.cashflowClass === 'income-asset');
+  const expenseLiabRows = rows.filter(a => a.cashflowClass === 'expense-liability');
+  const last12Start = finMonthsAgoDate(asOf, 11);
+
+  const monthlyIncomeFor = (acct) => {
+    const txns = (D.transactions||[]).filter(t =>
+      t.accountId === acct.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+      (!t.status || t.status === 'approved') && (parseFloat(t.credit)||0) > 0
+    );
+    return txns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0) / 12;
+  };
+  const monthlyCostFor = (acct) => {
+    if (acct.type === 'Credit Card') {
+      const card = (D.ccTracker?.cards || []).find(cc => cc.linkedTxnAccountId === acct.id);
+      if (card && card.apr) return Math.max(0, acct._bal) * (card.apr/100) / 12;
+      return null;
+    }
+    if (acct.type === 'Loans') {
+      const emi = (D.obligations?.emis || []).find(e => e.itemName === acct.name);
+      if (emi && emi.interestRate) return Math.max(0, acct._bal) * (emi.interestRate/100) / 12;
+      return null;
+    }
+    return null;
+  };
+
+  const incomeTotal = incomeAssetRows.reduce((s,a) => s + monthlyIncomeFor(a), 0);
+  const costEntries  = expenseLiabRows.map(a => ({ a, cost: monthlyCostFor(a) }));
+  const costTotal    = costEntries.reduce((s,e) => s + (e.cost||0), 0);
+  const netCashflow  = incomeTotal - costTotal;
+
+  const lensRow = (label, val, isCost) => `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:6px 10px">${esc(label)}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:600;${isCost?'color:#ef4444':'color:#22c55e'}">
+        ${val===null ? '<span style="color:var(--text3);font-weight:400">rate unknown</span>' : fmtCurrency(val)}
+      </td>
+    </tr>`;
+
+  c.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <span style="font-size:.8rem;color:var(--text2)">As of</span>
+      <input type="date" value="${asOf}" onchange="UI.finBSAsOf=this.value;renderFinancialsContent()"
+        style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.8rem">
+    </div>
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+      ${finCard('Total Assets', fmtCurrency(totalAssets), assetRows.length+' accounts', '#22c55e')}
+      ${finCard('Total Liabilities', fmtCurrency(totalLiabilities), liabilityRows.length+' accounts', '#ef4444')}
+      ${finCard('Net Worth', fmtCurrency(netWorth), 'Assets − Liabilities', netWorth>=0?'var(--primary)':'#ef4444')}
+    </div>
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px">
+      <div style="flex:1;min-width:320px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+        <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Assets</div>
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">${tableHead}${assetRows.map(a=>acctRow(a,false)).join('') || '<tr><td colspan="4" style="padding:14px;color:var(--text3)">No asset accounts</td></tr>'}</table>
+      </div>
+      <div style="flex:1;min-width:320px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+        <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Liabilities</div>
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">${tableHead}${liabilityRows.map(a=>acctRow(a,true)).join('') || '<tr><td colspan="4" style="padding:14px;color:var(--text3)">No liability accounts</td></tr>'}</table>
+      </div>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px">
+      <div style="font-weight:700;font-size:.9rem;margin-bottom:4px">💡 Rich Dad, Poor Dad lens: what actually pays you vs. costs you</div>
+      <div style="font-size:.75rem;color:var(--text3);margin-bottom:14px">
+        Net worth counts everything you own. This view only counts accounts you've tagged — set each account's
+        cash-flow class in the tables above. Income assets show trailing-12-month cash they generated; expense
+        liabilities show an estimated monthly cost from their interest rate (where known).
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        ${finCard('Monthly income from assets', fmtCurrency(incomeTotal), incomeAssetRows.length+' tagged accounts', '#22c55e')}
+        ${finCard('Monthly cost of liabilities', fmtCurrency(costTotal), expenseLiabRows.length+' tagged accounts', '#ef4444')}
+        ${finCard('Net cash flow', fmtCurrency(netCashflow), 'Income assets − liability cost', netCashflow>=0?'#22c55e':'#ef4444')}
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:260px">
+          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:4px">Puts money in your pocket</div>
+          <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+            ${incomeAssetRows.map(a => lensRow(a.name, monthlyIncomeFor(a), false)).join('') || '<tr><td style="padding:8px 10px;color:var(--text3)">No accounts tagged as Income Asset yet</td></tr>'}
+          </table>
+        </div>
+        <div style="flex:1;min-width:260px">
+          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:4px">Takes money out of your pocket</div>
+          <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+            ${costEntries.map(e => lensRow(e.a.name, e.cost, true)).join('') || '<tr><td style="padding:8px 10px;color:var(--text3)">No accounts tagged as Expense Liability yet</td></tr>'}
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── INCOME & EXPENDITURE STATEMENT ───────────────────────────────────
+function finPeriodRange() {
+  if (UI.finIEPeriod === 'year') {
+    const y = UI.finIEYear;
+    return { start: `${y}-01-01`, end: `${y}-12-31`, label: String(y) };
+  }
+  if (UI.finIEPeriod === 'quarter') {
+    const q = UI.finIEQuarter || (() => {
+      const now = centralToday(); const [y,m] = now.split('-').map(Number);
+      return `${y}-Q${Math.ceil(m/3)}`;
+    })();
+    const [yStr, qStr] = q.split('-Q');
+    const y = parseInt(yStr,10), qn = parseInt(qStr,10);
+    const startM = (qn-1)*3 + 1, endM = startM + 2;
+    const endDay = new Date(y, endM, 0).getDate();
+    return { start: `${y}-${String(startM).padStart(2,'0')}-01`, end: `${y}-${String(endM).padStart(2,'0')}-${endDay}`, label: `Q${qn} ${y}` };
+  }
+  // month
+  const m = UI.finIEMonth || ymNow();
+  const [y,mo] = m.split('-').map(Number);
+  const endDay = new Date(y, mo, 0).getDate();
+  return { start: `${m}-01`, end: `${m}-${endDay}`, label: bFmtMonth(m) };
+}
+
+function finSetIEPeriod(p) {
+  UI.finIEPeriod = p;
+  if (p === 'quarter' && !UI.finIEQuarter) {
+    const now = centralToday(); const [y,mo] = now.split('-').map(Number);
+    UI.finIEQuarter = `${y}-Q${Math.ceil(mo/3)}`;
+  }
+  renderFinancialsContent();
+}
+
+function renderIncomeExpenditure(c) {
+  const { start, end, label } = finPeriodRange();
+
+  const txns = (D.transactions||[]).filter(t =>
+    !t.isTransfer && (!t.status || t.status === 'approved') && (t.date||'') >= start && (t.date||'') <= end
+  );
+
+  let income = 0;
+  const expenseByCat = {};
+  txns.forEach(t => {
+    const credit = parseFloat(t.credit)||0, debit = parseFloat(t.debit)||0;
+    if (t.categoryId === '__income__' || credit > 0) income += credit;
+    if (debit > 0 && t.categoryId !== '__income__') {
+      const lbl = txnCatLabel(t.categoryId) || 'Uncategorized';
+      expenseByCat[lbl] = (expenseByCat[lbl]||0) + debit;
+    }
+    if (t.splits) {
+      t.splits.forEach(s => {
+        const lbl = txnCatLabel(s.categoryId) || 'Uncategorized';
+        expenseByCat[lbl] = (expenseByCat[lbl]||0) + (parseFloat(s.amount)||0);
+      });
+    }
+  });
+  const totalExpense = Object.values(expenseByCat).reduce((s,v)=>s+v,0);
+  const netSavings = income - totalExpense;
+  const savingsRate = income > 0 ? (netSavings/income*100) : 0;
+
+  // Planned expenditure (from Budget) for the months covered by this period
+  const monthsInRange = new Set();
+  { let d = new Date(start+'T00:00:00'); const endD = new Date(end+'T00:00:00');
+    while (d <= endD) { monthsInRange.add(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`); d.setMonth(d.getMonth()+1); } }
+  const plannedExpense = (D.budget?.plans||[])
+    .filter(p => monthsInRange.has(p.month))
+    .reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
+
+  // Liability service cost (EMI + CC obligation debits) within the period, so the
+  // reader can see how much of expenditure went to servicing liabilities vs. discretionary spend
+  const liabilityAccountIds = new Set((D.txnAccounts||[])
+    .filter(a => a.cashflowClass === 'expense-liability')
+    .map(a => a.id));
+  const liabilityService = txns
+    .filter(t => liabilityAccountIds.has(t.accountId) && (parseFloat(t.credit)||0) > 0)
+    .reduce((s,t) => s + (parseFloat(t.credit)||0), 0);
+
+  const catEntries = Object.entries(expenseByCat).sort((a,b)=>b[1]-a[1]);
+
+  const catRows = catEntries.map(([cat,amt]) => `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:7px 10px">${esc(cat)}</td>
+      <td style="padding:7px 10px;text-align:right;font-weight:600">${fmtCurrency(amt)}</td>
+      <td style="padding:7px 10px;text-align:right;color:var(--text3);font-size:.75rem">${totalExpense>0 ? (amt/totalExpense*100).toFixed(1) : '0.0'}%</td>
+    </tr>`).join('');
+
+  const periodPicker = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <div class="stabs" style="margin:0">
+        <button class="stab ${UI.finIEPeriod==='month'?'active':''}" onclick="finSetIEPeriod('month')">Month</button>
+        <button class="stab ${UI.finIEPeriod==='quarter'?'active':''}" onclick="finSetIEPeriod('quarter')">Quarter</button>
+        <button class="stab ${UI.finIEPeriod==='year'?'active':''}" onclick="finSetIEPeriod('year')">Year</button>
+      </div>
+      ${UI.finIEPeriod==='month' ? `<input type="month" value="${UI.finIEMonth||ymNow()}" onchange="UI.finIEMonth=this.value;renderFinancialsContent()" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.8rem">` : ''}
+      ${UI.finIEPeriod==='quarter' ? `<select onchange="UI.finIEQuarter=this.value;renderFinancialsContent()" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.8rem">
+          ${[0,1,2,3].map(i => { const y=UI.finIEYear||new Date().getFullYear(); const q='Q'+(i+1); const val=`${y}-${q}`; return `<option value="${val}" ${UI.finIEQuarter===val?'selected':''}>${q} ${y}</option>`; }).join('')}
+        </select>` : ''}
+      ${UI.finIEPeriod==='year' ? `<input type="number" value="${UI.finIEYear}" onchange="UI.finIEYear=parseInt(this.value,10)||UI.finIEYear;renderFinancialsContent()" style="width:90px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.8rem">` : ''}
+      <span style="font-size:.78rem;color:var(--text3)">${esc(label)}</span>
+    </div>`;
+
+  c.innerHTML = `
+    ${periodPicker}
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+      ${finCard('Income', fmtCurrency(income), null, '#22c55e')}
+      ${finCard('Expenditure', fmtCurrency(totalExpense), plannedExpense ? ('Planned: '+fmtCurrency(plannedExpense)) : null, '#ef4444')}
+      ${finCard('Net Savings', fmtCurrency(netSavings), savingsRate.toFixed(1)+'% savings rate', netSavings>=0?'var(--primary)':'#ef4444')}
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 16px;margin-bottom:20px;font-size:.8rem;color:var(--text2)">
+      Of this period's expenditure, <b>${fmtCurrency(liabilityService)}</b> went to servicing accounts tagged
+      Expense Liability (credit card &amp; loan payments) — the rest, <b>${fmtCurrency(Math.max(0,totalExpense-liabilityService))}</b>,
+      was discretionary or other spend.
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+      <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Expenditure by category</div>
+      <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+        <tr style="text-align:left;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
+          <th style="padding:6px 10px">Category</th><th style="padding:6px 10px;text-align:right">Amount</th><th style="padding:6px 10px;text-align:right">% of total</th>
+        </tr>
+        ${catRows || '<tr><td colspan="3" style="padding:14px;color:var(--text3)">No expenditure in this period</td></tr>'}
+      </table>
+    </div>
+  `;
 }
 
 // ══════════════════════════════════════════════════════════════════════
