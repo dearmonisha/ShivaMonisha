@@ -12739,15 +12739,17 @@ function renderIncomeExpenditure(c) {
   txns.forEach(t => {
     const credit = parseFloat(t.credit)||0, debit = parseFloat(t.debit)||0;
     if (t.categoryId === '__income__' || credit > 0) income += credit;
-    if (debit > 0 && t.categoryId !== '__income__') {
-      const lbl = txnCatLabel(t.categoryId) || 'Uncategorized';
-      expenseByCat[lbl] = (expenseByCat[lbl]||0) + debit;
-    }
-    if (t.splits) {
+    if (t.splits && t.splits.length) {
+      // Split transaction: the parent's own categoryId/debit is just a shell —
+      // only the split lines represent real spend, so count those and skip the parent
+      // (otherwise the full amount gets double-counted into Uncategorized).
       t.splits.forEach(s => {
         const lbl = txnCatLabel(s.categoryId) || 'Uncategorized';
         expenseByCat[lbl] = (expenseByCat[lbl]||0) + (parseFloat(s.amount)||0);
       });
+    } else if (debit > 0 && t.categoryId !== '__income__') {
+      const lbl = txnCatLabel(t.categoryId) || 'Uncategorized';
+      expenseByCat[lbl] = (expenseByCat[lbl]||0) + debit;
     }
   });
   const totalExpense = Object.values(expenseByCat).reduce((s,v)=>s+v,0);
