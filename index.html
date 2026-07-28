@@ -12281,6 +12281,7 @@ function txnEditAccountModal(editId) {
           </optgroup>
           <optgroup label="Assets &amp; Investments">
             <option${a&&a.type==='Investment'?' selected':''}>Investment</option>
+            <option${a&&a.type==='Real Estate'?' selected':''}>Real Estate</option>
             <option${a&&a.type==='Tracking'?' selected':''}>Tracking</option>
           </optgroup>
           <optgroup label="Liabilities">
@@ -12295,6 +12296,13 @@ function txnEditAccountModal(editId) {
           Show available balance in CC Repayment Planner
         </label>
         <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Enable for bank/savings accounts you use to pay credit card bills</div>
+      </div>
+      <div class="fg" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
+          <input type="checkbox" id="tacct-exclude-nw" ${a?.excludeFromNetWorth ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
+          Exclude from Balance Sheet / Net Worth
+        </label>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Use for accounts that aren't really your assets or liabilities — e.g. a Tracking account holding a family member's money you're just managing on their behalf</div>
       </div>
     </div>
     ${a ? `<div style="margin-top:4px;padding-top:12px;border-top:1px solid var(--border);text-align:right">
@@ -12333,9 +12341,9 @@ function renderReports() {
   }
 
   // ── Net Worth over 12 months ─────────────────────────────
-  const assetTypes     = ['Bank','Savings','Investment','Cash','Tracking'];
+  const assetTypes     = ['Bank','Savings','Investment','Real Estate','Cash','Tracking'];
   const liabilityTypes = ['Credit Card','Loan','Loans'];
-  const accounts       = D.txnAccounts || [];
+  const accounts       = (D.txnAccounts || []).filter(a => !a.excludeFromNetWorth);
   const netWorthData   = last12.map(ym => {
     const endDate = ym + '-31';
     let nw = 0;
@@ -12493,8 +12501,13 @@ function renderReports() {
 // ══════════════════════════════════════════════════════════════════════
 // FINANCIAL STATEMENTS  (Balance Sheet + Income & Expenditure)
 // ══════════════════════════════════════════════════════════════════════
-const FIN_ASSET_TYPES     = ['Bank','Investment','Tracking'];
+const FIN_ASSET_TYPES     = ['Bank','Investment','Real Estate','Tracking'];
 const FIN_LIABILITY_TYPES = ['Credit Card','Loans','Loan'];
+// Payees that represent book-value changes, reconciliations, or your own money moving
+// between your own accounts — not real cash income (dividends, salary, interest, refunds).
+// Shared by the Balance Sheet's cash-flow lens and the Income & Expenditure statement so
+// both agree on what counts as "income."
+const FIN_NON_CASHFLOW_PAYEES = /adjustment|starting balance|vested|correction|reconciliation|contribution/i;
 const FIN_CASHFLOW_META = {
   'income-asset':      { label: 'Income Asset',      color: '#22c55e' },
   'expense-liability': { label: 'Expense Liability',  color: '#ef4444' },
@@ -12561,7 +12574,9 @@ function finMonthsAgoDate(asOf, monthsBack) {
 
 function renderBalanceSheet(c) {
   const asOf = UI.finBSAsOf || centralToday();
-  const accounts = D.txnAccounts || [];
+  const allAccounts = D.txnAccounts || [];
+  const excludedAccounts = allAccounts.filter(a => a.excludeFromNetWorth);
+  const accounts = allAccounts.filter(a => !a.excludeFromNetWorth);
 
   const rows = accounts.map(a => ({
     ...a,
@@ -12606,10 +12621,6 @@ function renderBalanceSheet(c) {
   const expenseLiabRows = rows.filter(a => a.cashflowClass === 'expense-liability');
   const last12Start = finMonthsAgoDate(asOf, 11);
 
-  // Payees that represent book-value changes or your own money moving in, not real cash
-  // income paid out by the asset (dividends, interest, rent). Excluded so this metric
-  // reflects actual cash flow, per the Rich Dad, Poor Dad distinction — not net-worth growth.
-  const FIN_NON_CASHFLOW_PAYEES = /adjustment|starting balance|vested|correction|contribution/i;
   const monthlyIncomeFor = (acct) => {
     const txns = (D.transactions||[]).filter(t =>
       t.accountId === acct.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
@@ -12668,6 +12679,13 @@ function renderBalanceSheet(c) {
         <table style="width:100%;border-collapse:collapse;font-size:.82rem">${tableHead}${liabilityRows.map(a=>acctRow(a,true)).join('') || '<tr><td colspan="4" style="padding:14px;color:var(--text3)">No liability accounts</td></tr>'}</table>
       </div>
     </div>
+
+    ${excludedAccounts.length ? `
+    <div style="font-size:.75rem;color:var(--text3);margin-bottom:20px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2)">
+      <b>${excludedAccounts.length}</b> account${excludedAccounts.length!==1?'s':''} excluded from these totals
+      (marked "Exclude from Balance Sheet / Net Worth" in Account settings):
+      ${excludedAccounts.map(a=>esc(a.name)).join(', ')}
+    </div>` : ''}
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px">
       <div style="font-weight:700;font-size:.9rem;margin-bottom:4px">💡 Rich Dad, Poor Dad lens: what actually pays you vs. costs you</div>
@@ -12734,16 +12752,26 @@ function finSetIEPeriod(p) {
 
 function renderIncomeExpenditure(c) {
   const { start, end, label } = finPeriodRange();
+  const acctById = {};
+  (D.txnAccounts||[]).forEach(a => { acctById[a.id] = a; });
 
   const txns = (D.transactions||[]).filter(t =>
-    !t.isTransfer && (!t.status || t.status === 'approved') && (t.date||'') >= start && (t.date||'') <= end
+    !t.isTransfer && (!t.status || t.status === 'approved') && (t.date||'') >= start && (t.date||'') <= end &&
+    // Adjustment/Starting Balance/Vested/Correction/Contribution entries are book-value
+    // corrections or your own money moving accounts, not real income or spend — keep both
+    // sides of the statement honest by excluding them the same way the Balance Sheet does.
+    !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
   );
 
   let income = 0;
   const expenseByCat = {};
   txns.forEach(t => {
     const credit = parseFloat(t.credit)||0, debit = parseFloat(t.debit)||0;
-    if (t.categoryId === '__income__' || credit > 0) income += credit;
+    const acct = acctById[t.accountId];
+    // A credit posted to a Credit Card or Loan account is a payment/repayment reducing
+    // what you owe — not income. Only count credits on asset-side accounts as income.
+    const isLiabilityAcct = acct && FIN_LIABILITY_TYPES.includes(acct.type);
+    if (!isLiabilityAcct && (t.categoryId === '__income__' || credit > 0)) income += credit;
     if (t.splits && t.splits.length) {
       // Split transaction: the parent's own categoryId/debit is just a shell —
       // only the split lines represent real spend, so count those and skip the parent
@@ -13893,6 +13921,8 @@ Object.assign(BA, {
       openingDate: id('tacct-date').value,
       ccCardId: existing?.ccCardId || null,  // preserve link if editing a CC-sourced account
       showInCCRepay: id('tacct-ccrepay')?.checked || false,
+      excludeFromNetWorth: id('tacct-exclude-nw')?.checked || false,
+      cashflowClass: existing?.cashflowClass || 'neutral',
     };
     if (editId) {
       const idx = D.txnAccounts.findIndex(a => a.id === editId);
