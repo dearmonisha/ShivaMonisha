@@ -12631,22 +12631,42 @@ function renderBalanceSheet(c) {
     );
     return txns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0) / 12;
   };
+  const finLast12MonthKeys = (endYm) => {
+    const [y,m] = endYm.split('-').map(Number);
+    const keys = []; let yy=y, mm=m;
+    for (let i=0;i<12;i++) { keys.push(`${yy}-${String(mm).padStart(2,'0')}`); mm--; if (mm<=0){mm+=12; yy--;} }
+    return keys;
+  };
+
   const monthlyCostFor = (acct) => {
-    // A manually-set rate on the account itself always wins — it's the most direct source
-    // and doesn't require creating an Obligations/EMI record (which would also drive due-date
-    // tracking and auto-generated transactions, not appropriate for accounts like a mortgage
-    // that you already record payments for another way).
-    if (acct.interestRate != null && acct.interestRate !== '') {
-      return Math.max(0, acct._bal) * (parseFloat(acct.interestRate)/100) / 12;
-    }
+    // Prefer real recorded interest over any rate-based estimate. A card paid in full every
+    // cycle accrues $0 interest even though it carries a balance — an APR formula can't know
+    // that, but the CC Tracker's actual monthly interest entries (Insights > Credit Card) do.
     if (acct.type === 'Credit Card') {
       const card = (D.ccTracker?.cards || []).find(cc => cc.linkedTxnAccountId === acct.id);
-      if (card && card.apr) return Math.max(0, acct._bal) * (card.apr/100) / 12;
+      const monthData = card && D.ccTracker?.data?.[card.id];
+      if (monthData) {
+        const months = finLast12MonthKeys(asOf.slice(0,7));
+        const entries = months.map(m => monthData[m]).filter(Boolean);
+        if (entries.length) {
+          const total = entries.reduce((s,e) => s + (parseFloat(e.interest)||0), 0);
+          return { value: total / entries.length, actual: true };
+        }
+      }
+      // No recorded history for this card yet — fall back to a rate-based estimate
+      if (acct.interestRate != null && acct.interestRate !== '') {
+        return { value: Math.max(0, acct._bal) * (parseFloat(acct.interestRate)/100) / 12, actual: false };
+      }
+      if (card && card.apr) return { value: Math.max(0, acct._bal) * (card.apr/100) / 12, actual: false };
       return null;
     }
     if (acct.type === 'Loans') {
+      // No actual-interest ledger exists for loans, so this is always a rate-based estimate.
+      if (acct.interestRate != null && acct.interestRate !== '') {
+        return { value: Math.max(0, acct._bal) * (parseFloat(acct.interestRate)/100) / 12, actual: false };
+      }
       const emi = (D.obligations?.emis || []).find(e => e.itemName === acct.name);
-      if (emi && emi.interestRate) return Math.max(0, acct._bal) * (emi.interestRate/100) / 12;
+      if (emi && emi.interestRate) return { value: Math.max(0, acct._bal) * (emi.interestRate/100) / 12, actual: false };
       return null;
     }
     return null;
@@ -12654,7 +12674,7 @@ function renderBalanceSheet(c) {
 
   const incomeTotal = incomeAssetRows.reduce((s,a) => s + monthlyIncomeFor(a), 0);
   const costEntries  = expenseLiabRows.map(a => ({ a, cost: monthlyCostFor(a) }));
-  const costTotal    = costEntries.reduce((s,e) => s + (e.cost||0), 0);
+  const costTotal    = costEntries.reduce((s,e) => s + (e.cost ? e.cost.value : 0), 0);
   const netCashflow  = incomeTotal - costTotal;
 
   const lensRow = (label, val, isCost) => `
@@ -12662,6 +12682,14 @@ function renderBalanceSheet(c) {
       <td style="padding:6px 10px">${esc(label)}</td>
       <td style="padding:6px 10px;text-align:right;font-weight:600;${isCost?'color:#ef4444':'color:#22c55e'}">
         ${val===null ? '<span style="color:var(--text3);font-weight:400">rate unknown</span>' : fmtCurrency(val)}
+      </td>
+    </tr>`;
+  const lensCostRow = (label, cost) => `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:6px 10px">${esc(label)}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:600;color:#ef4444">
+        ${cost===null ? '<span style="color:var(--text3);font-weight:400">rate unknown</span>' :
+          `${fmtCurrency(cost.value)} <span style="font-size:.68rem;font-weight:400;color:var(--text3)">${cost.actual?'(actual)':'(est.)'}</span>`}
       </td>
     </tr>`;
 
@@ -12718,7 +12746,7 @@ function renderBalanceSheet(c) {
         <div style="flex:1;min-width:260px">
           <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:4px">Takes money out of your pocket</div>
           <table style="width:100%;border-collapse:collapse;font-size:.8rem">
-            ${costEntries.map(e => lensRow(e.a.name, e.cost, true)).join('') || '<tr><td style="padding:8px 10px;color:var(--text3)">No accounts tagged as Expense Liability yet</td></tr>'}
+            ${costEntries.map(e => lensCostRow(e.a.name, e.cost)).join('') || '<tr><td style="padding:8px 10px;color:var(--text3)">No accounts tagged as Expense Liability yet</td></tr>'}
           </table>
         </div>
       </div>
