@@ -4722,10 +4722,11 @@ function _ccCardModalHTML(card) {
   const ev = v => esc(v||'');
   // Transaction accounts for the linked account picker
   const acctOpts = (D.txnAccounts||[])
-    .filter(a => a.type === 'Credit Card')
+    .filter(a => a.type === 'Credit Card' && (a.status !== 'closed' || a.id === card?.linkedTxnAccountId))
     .map(a => `<option value="${a.id}" ${(card?.linkedTxnAccountId||'')=== a.id?'selected':''}>${ev(a.name)}</option>`)
     .join('');
   const allAcctOpts = (D.txnAccounts||[])
+    .filter(a => a.status !== 'closed' || a.id === card?.linkedTxnAccountId)
     .map(a => `<option value="${a.id}" ${(card?.linkedTxnAccountId||'')=== a.id?'selected':''}>${ev(a.name)}</option>`)
     .join('');
   // Expense category options for interest
@@ -8064,10 +8065,12 @@ function oblPayAcctMismatch(paymentMethod) {
 
 // Build <option> list from D.txnAccounts for obligation modals
 function oblTxnAcctOptions(selectedName) {
-  const opts = (D.txnAccounts||[]).map(a => {
-    const sel = (a.name||'') === (selectedName||'') ? ' selected' : '';
-    return `<option value="${esc(a.name||'')}"${sel}>${esc(a.name||'')}</option>`;
-  }).join('');
+  const opts = (D.txnAccounts||[])
+    .filter(a => a.status !== 'closed' || (a.name||'') === (selectedName||''))
+    .map(a => {
+      const sel = (a.name||'') === (selectedName||'') ? ' selected' : '';
+      return `<option value="${esc(a.name||'')}"${sel}>${esc(a.name||'')}</option>`;
+    }).join('');
   return `<option value="">— Select account —</option>${opts}`;
 }
 
@@ -9006,7 +9009,7 @@ function renderMobileView() {
   if (tab === 'transactions') {
     const selAcctId  = UI.mobileTxnAcct || '';
     const searchQ    = (UI.mobileTxnSearch || '').trim().toLowerCase();
-    const txnAccts   = (D.txnAccounts || []).filter(a => a.active !== false);
+    const txnAccts   = (D.txnAccounts || []).filter(a => a.active !== false && (a.status !== 'closed' || a.id === selAcctId));
     const selAcct    = selAcctId ? txnAccts.find(a => a.id === selAcctId) : null;
 
     // Account selector
@@ -9217,7 +9220,7 @@ function renderMobileView() {
   // ── Accounts section ────────────────────────────────────────
   let accountsHTML = '';
   if (tab === 'accounts') {
-    const allAccts = (D.txnAccounts || []).filter(a => a.active !== false);
+    const allAccts = (D.txnAccounts || []).filter(a => a.active !== false && a.status !== 'closed' && !a.excludeFromNetWorth);
     if (!allAccts.length) {
       accountsHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No accounts set up yet</div>`;
     } else {
@@ -9334,7 +9337,7 @@ const BA = {
     const month   = UI.budgetMonth || ymNow();
     const today   = centralToday();
     const defDate = today.slice(0,7) === month ? today : month + '-01';
-    const accts   = (D.txnAccounts || []).filter(a => a.active !== false);
+    const accts   = (D.txnAccounts || []).filter(a => a.active !== false && a.status !== 'closed');
     const cats    = D.budget?.categories || [];
     const grps    = D.budget?.groups     || [];
 
@@ -10676,9 +10679,10 @@ function oblAutoGenerateTxns() {
   if (!D.obligations) return;
   if (!D.txnAccounts || !D.txnAccounts.length) return;
 
-  // Build account lookup: name (lowercase) → id
+  // Build account lookup: name (lowercase) → id (closed accounts excluded so obligations
+  // never silently auto-post pending transactions against a historical/closed account)
   const acctMap = {};
-  (D.txnAccounts || []).forEach(a => { acctMap[a.name.trim().toLowerCase()] = a.id; });
+  (D.txnAccounts || []).forEach(a => { if (a.status !== 'closed') acctMap[a.name.trim().toLowerCase()] = a.id; });
 
   // ── Fix-up pass: correct wrong dates on existing pending obligation transactions ──
   // Obligation lookup maps
@@ -10985,7 +10989,7 @@ function _matchCsvCat(catGroup, catName) {
 
 // Build account name → id map for app accounts (case-insensitive)
 function _appAcctOptions(selectedName) {
-  const accts = D.txnAccounts || [];
+  const accts = (D.txnAccounts || []).filter(a => a.status !== 'closed' || (selectedName && a.name.trim().toLowerCase() === selectedName.trim().toLowerCase()));
   let html = `<option value="">— Skip —</option>`;
   accts.forEach(a => {
     const sel = selectedName && a.name.trim().toLowerCase() === selectedName.trim().toLowerCase();
@@ -11122,8 +11126,10 @@ function renderTransactions() {
 }
 
 function renderTxnLeftNav() {
-  const nav      = id('txn-left-nav');
-  const accounts = D.txnAccounts || [];
+  const nav        = id('txn-left-nav');
+  const allAccounts = D.txnAccounts || [];
+  const closedCount = allAccounts.filter(a => a.status === 'closed').length;
+  const accounts    = allAccounts.filter(a => UI.showClosedAccounts || a.status !== 'closed');
   if (!nav) return;
   if (!UI.txnGroupCollapsed) UI.txnGroupCollapsed = {};
   // Save scroll of the inner scrollable list before re-render
@@ -11201,6 +11207,11 @@ function renderTxnLeftNav() {
     </div>
     <div style="height:1px;background:var(--border);margin:4px 0"></div>
     <div class="txn-nav-scroll" style="flex:1;overflow-y:auto;min-height:0">${groupsHTML}</div>
+    ${closedCount ? `<div style="padding:4px 8px;flex-shrink:0;font-size:.7rem">
+      <a href="#" onclick="event.preventDefault();UI.showClosedAccounts=!UI.showClosedAccounts;renderTxnLeftNav();" style="color:var(--text3);text-decoration:underline">
+        ${UI.showClosedAccounts ? `Hide ${closedCount} closed account${closedCount===1?'':'s'}` : `Show ${closedCount} closed account${closedCount===1?'':'s'}`}
+      </a>
+    </div>` : ''}
     <div style="border-top:1px solid var(--border);padding:6px 8px;flex-shrink:0">
       <button class="txn-add-acct" style="width:100%;margin:0" onclick="txnAddAccountModal()">＋ Add Account</button>
     </div>`;
@@ -12217,7 +12228,6 @@ function txnAddAccountModal() { txnEditAccountModal(null); }
 function txnTransferModal(editTransferId) {
   const fromAcct = (D.txnAccounts||[]).find(a => a.id === UI.txnAccount);
   if (!fromAcct) { toast('Select an account first','err'); return; }
-  const allAccts  = (D.txnAccounts||[]).filter(a => a.id !== fromAcct.id);
   const today     = new Date().toISOString().slice(0,10);
   // If editing: retrieve existing transfer pair (always use the debit leg for splits)
   const existTxn  = editTransferId ? (D.transactions||[]).find(t => t.id === editTransferId) : null;
@@ -12227,6 +12237,7 @@ function txnTransferModal(editTransferId) {
   const existDate = existTxn ? (existTxn.date || today) : today;
   const existNotes= existTxn ? (existTxn.notes||'') : '';
   const existDest = existTxn ? (existTxn.transferToAcctId || existTxn.transferFromAcctId || '') : '';
+  const allAccts  = (D.txnAccounts||[]).filter(a => a.id !== fromAcct.id && (a.status !== 'closed' || a.id === existDest));
   const acctOpts  = allAccts.map(a => `<option value="${a.id}"${a.id===existDest?' selected':''}>${esc(a.name)} (${a.type})</option>`).join('');
 
   // Initialise transfer split state from existing splits if editing
@@ -12305,6 +12316,13 @@ function txnEditAccountModal(editId) {
           Exclude from Balance Sheet / Net Worth
         </label>
         <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Use for accounts that aren't really your assets or liabilities — e.g. a Tracking account holding a family member's money you're just managing on their behalf</div>
+      </div>
+      <div class="fg" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
+          <input type="checkbox" id="tacct-status-closed" ${a?.status==='closed' ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
+          Closed account
+        </label>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Hides this account from the everyday account list, transfer/move pickers, and Balance Sheet — its transaction history stays intact and can still be shown via "Show closed accounts"</div>
       </div>
     </div>
     ${a ? `<div style="margin-top:4px;padding-top:12px;border-top:1px solid var(--border);text-align:right">
@@ -12582,7 +12600,8 @@ function renderBalanceSheet(c) {
   const asOf = UI.finBSAsOf || centralToday();
   const allAccounts = D.txnAccounts || [];
   const excludedAccounts = allAccounts.filter(a => a.excludeFromNetWorth);
-  const accounts = allAccounts.filter(a => !a.excludeFromNetWorth);
+  const closedCount = allAccounts.filter(a => a.status === 'closed' && !a.excludeFromNetWorth).length;
+  const accounts = allAccounts.filter(a => !a.excludeFromNetWorth && (UI.showClosedAccounts || a.status !== 'closed'));
 
   const rows = accounts.map(a => ({
     ...a,
@@ -12704,6 +12723,31 @@ function renderBalanceSheet(c) {
   const costTotal    = costEntries.reduce((s,e) => s + (e.cost ? e.cost.value : 0), 0);
   const netCashflow  = incomeTotal - costTotal;
 
+  // ── Wealth, per Buckminster Fuller's definition as cited in Rich Dad, Poor Dad:
+  // how many days your real cash-flow income (not net worth) would cover your living
+  // expenses at your current spending rate. Wealth (days) = monthly income from
+  // Income Asset accounts ÷ daily expense, using the same trailing-12-month window as
+  // the rest of this panel so all three numbers stay on equal footing.
+  const trailingExpenseTotal = (() => {
+    const txns = (D.transactions||[]).filter(t =>
+      !t.isTransfer && (!t.status || t.status === 'approved') &&
+      (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+      !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
+    );
+    let total = 0;
+    txns.forEach(t => {
+      const debit = parseFloat(t.debit)||0;
+      if (t.splits && t.splits.length) {
+        t.splits.forEach(s => { total += parseFloat(s.amount)||0; });
+      } else if (debit > 0 && t.categoryId !== '__income__') {
+        total += debit;
+      }
+    });
+    return total;
+  })();
+  const dailyExpense = trailingExpenseTotal / 365;
+  const wealthDays = dailyExpense > 0 ? (incomeTotal / dailyExpense) : null;
+
   const lensRow = (label, val, isCost) => `
     <tr style="border-top:1px solid var(--border)">
       <td style="padding:6px 10px">${esc(label)}</td>
@@ -12751,6 +12795,14 @@ function renderBalanceSheet(c) {
       ${excludedAccounts.map(a=>esc(a.name)).join(', ')}
     </div>` : ''}
 
+    ${closedCount ? `
+    <div style="font-size:.75rem;color:var(--text3);margin-bottom:20px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2)">
+      <b>${closedCount}</b> closed account${closedCount!==1?'s':''} ${UI.showClosedAccounts ? 'included above' : 'hidden from these totals'} —
+      <a href="#" onclick="event.preventDefault();UI.showClosedAccounts=!UI.showClosedAccounts;renderFinancialsContent();" style="color:var(--primary);text-decoration:underline">
+        ${UI.showClosedAccounts ? 'hide closed accounts' : 'show closed accounts'}
+      </a>
+    </div>` : ''}
+
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px">
       <div style="font-weight:700;font-size:.9rem;margin-bottom:4px">💡 Rich Dad, Poor Dad lens: what actually pays you vs. costs you</div>
       <div style="font-size:.75rem;color:var(--text3);margin-bottom:14px">
@@ -12763,6 +12815,7 @@ function renderBalanceSheet(c) {
         ${finCard('Monthly income from assets', fmtCurrency(incomeTotal), incomeAssetRows.length+' tagged accounts', '#22c55e')}
         ${finCard('Monthly cost of liabilities', fmtCurrency(costTotal), expenseLiabRows.length+' tagged accounts', '#ef4444')}
         ${finCard('Net cash flow', fmtCurrency(netCashflow), 'Income assets − liability cost', netCashflow>=0?'#22c55e':'#ef4444')}
+        ${finCard('Wealth (days)', wealthDays===null ? '—' : wealthDays.toFixed(1)+' days', 'Asset income ÷ daily expense — Fuller/RDPD', wealthDays>0?'var(--primary)':'#9ca3af')}
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:260px">
@@ -13248,7 +13301,7 @@ function renderSavingsPots() {
   // ── Setup gate ───────────────────────────────────────────────────────
   if (!sp.growthAccountId || !sp.trackedGroupId) {
     const groups = D.budget?.groups || [];
-    const accts  = D.txnAccounts   || [];
+    const accts  = (D.txnAccounts || []).filter(a => a.status !== 'closed');
     wrap.innerHTML = `
       <div style="padding:40px 20px;display:flex;justify-content:center">
         <div style="width:100%;max-width:480px">
@@ -13509,7 +13562,7 @@ function renderReservePots() {
 
   // ── Setup gate ──────────────────────────────────────────────
   if (!rp.reserveAccountId) {
-    const accts = D.txnAccounts || [];
+    const accts = (D.txnAccounts || []).filter(a => a.status !== 'closed');
     wrap.innerHTML = `
       <div style="padding:40px 20px;display:flex;justify-content:center">
         <div style="width:100%;max-width:480px">
@@ -13916,7 +13969,7 @@ function txnMoveModal(txnId) {
   const t = (D.transactions||[]).find(x => x.id === txnId);
   if (!t) return;
   const curAcct = (D.txnAccounts||[]).find(a => a.id === t.accountId);
-  const otherAccts = (D.txnAccounts||[]).filter(a => a.id !== t.accountId);
+  const otherAccts = (D.txnAccounts||[]).filter(a => a.id !== t.accountId && a.status !== 'closed');
   if (!otherAccts.length) { toast('No other accounts to move to', 'err'); return; }
 
   const GROUP_ORDER = ['Bank','Credit Card','Loans','Investment','Tracking','Savings','Cash'];
@@ -13989,6 +14042,7 @@ Object.assign(BA, {
       excludeFromNetWorth: id('tacct-exclude-nw')?.checked || false,
       cashflowClass: existing?.cashflowClass || 'neutral',
       interestRate: id('tacct-rate')?.value !== '' ? parseFloat(id('tacct-rate').value) : null,
+      status: id('tacct-status-closed')?.checked ? 'closed' : 'active',
     };
     if (editId) {
       const idx = D.txnAccounts.findIndex(a => a.id === editId);
@@ -15442,7 +15496,7 @@ Object.assign(BA, {
   },
   reservePotsConfigure() {
     const rp    = D.reservePots || {};
-    const accts = D.txnAccounts || [];
+    const accts = (D.txnAccounts || []).filter(a => a.status !== 'closed' || a.id === rp.reserveAccountId);
     const rolloverCats = D.budget.rolloverCats || [];
     const catNames = (D.budget.categories || [])
       .filter(c => rolloverCats.includes(c.id))
