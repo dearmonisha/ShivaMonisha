@@ -800,6 +800,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
         <button class="nav-dd-item" id="tab-savings-pots"  onclick="switchView('savings-pots');closeNavDropdowns()">💰 Savings Pots</button>
         <button class="nav-dd-item" id="tab-reserve-pots" onclick="switchView('reserve-pots');closeNavDropdowns()">♻️ Reserve Pots</button>
         <button class="nav-dd-item" id="tab-debt-payoff"  onclick="switchView('debt-payoff');closeNavDropdowns()">🏁 Debt Payoff</button>
+        <button class="nav-dd-item" id="tab-path-to-freedom" onclick="switchView('path-to-freedom');closeNavDropdowns()">🚀 Path to Freedom</button>
       </div>
     </div>
 
@@ -950,6 +951,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-savings-pots"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-reserve-pots" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-debt-payoff"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
+  <div id="view-path-to-freedom" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-transactions" style="display:none">
     <div class="tab-sticky-top" id="txn-sticky-hdr">
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px;padding-bottom:6px">
@@ -1242,6 +1244,12 @@ const NAV_ICON_MAP = {
     dot:_dot('Debt Payoff'),
     bracket:_brk('Debt Payoff'),
   },
+  'tab-path-to-freedom': {
+    emoji:'🚀 Path to Freedom',
+    clean:'Path to Freedom',
+    dot:_dot('Path to Freedom'),
+    bracket:_brk('Path to Freedom'),
+  },
 };
 
 function applyTheme(themeId) {
@@ -1294,6 +1302,13 @@ function _applyData(raw) {
   if (!D.budget.adjustments)    D.budget.adjustments    = [];
   if (!D.savingsPots)  D.savingsPots  = { growthAccountId: '', trackedGroupId: '' };
   if (!D.reservePots)  D.reservePots  = { reserveAccountId: '' };
+  if (!D.pathToFreedom) D.pathToFreedom = { extraMonthly: 0 };
+  if (D.pathToFreedom.extraMonthly == null) D.pathToFreedom.extraMonthly = 0;
+  // Backfill promo-expiration / paid-in-full fields on CC cards (Path to Freedom)
+  (D.ccTracker?.cards || []).forEach(c => {
+    if (c.promoExpiration === undefined) c.promoExpiration = '';
+    if (c.payInFull === undefined) c.payInFull = false;
+  });
   if (!D.settings)   D.settings   = { theme: 'terracotta', iconStyle: 'emoji' };
   if (!D.settings.theme)     D.settings.theme     = 'terracotta';
   if (!D.settings.iconStyle) D.settings.iconStyle = 'emoji';
@@ -1849,13 +1864,13 @@ function switchView(v) {
     UI.txnHighlightRow = null;
   }
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','financials'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','financials'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual','actuals'];
-  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff'];
+  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -1879,6 +1894,7 @@ function switchView(v) {
   if (v==='savings-pots')  renderSavingsPots();
   if (v==='reserve-pots')  renderReservePots();
   if (v==='debt-payoff')   renderDebtPayoff();
+  if (v==='path-to-freedom') renderPathToFreedom();
   if (v==='financials')    renderFinancials();
 }
 
@@ -14084,6 +14100,318 @@ function renderDebtPayoff() {
           },
           grid: { color: 'rgba(148,163,184,0.15)' },
         },
+      },
+    },
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PATH TO FREEDOM — Credit-card debt avalanche (Rich Dad, Poor Dad lens:
+// pay down expense-liabilities highest-rate-first, fastest way to flip
+// cash flow back toward income-assets). Ford Lightning and other Loans-type
+// accounts are excluded — this view is credit-card revolving debt only.
+// ══════════════════════════════════════════════════════════════════════
+let _ptfChart = null;
+const PTF_PROMO_URGENT_DAYS = 120; // flag promo-rate cards expiring within ~4 months
+const PTF_MAX_MONTHS = 600;
+
+function ptfCardMinPayment(ccCardId, balance) {
+  const tmpl = (D.templates || []).find(t => t.ccCardId === ccCardId);
+  if (tmpl) {
+    const months = Object.keys(D.cycles || {}).sort().reverse();
+    for (const m of months) {
+      const pay = (D.cycles[m]?.payments || []).find(p => p.templateId === tmpl.id && p.amountDue != null);
+      if (pay) return Math.max(1, Math.min(parseFloat(pay.amountDue) || 0, balance));
+    }
+  }
+  return Math.max(25, Math.round(balance * 0.02 * 100) / 100);
+}
+
+function ptfBuildCards(asOf) {
+  const cardsMeta = D.ccTracker?.cards || [];
+  const accts = (D.txnAccounts || []).filter(a => a.type === 'Credit Card' && a.status !== 'closed');
+  return accts.map(a => {
+    const meta = cardsMeta.find(c => c.id === a.ccCardId) || {};
+    const balance = Math.max(0, Math.round(txnCurrentBalance(a) * 100) / 100);
+    const promoExpiration = meta.promoExpiration || '';
+    let promoDaysLeft = null;
+    if (promoExpiration) {
+      promoDaysLeft = Math.round((new Date(promoExpiration + 'T00:00:00') - new Date(asOf + 'T00:00:00')) / 86400000);
+    }
+    return {
+      id: a.id,
+      ccCardId: a.ccCardId || meta.id || '',
+      name: a.name,
+      apr: parseFloat(meta.apr) || 0,
+      limit: meta.limit || null,
+      balance,
+      promoExpiration,
+      promoDaysLeft,
+      payInFull: !!meta.payInFull,
+      minPayment: ptfCardMinPayment(a.ccCardId, balance),
+    };
+  });
+}
+
+function ptfPriorityOrder(cards) {
+  return [...cards].sort((a, b) => {
+    const aUrgent = a.promoDaysLeft != null && a.promoDaysLeft <= PTF_PROMO_URGENT_DAYS;
+    const bUrgent = b.promoDaysLeft != null && b.promoDaysLeft <= PTF_PROMO_URGENT_DAYS;
+    if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
+    if (aUrgent && bUrgent) return a.promoDaysLeft - b.promoDaysLeft;
+    return b.apr - a.apr;
+  });
+}
+
+// Simulates the avalanche waterfall: minimums on every card each month, plus
+// `extraMonthly` (and any minimums freed up by cards that have hit zero)
+// dumped on the highest-priority remaining card. Returns months-to-payoff,
+// total interest paid, and the payoff month for each card (by array index).
+function ptfSimulate(orderedCards, extraMonthly) {
+  const n = orderedCards.length;
+  let bals = orderedCards.map(c => c.balance);
+  const minPay = orderedCards.map(c => c.minPayment);
+  const rate = orderedCards.map(c => (c.apr || 0) / 100 / 12);
+  const payoffMonth = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) payoffMonth[i] = bals[i] <= 0.005 ? 0 : null;
+  let month = 0, totalInterest = 0;
+  while (bals.some(b => b > 0.005) && month < PTF_MAX_MONTHS) {
+    month++;
+    let freedUp = extraMonthly;
+    for (let i = 0; i < n; i++) if (bals[i] <= 0.005) freedUp += minPay[i];
+    for (let i = 0; i < n; i++) {
+      if (bals[i] <= 0.005) continue;
+      const interest = bals[i] * rate[i];
+      totalInterest += interest;
+      bals[i] = bals[i] + interest - minPay[i];
+    }
+    for (let i = 0; i < n; i++) {
+      if (bals[i] > 0.005 && freedUp > 0) {
+        const pay = Math.min(freedUp, bals[i]);
+        bals[i] -= pay;
+        freedUp -= pay;
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      if (bals[i] < 0) bals[i] = 0;
+      if (bals[i] <= 0.005 && payoffMonth[i] === null) payoffMonth[i] = month;
+    }
+  }
+  return { months: month, totalInterest, payoffMonth, maxedOut: month >= PTF_MAX_MONTHS };
+}
+
+function ptfSetPromoExpiration(acctId, val) {
+  const acct = (D.txnAccounts || []).find(a => a.id === acctId);
+  const meta = acct && (D.ccTracker?.cards || []).find(c => c.id === acct.ccCardId);
+  if (!meta) return;
+  meta.promoExpiration = val || '';
+  dirty();
+  renderPathToFreedom();
+}
+
+function ptfSetPayInFull(acctId, checked) {
+  const acct = (D.txnAccounts || []).find(a => a.id === acctId);
+  const meta = acct && (D.ccTracker?.cards || []).find(c => c.id === acct.ccCardId);
+  if (!meta) return;
+  meta.payInFull = !!checked;
+  dirty();
+  renderPathToFreedom();
+  toast(checked ? `${acct.name} marked paid-in-full — excluded from the payoff plan` : `${acct.name} back in the payoff plan`, 'ok');
+}
+
+function ptfSetExtra(val) {
+  D.pathToFreedom.extraMonthly = Math.max(0, parseFloat(val) || 0);
+  dirty();
+  renderPathToFreedom();
+}
+
+function ptfMonthsLabel(n) {
+  if (n == null) return '—';
+  if (n <= 0) return 'Paid off';
+  const y = Math.floor(n / 12), m = n % 12;
+  if (y === 0) return `${m} mo`;
+  return `${y} yr${y!==1?'s':''}${m ? ' ' + m + ' mo' : ''}`;
+}
+
+function ptfPayoffDate(monthsFromNow) {
+  const today = centralToday();
+  const [y, m] = today.split('-').map(Number);
+  let yy = y, mm = m + monthsFromNow;
+  while (mm > 12) { mm -= 12; yy++; }
+  const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${MO[mm-1]} ${yy}`;
+}
+
+function renderPathToFreedom() {
+  const wrap = id('view-path-to-freedom');
+  if (!wrap) return;
+  if (_ptfChart) { try { _ptfChart.destroy(); } catch(e){} _ptfChart = null; }
+
+  const asOf = centralToday();
+  const allCards = ptfBuildCards(asOf);
+  const attackCards = ptfPriorityOrder(allCards.filter(c => !c.payInFull));
+  const paidInFullCards = allCards.filter(c => c.payInFull);
+  const activeAttack = attackCards.filter(c => c.balance > 0.005);
+
+  const extra = parseFloat(D.pathToFreedom?.extraMonthly) || 0;
+  const withExtra = ptfSimulate(activeAttack, extra);
+  const minOnly    = ptfSimulate(activeAttack, 0);
+
+  const totalDebt   = activeAttack.reduce((s,c) => s + c.balance, 0);
+  const totalMin    = activeAttack.reduce((s,c) => s + c.minPayment, 0);
+  const weightedApr = totalDebt > 0 ? activeAttack.reduce((s,c) => s + c.balance * c.apr, 0) / totalDebt : 0;
+  const interestSaved = minOnly.totalInterest - withExtra.totalInterest;
+  const monthsSaved    = minOnly.months - withExtra.months;
+
+  const urgentPromos = activeAttack.filter(c => c.promoDaysLeft != null && c.promoDaysLeft <= PTF_PROMO_URGENT_DAYS);
+
+  const cardRow = (c, i) => {
+    const isUrgent = c.promoDaysLeft != null && c.promoDaysLeft <= PTF_PROMO_URGENT_DAYS;
+    const payoffMo = withExtra.payoffMonth[i];
+    const rankBadge = c.balance <= 0.005
+      ? `<span style="font-size:.68rem;color:var(--ok)">paid off</span>`
+      : `<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:${isUrgent?'#f59e0b':'var(--primary)'};color:#fff;font-size:.7rem;font-weight:800">${activeAttack.filter(x=>x.balance>0.005).indexOf(c)+1}</span>`;
+    return `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:9px 10px">${rankBadge}</td>
+      <td style="padding:9px 10px;font-weight:700">${esc(c.name)}</td>
+      <td style="padding:9px 10px;text-align:right;font-weight:600;${c.balance>0?'color:var(--danger)':''}">${fmtCurrency(c.balance)}</td>
+      <td style="padding:9px 10px;text-align:right">${c.apr.toFixed(2)}%</td>
+      <td style="padding:9px 10px;text-align:right;color:var(--text3);font-size:.78rem">${fmtCurrency(c.minPayment)}</td>
+      <td style="padding:9px 10px;text-align:center">
+        <input type="date" value="${c.promoExpiration||''}" onchange="ptfSetPromoExpiration('${c.id}', this.value)"
+          style="font-size:.72rem;padding:3px 6px;border-radius:6px;border:1px solid ${isUrgent?'#f59e0b':'var(--border)'};background:var(--surface);color:var(--text)">
+        ${isUrgent ? `<div style="font-size:.66rem;color:#f59e0b;font-weight:700;margin-top:2px">⚠ ${c.promoDaysLeft}d left</div>` : ''}
+      </td>
+      <td style="padding:9px 10px;text-align:right;font-weight:700;color:${payoffMo===0?'var(--ok)':'var(--text)'}">${ptfMonthsLabel(payoffMo)}</td>
+      <td style="padding:9px 10px;text-align:center">
+        <label style="font-size:.7rem;color:var(--text3);cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <input type="checkbox" onchange="ptfSetPayInFull('${c.id}', this.checked)" style="cursor:pointer">Pay in full
+        </label>
+      </td>
+    </tr>`;
+  };
+
+  const tableHead = `
+    <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
+      <th style="padding:6px 10px">#</th><th style="padding:6px 10px">Card</th>
+      <th style="padding:6px 10px;text-align:right">Balance</th><th style="padding:6px 10px;text-align:right">APR</th>
+      <th style="padding:6px 10px;text-align:right">Min/mo</th><th style="padding:6px 10px;text-align:center">Promo expires</th>
+      <th style="padding:6px 10px;text-align:right">Payoff</th><th style="padding:6px 10px;text-align:center">Paid in full?</th>
+    </tr>`;
+
+  const paidInFullRow = (c) => `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:8px 10px;font-weight:700">${esc(c.name)}</td>
+      <td style="padding:8px 10px;text-align:right">${fmtCurrency(c.balance)}</td>
+      <td style="padding:8px 10px;text-align:right;color:var(--text3)">${c.apr.toFixed(2)}%</td>
+      <td style="padding:8px 10px;text-align:center">
+        <label style="font-size:.72rem;color:var(--text3);cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <input type="checkbox" checked onchange="ptfSetPayInFull('${c.id}', this.checked)" style="cursor:pointer">Paid in full
+        </label>
+      </td>
+    </tr>`;
+
+  // ── Payoff timeline chart data (total revolving balance over time) ──
+  const maxMo = Math.max(withExtra.maxedOut ? 0 : withExtra.months, minOnly.maxedOut ? 0 : minOnly.months, 1);
+  const seqFor = (extraAmt) => {
+    const bals = activeAttack.map(c => c.balance);
+    const minPay = activeAttack.map(c => c.minPayment);
+    const rate = activeAttack.map(c => (c.apr||0)/100/12);
+    const seq = [bals.reduce((s,b)=>s+b,0)];
+    for (let mo = 1; mo <= maxMo; mo++) {
+      let freedUp = extraAmt;
+      for (let i=0;i<bals.length;i++) if (bals[i] <= 0.005) freedUp += minPay[i];
+      for (let i=0;i<bals.length;i++) {
+        if (bals[i] <= 0.005) continue;
+        bals[i] = bals[i] + bals[i]*rate[i] - minPay[i];
+      }
+      for (let i=0;i<bals.length;i++) {
+        if (bals[i] > 0.005 && freedUp > 0) { const pay = Math.min(freedUp, bals[i]); bals[i] -= pay; freedUp -= pay; }
+        if (bals[i] < 0) bals[i] = 0;
+      }
+      seq.push(bals.reduce((s,b)=>s+b,0));
+    }
+    return seq;
+  };
+  const labels = Array.from({length: maxMo+1}, (_,i) => i===0 ? 'Now' : ptfPayoffDate(i));
+
+  wrap.innerHTML = `
+    <div style="padding:18px 20px 36px">
+      <div style="margin-bottom:18px">
+        <div style="font-size:1.05rem;font-weight:800;margin-bottom:2px">🚀 Path to Freedom</div>
+        <div style="font-size:.78rem;color:var(--text3)">Credit-card debt avalanche — highest APR first. Rich Dad, Poor Dad framing: every dollar here is an expense-liability pulling cash out of your pocket; killing the highest-rate ones fastest frees that cash flow for income-assets.</div>
+      </div>
+
+      ${urgentPromos.length ? `
+      <div style="background:var(--warn-bg,#422006);border:1px solid #f59e0b;border-radius:var(--r2);padding:12px 16px;margin-bottom:18px;font-size:.8rem;color:var(--text)">
+        ⚠ <b>${urgentPromos.length}</b> card${urgentPromos.length!==1?'s have':' has'} a promo rate expiring within ${PTF_PROMO_URGENT_DAYS} days
+        (${urgentPromos.map(c=>esc(c.name)).join(', ')}) — bumped to the top of the payoff order regardless of current APR,
+        since deferred-interest promos can retroactively charge interest on the full original balance if not cleared by the deadline.
+      </div>` : ''}
+
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+        ${finCard('Revolving CC Debt', fmtCurrency(totalDebt), activeAttack.length+' cards', '#ef4444')}
+        ${finCard('Weighted Avg APR', weightedApr.toFixed(2)+'%', null, '#d97706')}
+        ${finCard('Debt-Free Date', withExtra.maxedOut ? 'Not on track' : ptfPayoffDate(withExtra.months), 'in '+ptfMonthsLabel(withExtra.months), withExtra.maxedOut?'#ef4444':'var(--ok)')}
+        ${finCard('Interest Saved', fmtCurrency(Math.max(0,interestSaved)), monthsSaved>0 ? monthsSaved+' fewer months vs. minimums only' : null, '#22c55e')}
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px;margin-bottom:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label style="font-size:.8rem;font-weight:700;color:var(--text2)">Extra $/month toward the avalanche</label>
+        <input type="number" min="0" step="10" value="${extra}" onchange="ptfSetExtra(this.value)"
+          style="width:120px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-weight:700">
+        <span style="font-size:.75rem;color:var(--text3)">on top of ${fmtCurrency(totalMin)}/mo in minimums — applied to the #1 card, then rolls forward automatically as each card is paid off.</span>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px 14px;margin-bottom:20px">
+        <div style="font-size:.85rem;font-weight:800;margin-bottom:12px">Payoff Timeline</div>
+        <div style="position:relative;height:260px"><canvas id="ptf-canvas"></canvas></div>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:20px">
+        <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Payoff order (highest APR first)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+          ${tableHead}
+          ${activeAttack.map(cardRow).join('') || '<tr><td colspan="8" style="padding:14px;color:var(--text3)">No revolving credit-card debt 🎉</td></tr>'}
+        </table>
+      </div>
+
+      ${paidInFullCards.length ? `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+        <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Paid in full monthly — no action needed</div>
+        <div style="padding:6px 14px 2px;font-size:.72rem;color:var(--text3)">Excluded from the payoff plan since they carry no revolving balance.</div>
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+          <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
+            <th style="padding:6px 10px">Card</th><th style="padding:6px 10px;text-align:right">Current balance</th>
+            <th style="padding:6px 10px;text-align:right">APR</th><th style="padding:6px 10px;text-align:center"></th>
+          </tr>
+          ${paidInFullCards.map(paidInFullRow).join('')}
+        </table>
+      </div>` : ''}
+    </div>`;
+
+  const canvas = id('ptf-canvas');
+  if (!canvas || !activeAttack.length) return;
+  _ptfChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Minimums only', data: seqFor(0), borderColor: '#9ca3af', backgroundColor: 'transparent', borderDash: [5,3], borderWidth: 2, pointRadius: 0, tension: 0.3 },
+        { label: `With +${fmtCurrency(extra)}/mo`, data: seqFor(extra), borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.10)', fill: true, borderWidth: 2.5, pointRadius: 0, tension: 0.3 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { font: { size: 11 }, boxWidth: 14, padding: 14, color: '#94a3b8' } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtCurrency(Math.max(0, ctx.parsed.y))}` } },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, font: { size: 10 }, color: '#94a3b8', maxRotation: 0 }, grid: { color: 'rgba(148,163,184,0.15)' } },
+        y: { min: 0, ticks: { font: { size: 10 }, color: '#94a3b8', callback: v => v >= 1000 ? '$' + (v/1000).toFixed(0) + 'k' : '$' + v }, grid: { color: 'rgba(148,163,184,0.15)' } },
       },
     },
   });
