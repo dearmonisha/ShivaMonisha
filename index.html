@@ -14126,6 +14126,61 @@ function ptfCardMinPayment(ccCardId, balance) {
   return Math.max(25, Math.round(balance * 0.02 * 100) / 100);
 }
 
+// Recorded statement-cycle history for a card: due/paid/outstanding-after-payment for each
+// cycle that has actually come due (excludes future cycles that just haven't happened yet,
+// which would otherwise look like a "missed minimum"). This is the raw material for judging
+// whether minimums are being met and whether the balance is actually trending down.
+function ptfPaymentHistory(ccCardId, asOf) {
+  const tmpl = (D.templates || []).find(t => t.ccCardId === ccCardId);
+  if (!tmpl) return [];
+  const months = Object.keys(D.cycles || {}).sort();
+  const rows = [];
+  months.forEach(m => {
+    const pay = (D.cycles[m]?.payments || []).find(p => p.templateId === tmpl.id);
+    if (!pay || pay.amountDue == null) return;
+    if (pay.dueDate && pay.dueDate > asOf) return; // not due yet — nothing to judge
+    rows.push({
+      month: m,
+      due: parseFloat(pay.amountDue) || 0,
+      paid: pay.amountPaid != null ? parseFloat(pay.amountPaid) : null,
+      metMin: pay.amountPaid != null && (parseFloat(pay.amountPaid) >= (parseFloat(pay.amountDue) || 0) - 0.01),
+      outstanding: pay.outstandingBalance != null ? parseFloat(pay.outstandingBalance) : null,
+    });
+  });
+  return rows;
+}
+
+// Verdict on whether the balance is actually going down over the recorded window, not just
+// whether minimums are being met — the two are independent. A card can meet its minimum every
+// single month and still grow if new charges (plus interest) outpace what's paid.
+function ptfPaceVerdict(history) {
+  const withBal = history.filter(h => h.outstanding != null);
+  if (withBal.length < 2) return { label: 'Not enough history yet', color: 'var(--text3)', change: null, pct: null };
+  const first = withBal[0].outstanding, last = withBal[withBal.length - 1].outstanding;
+  const change = last - first;
+  const pct = first > 0 ? (change / first * 100) : 0;
+  if (last <= first * 0.97) return { label: '📉 Paying down', color: '#22c55e', change, pct };
+  if (last >= first * 1.03) return { label: '📈 Growing despite payments', color: '#ef4444', change, pct };
+  return { label: '➡️ Flat — covering minimum only', color: '#d97706', change, pct };
+}
+
+function ptfSparkline(values, color) {
+  if (!values.length) return '<span style="font-size:.7rem;color:var(--text3)">—</span>';
+  const w = 110, h = 30, pad = 3;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = (max - min) || 1;
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (values.length - 1 || 1)) * (w - 2 * pad);
+    const y = h - pad - ((v - min) / range) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const lastX = pad + (w - 2*pad), lastY = h - pad - ((values[values.length-1]-min)/range)*(h-2*pad);
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"/>
+    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2.5" fill="${color}"/>
+  </svg>`;
+}
+
 function ptfBuildCards(asOf) {
   const cardsMeta = D.ccTracker?.cards || [];
   const accts = (D.txnAccounts || []).filter(a => a.type === 'Credit Card' && a.status !== 'closed');
@@ -14295,6 +14350,19 @@ function renderPathToFreedom() {
   // right now, so it doesn't get flagged even if the expiration date is close.
   const urgentPromos = activeAttack.filter(c => c.promoExpiration && c.promoOnTrack === false);
 
+  // ── Reality check: are minimums actually being met, and is the balance actually
+  // trending down? Separate questions — a card can meet its minimum every month and
+  // still grow if new charges + interest outpace what's paid toward it.
+  const paceRows = activeAttack.map(c => {
+    const hist = ptfPaymentHistory(c.ccCardId, asOf);
+    const verdict = ptfPaceVerdict(hist);
+    const values = hist.filter(h => h.outstanding != null).map(h => h.outstanding);
+    const missedCount = hist.filter(h => !h.metMin).length;
+    return { c, hist, verdict, values, missedCount };
+  }).filter(r => r.hist.length);
+  const growingCount = paceRows.filter(r => r.verdict.color === '#ef4444').length;
+  const anyMissedMin = paceRows.some(r => r.missedCount > 0);
+
   const cardRow = (c, i) => {
     const isUrgent = c.promoExpiration && c.promoOnTrack === false;
     const isOnTrackPromo = c.promoExpiration && c.promoOnTrack === true;
@@ -14388,6 +14456,39 @@ function renderPathToFreedom() {
         ${finCard('Weighted Avg APR', weightedApr.toFixed(2)+'%', null, '#d97706')}
         ${finCard('Debt-Free Date', withExtra.maxedOut ? 'Not on track' : ptfPayoffDate(withExtra.months), 'in '+ptfMonthsLabel(withExtra.months), withExtra.maxedOut?'#ef4444':'var(--ok)')}
         ${finCard('Interest Saved', fmtCurrency(Math.max(0,interestSaved)), monthsSaved>0 ? monthsSaved+' fewer months vs. minimums only' : null, '#22c55e')}
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:20px">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
+          <div style="font-weight:700;font-size:.85rem">📊 Are you keeping pace?</div>
+          <div style="font-size:.73rem;color:var(--text3);margin-top:2px">
+            Minimum-due compliance and balance trend over the ${paceRows[0]?.hist.length || 0} recorded statement cycles.
+            Meeting the minimum every month and the balance actually going down are two different things —
+            new charges plus interest can outpace what's paid even when nothing is technically missed.
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-size:.8rem;${anyMissedMin ? 'color:#ef4444' : 'color:var(--ok)'}">
+          ${anyMissedMin ? '⚠ At least one card missed its minimum due in a recorded cycle — see per-card detail below.' : '✓ Minimum due has been met every recorded cycle across all cards.'}
+          ${growingCount ? ` &nbsp;·&nbsp; <b style="color:#ef4444">${growingCount} card${growingCount!==1?'s are':' is'} growing</b> despite that — covering the minimum isn't the same as paying it down.` : ''}
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+          <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
+            <th style="padding:6px 10px">Card</th><th style="padding:6px 10px">Balance trend</th>
+            <th style="padding:6px 10px;text-align:right">Change over window</th>
+            <th style="padding:6px 10px;text-align:center">Min due met</th>
+            <th style="padding:6px 10px">Verdict</th>
+          </tr>
+          ${paceRows.map(r => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:8px 10px;font-weight:700">${esc(r.c.name)}</td>
+            <td style="padding:8px 10px">${ptfSparkline(r.values, r.verdict.color)}</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.verdict.change>0?'#ef4444':r.verdict.change<0?'#22c55e':'var(--text)'}">
+              ${r.verdict.change==null ? '—' : (r.verdict.change>0?'+':'') + fmtCurrency(r.verdict.change) + ' (' + (r.verdict.pct>0?'+':'') + r.verdict.pct.toFixed(0) + '%)'}
+            </td>
+            <td style="padding:8px 10px;text-align:center;${r.missedCount>0?'color:#ef4444;font-weight:700':'color:var(--text3)'}">${r.hist.length - r.missedCount}/${r.hist.length}</td>
+            <td style="padding:8px 10px;font-weight:700;color:${r.verdict.color}">${r.verdict.label}</td>
+          </tr>`).join('') || `<tr><td colspan="5" style="padding:14px;color:var(--text3)">No recorded statement-cycle history yet</td></tr>`}
+        </table>
       </div>
 
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px;margin-bottom:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
