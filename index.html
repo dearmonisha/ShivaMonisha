@@ -14112,7 +14112,6 @@ function renderDebtPayoff() {
 // accounts are excluded — this view is credit-card revolving debt only.
 // ══════════════════════════════════════════════════════════════════════
 let _ptfChart = null;
-const PTF_PROMO_URGENT_DAYS = 120; // flag promo-rate cards expiring within ~4 months
 const PTF_MAX_MONTHS = 600;
 
 function ptfCardMinPayment(ccCardId, balance) {
@@ -14134,33 +14133,59 @@ function ptfBuildCards(asOf) {
     const meta = cardsMeta.find(c => c.id === a.ccCardId) || {};
     const balance = Math.max(0, Math.round(txnCurrentBalance(a) * 100) / 100);
     const promoExpiration = meta.promoExpiration || '';
-    let promoDaysLeft = null;
+    const minPayment = ptfCardMinPayment(a.ccCardId, balance);
+    // Account-level interestRate (entered on the account itself) is the source of truth — same
+    // precedence the Balance Sheet's cash-flow lens uses — falling back to the card's APR
+    // (ccTracker.cards) only when the account has no rate entered. This is the *real* contractual
+    // rate, shown as-is; it's separate from the "effective" rate used for ranking below.
+    const apr = (a.interestRate != null && a.interestRate !== '') ? parseFloat(a.interestRate) : (parseFloat(meta.apr) || 0);
+
+    // A card mid-promo isn't actually costing anything right now as long as it's on pace to
+    // clear before the promo ends — its real APR only becomes a real cost if it's still
+    // carrying a balance past that date (deferred-interest financing). So: project whether the
+    // current minimum/installment payment clears the balance in time. On track → treat as 0%
+    // for ranking/simulation purposes (it shouldn't compete with cards accruing interest today).
+    // Behind pace → treat its real APR as live risk and flag the shortfall needed to catch up.
+    let promoDaysLeft = null, promoMonthsLeft = null, promoOnTrack = null, promoShortfall = null;
     if (promoExpiration) {
-      promoDaysLeft = Math.round((new Date(promoExpiration + 'T00:00:00') - new Date(asOf + 'T00:00:00')) / 86400000);
+      const diffDays = (new Date(promoExpiration + 'T00:00:00') - new Date(asOf + 'T00:00:00')) / 86400000;
+      promoDaysLeft = Math.round(diffDays);
+      promoMonthsLeft = diffDays / 30.44;
+      if (balance <= 0.005) {
+        promoOnTrack = true;
+      } else if (promoMonthsLeft <= 0) {
+        promoOnTrack = false; // promo window already over and still carrying a balance
+      } else {
+        const monthsToClearAtMin = minPayment > 0 ? balance / minPayment : Infinity;
+        promoOnTrack = monthsToClearAtMin <= promoMonthsLeft + 0.05; // small rounding cushion
+        if (!promoOnTrack) {
+          const requiredPayment = balance / promoMonthsLeft;
+          promoShortfall = Math.max(0, requiredPayment - minPayment);
+        }
+      }
     }
+    const effectiveApr = (promoExpiration && promoOnTrack) ? 0 : apr;
+
     return {
       id: a.id,
       ccCardId: a.ccCardId || meta.id || '',
       name: a.name,
-      apr: parseFloat(meta.apr) || 0,
+      apr,
+      effectiveApr,
       limit: meta.limit || null,
       balance,
       promoExpiration,
       promoDaysLeft,
+      promoOnTrack,
+      promoShortfall,
       payInFull: !!meta.payInFull,
-      minPayment: ptfCardMinPayment(a.ccCardId, balance),
+      minPayment,
     };
   });
 }
 
 function ptfPriorityOrder(cards) {
-  return [...cards].sort((a, b) => {
-    const aUrgent = a.promoDaysLeft != null && a.promoDaysLeft <= PTF_PROMO_URGENT_DAYS;
-    const bUrgent = b.promoDaysLeft != null && b.promoDaysLeft <= PTF_PROMO_URGENT_DAYS;
-    if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
-    if (aUrgent && bUrgent) return a.promoDaysLeft - b.promoDaysLeft;
-    return b.apr - a.apr;
-  });
+  return [...cards].sort((a, b) => b.effectiveApr - a.effectiveApr);
 }
 
 // Simulates the avalanche waterfall: minimums on every card each month, plus
@@ -14171,7 +14196,9 @@ function ptfSimulate(orderedCards, extraMonthly) {
   const n = orderedCards.length;
   let bals = orderedCards.map(c => c.balance);
   const minPay = orderedCards.map(c => c.minPayment);
-  const rate = orderedCards.map(c => (c.apr || 0) / 100 / 12);
+  // Uses effectiveApr, not the contractual apr: an on-track promo card is modeled at 0%
+  // since it isn't actually accruing interest as long as it stays on pace.
+  const rate = orderedCards.map(c => (c.effectiveApr || 0) / 100 / 12);
   const payoffMonth = new Array(n).fill(null);
   for (let i = 0; i < n; i++) payoffMonth[i] = bals[i] <= 0.005 ? 0 : null;
   let month = 0, totalInterest = 0;
@@ -14263,10 +14290,14 @@ function renderPathToFreedom() {
   const interestSaved = minOnly.totalInterest - withExtra.totalInterest;
   const monthsSaved    = minOnly.months - withExtra.months;
 
-  const urgentPromos = activeAttack.filter(c => c.promoDaysLeft != null && c.promoDaysLeft <= PTF_PROMO_URGENT_DAYS);
+  // "Urgent" now means genuinely at risk — a promo card that's behind the pace needed to
+  // clear before its deferred-interest window ends. A card on pace isn't costing anything
+  // right now, so it doesn't get flagged even if the expiration date is close.
+  const urgentPromos = activeAttack.filter(c => c.promoExpiration && c.promoOnTrack === false);
 
   const cardRow = (c, i) => {
-    const isUrgent = c.promoDaysLeft != null && c.promoDaysLeft <= PTF_PROMO_URGENT_DAYS;
+    const isUrgent = c.promoExpiration && c.promoOnTrack === false;
+    const isOnTrackPromo = c.promoExpiration && c.promoOnTrack === true;
     const payoffMo = withExtra.payoffMonth[i];
     const rankBadge = c.balance <= 0.005
       ? `<span style="font-size:.68rem;color:var(--ok)">paid off</span>`
@@ -14276,12 +14307,13 @@ function renderPathToFreedom() {
       <td style="padding:9px 10px">${rankBadge}</td>
       <td style="padding:9px 10px;font-weight:700">${esc(c.name)}</td>
       <td style="padding:9px 10px;text-align:right;font-weight:600;${c.balance>0?'color:var(--danger)':''}">${fmtCurrency(c.balance)}</td>
-      <td style="padding:9px 10px;text-align:right">${c.apr.toFixed(2)}%</td>
+      <td style="padding:9px 10px;text-align:right">${c.apr.toFixed(2)}%${isOnTrackPromo ? '<div style="font-size:.65rem;color:var(--text3);font-weight:400">0% while on pace</div>' : ''}</td>
       <td style="padding:9px 10px;text-align:right;color:var(--text3);font-size:.78rem">${fmtCurrency(c.minPayment)}</td>
       <td style="padding:9px 10px;text-align:center">
         <input type="date" value="${c.promoExpiration||''}" onchange="ptfSetPromoExpiration('${c.id}', this.value)"
           style="font-size:.72rem;padding:3px 6px;border-radius:6px;border:1px solid ${isUrgent?'#f59e0b':'var(--border)'};background:var(--surface);color:var(--text)">
-        ${isUrgent ? `<div style="font-size:.66rem;color:#f59e0b;font-weight:700;margin-top:2px">⚠ ${c.promoDaysLeft}d left</div>` : ''}
+        ${isUrgent ? `<div style="font-size:.66rem;color:#f59e0b;font-weight:700;margin-top:2px">⚠ behind pace — needs +${fmtCurrency(c.promoShortfall||0)}/mo to clear by expiration</div>` : ''}
+        ${isOnTrackPromo ? `<div style="font-size:.66rem;color:var(--ok);font-weight:700;margin-top:2px">✓ on pace to clear in time</div>` : ''}
       </td>
       <td style="padding:9px 10px;text-align:right;font-weight:700;color:${payoffMo===0?'var(--ok)':'var(--text)'}">${ptfMonthsLabel(payoffMo)}</td>
       <td style="padding:9px 10px;text-align:center">
@@ -14317,7 +14349,7 @@ function renderPathToFreedom() {
   const seqFor = (extraAmt) => {
     const bals = activeAttack.map(c => c.balance);
     const minPay = activeAttack.map(c => c.minPayment);
-    const rate = activeAttack.map(c => (c.apr||0)/100/12);
+    const rate = activeAttack.map(c => (c.effectiveApr||0)/100/12);
     const seq = [bals.reduce((s,b)=>s+b,0)];
     for (let mo = 1; mo <= maxMo; mo++) {
       let freedUp = extraAmt;
@@ -14345,9 +14377,10 @@ function renderPathToFreedom() {
 
       ${urgentPromos.length ? `
       <div style="background:var(--warn-bg,#422006);border:1px solid #f59e0b;border-radius:var(--r2);padding:12px 16px;margin-bottom:18px;font-size:.8rem;color:var(--text)">
-        ⚠ <b>${urgentPromos.length}</b> card${urgentPromos.length!==1?'s have':' has'} a promo rate expiring within ${PTF_PROMO_URGENT_DAYS} days
-        (${urgentPromos.map(c=>esc(c.name)).join(', ')}) — bumped to the top of the payoff order regardless of current APR,
+        ⚠ <b>${urgentPromos.length}</b> card${urgentPromos.length!==1?'s are':' is'} behind the pace needed to clear before its promo ends
+        (${urgentPromos.map(c=>esc(c.name)).join(', ')}) — bumped to the top of the payoff order,
         since deferred-interest promos can retroactively charge interest on the full original balance if not cleared by the deadline.
+        Cards on pace to clear in time aren't flagged — they aren't costing anything right now.
       </div>` : ''}
 
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
