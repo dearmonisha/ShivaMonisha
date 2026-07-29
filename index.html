@@ -4823,6 +4823,11 @@ function updateCCCard(cardId) {
 function renderCCTracker() {
   const c = id('view-cc');
   const cct = D.ccTracker;
+  // Silently keep stored interest/outstanding in sync on every visit to this tab —
+  // no manual "Sync" click required. Cheap and idempotent once already in sync;
+  // this is also what self-heals a stale interestCategoryId (see ccResolveInterestCategoryId)
+  // without needing a fresh data file.
+  ccSyncAllMonths();
   const months = (cct.months || []).slice().sort();
   const latestMonth = months[months.length - 1] || ymNow();
   // Derive sorted years list
@@ -5333,6 +5338,24 @@ function saveCCCell(cardId, month) {
 }
 
 // ── CC Auto-sync helpers ─────────────────────────────────────────────────────
+// Resolve the category a CC card should use for interest, self-healing if the
+// stored interestCategoryId has gone stale (points at a category that no longer
+// exists — e.g. after a category was renamed/merged at some point). Falls back to
+// whatever category is literally named "Interest Expense", and repairs the card's
+// stored id in memory so this only has to self-heal once per session.
+function ccResolveInterestCategoryId(card) {
+  if (!card.interestCategoryId) return null;
+  const exists = (D.budget?.categories||[]).some(c => c.id === card.interestCategoryId);
+  if (exists) return card.interestCategoryId;
+  const fallback = (D.budget?.categories||[]).find(c => (c.name||'').trim().toLowerCase() === 'interest expense');
+  if (fallback) {
+    card.interestCategoryId = fallback.id; // self-heal so future lookups (and the next save) use the real id
+    dirty();
+    return fallback.id;
+  }
+  return null;
+}
+
 // Returns {interest, outstanding, interestSource, outstandingSource} for a card+month.
 // Sources: 'transactions' | 'monthly' | null (no link configured)
 function ccGetAutoData(cardId, month) {
@@ -5347,11 +5370,12 @@ function ccGetAutoData(cardId, month) {
   // for the linked account. Statement day is irrelevant — if the interest posts
   // on the 11th instead of the 9th, it still belongs to that calendar month.
   let interest = null, interestSource = null;
-  if (card.linkedTxnAccountId && card.interestCategoryId) {
+  const _resolvedIntCatId = card.linkedTxnAccountId ? ccResolveInterestCategoryId(card) : null;
+  if (card.linkedTxnAccountId && _resolvedIntCatId) {
     const sum = (D.transactions||[])
       .filter(t =>
         t.accountId   === card.linkedTxnAccountId &&
-        t.categoryId  === card.interestCategoryId &&
+        t.categoryId  === _resolvedIntCatId &&
         (!t.status || t.status === 'approved') &&
         (t.date||'').slice(0, 7) === month
       )
