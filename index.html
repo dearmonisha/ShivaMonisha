@@ -1312,6 +1312,7 @@ function _applyData(raw) {
   (D.ccTracker?.cards || []).forEach(c => {
     if (c.promoExpiration === undefined) c.promoExpiration = '';
     if (c.payInFull === undefined) c.payInFull = false;
+    if (c.plannedPayment === undefined) c.plannedPayment = null;
   });
   if (!D.settings)   D.settings   = { theme: 'terracotta', iconStyle: 'emoji' };
   if (!D.settings.theme)     D.settings.theme     = 'terracotta';
@@ -14230,7 +14231,11 @@ function ptfBuildCards(asOf) {
     const meta = cardsMeta.find(c => c.id === a.ccCardId) || {};
     const balance = Math.max(0, Math.round(txnCurrentBalance(a) * 100) / 100);
     const promoExpiration = meta.promoExpiration || '';
-    const minPayment = ptfCardMinPayment(a.ccCardId, balance);
+    // A committed payment (e.g. a fixed installment you've chosen to pay above the card's actual
+    // minimum, like an EMI) overrides the auto-derived minimum from statement history — otherwise
+    // the on-track/pace math only ever sees the contractual minimum, not what you're really paying.
+    const hasPlannedPayment = meta.plannedPayment != null && parseFloat(meta.plannedPayment) > 0;
+    const minPayment = hasPlannedPayment ? parseFloat(meta.plannedPayment) : ptfCardMinPayment(a.ccCardId, balance);
     // Account-level interestRate (entered on the account itself) is the source of truth — same
     // precedence the Balance Sheet's cash-flow lens uses — falling back to the card's APR
     // (ccTracker.cards) only when the account has no rate entered. This is the *real* contractual
@@ -14254,7 +14259,7 @@ function ptfBuildCards(asOf) {
         promoOnTrack = false; // promo window already over and still carrying a balance
       } else {
         const monthsToClearAtMin = minPayment > 0 ? balance / minPayment : Infinity;
-        promoOnTrack = monthsToClearAtMin <= promoMonthsLeft + 0.05; // small rounding cushion
+        promoOnTrack = monthsToClearAtMin <= promoMonthsLeft + 0.5; // cushion for day-count/rounding noise
         if (!promoOnTrack) {
           const requiredPayment = balance / promoMonthsLeft;
           promoShortfall = Math.max(0, requiredPayment - minPayment);
@@ -14277,6 +14282,7 @@ function ptfBuildCards(asOf) {
       promoShortfall,
       payInFull: !!meta.payInFull,
       minPayment,
+      hasPlannedPayment,
     };
   });
 }
@@ -14331,6 +14337,17 @@ function ptfSetPromoExpiration(acctId, val) {
   meta.promoExpiration = val || '';
   dirty();
   renderPathToFreedom();
+}
+
+function ptfSetPlannedPayment(acctId, val) {
+  const acct = (D.txnAccounts || []).find(a => a.id === acctId);
+  const meta = acct && (D.ccTracker?.cards || []).find(c => c.id === acct.ccCardId);
+  if (!meta) return;
+  const n = parseFloat(val);
+  meta.plannedPayment = (n > 0) ? n : null;
+  dirty();
+  renderPathToFreedom();
+  toast(meta.plannedPayment ? `${acct.name} now modeled at ${fmtCurrency(meta.plannedPayment)}/mo` : `${acct.name} back to the auto-derived minimum`, 'ok');
 }
 
 function ptfSetPayInFull(acctId, checked) {
@@ -14437,7 +14454,12 @@ function renderPathToFreedom() {
       <td style="padding:9px 10px;font-weight:700">${esc(c.name)}</td>
       <td style="padding:9px 10px;text-align:right;font-weight:600;${c.balance>0?'color:var(--danger)':''}">${fmtCurrency(c.balance)}</td>
       <td style="padding:9px 10px;text-align:right">${c.apr.toFixed(2)}%${isOnTrackPromo ? '<div style="font-size:.65rem;color:var(--text3);font-weight:400">0% while on pace</div>' : ''}</td>
-      <td style="padding:9px 10px;text-align:right;color:var(--text3);font-size:.78rem">${fmtCurrency(c.minPayment)}</td>
+      <td style="padding:9px 10px;text-align:right">
+        <input type="number" min="0" step="1" value="${c.minPayment.toFixed(2)}" onchange="ptfSetPlannedPayment('${c.id}', this.value)"
+          title="${c.hasPlannedPayment ? 'Committed payment you\'ve set — overrides the auto-derived minimum. Clear to 0 to go back to auto.' : 'Auto-derived from statement history. Enter your actual planned payment if you pay more than the card\'s minimum.'}"
+          style="width:80px;text-align:right;font-size:.78rem;padding:3px 6px;border-radius:6px;border:1px solid ${c.hasPlannedPayment?'var(--primary)':'var(--border)'};background:var(--surface);color:${c.hasPlannedPayment?'var(--text)':'var(--text3)'}">
+        <div style="font-size:.62rem;color:${c.hasPlannedPayment?'var(--primary)':'var(--text3)'};margin-top:1px">${c.hasPlannedPayment?'committed':'auto'}</div>
+      </td>
       <td style="padding:9px 10px;text-align:center">
         <input type="date" value="${c.promoExpiration||''}" onchange="ptfSetPromoExpiration('${c.id}', this.value)"
           style="font-size:.72rem;padding:3px 6px;border-radius:6px;border:1px solid ${isUrgent?'#f59e0b':'var(--border)'};background:var(--surface);color:var(--text)">
