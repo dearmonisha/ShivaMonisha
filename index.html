@@ -12971,11 +12971,20 @@ function renderBalanceSheet(c) {
   // since "what yield can I actually count on" is a real assumption, not a fact — Low/Medium/High
   // risk give a range instead of one false-precise number.
   const fiGoals = D.fiGoals || { low: 4.2, medium: 5.0, high: 8.0 };
+  // NOTE: this is capital available to redeploy, not cash flow already being produced. incomeTotal
+  // (computed above from real credit transactions on tagged accounts, excluding contributions/
+  // vesting) is the honest measure of what these accounts are actually distributing today — for
+  // growth-only holdings like a 401k or a brokerage account with no dividend payout, that's
+  // usually $0 regardless of how large the balance is. Don't conflate the two.
   const currentIncomeAssetBalance = incomeAssetRows.reduce((s,a) => s + a._bal, 0);
+  const currentRealAssetIncome = incomeTotal;
+  const modeledMonthlyExpense = modeledAnnualExpense / 12;
+  const incomeCoveragePct = modeledMonthlyExpense > 0 ? Math.min(100, currentRealAssetIncome/modeledMonthlyExpense*100) : 0;
   const fiTier = (tier, label, desc) => {
     const rate = fiGoals[tier];
     const target = rate > 0 ? modeledAnnualExpense / (rate/100) : null;
     const gap = target != null ? Math.max(0, target - currentIncomeAssetBalance) : null;
+    // "Capital available, if fully redeployed into this yield" — not "already producing this yield".
     const pct = target != null && target > 0 ? Math.min(100, currentIncomeAssetBalance/target*100) : 0;
     return { tier, label, desc, rate, target, gap, pct };
   };
@@ -13076,7 +13085,21 @@ function renderBalanceSheet(c) {
         Based on trailing-12-month actual spending — ${fmtCurrency(trailingExpenseTotal)}/yr, ${fmtCurrency(trailingExpenseTotal/12)}/mo
         (same figure driving Wealth (days) above). This is what it would take invested, at each yield assumption, for asset
         income alone to cover expenses with no salary at all. Yields are editable assumptions, not guarantees — adjust them
-        if your own numbers differ. You currently have ${fmtCurrency(currentIncomeAssetBalance)} tagged as Income Asset.
+        if your own numbers differ.
+      </div>
+
+      <div style="background:${currentRealAssetIncome<0.01?'var(--danger-bg,#450A0A)':'var(--surface2)'};border:1px solid ${currentRealAssetIncome<0.01?'#ef4444':'var(--border)'};border-radius:var(--r2);padding:12px 16px;margin-bottom:16px">
+        <div style="font-weight:700;font-size:.82rem;margin-bottom:4px">${currentRealAssetIncome<0.01?'⚠':'📌'} Real cash flow vs. capital on hand — these are not the same thing</div>
+        <div style="font-size:.78rem;color:var(--text2);line-height:1.6">
+          You have <b>${fmtCurrency(currentIncomeAssetBalance)}</b> tagged as Income Asset — that's capital available to redeploy,
+          not cash flow already being produced. What those accounts actually distributed in cash over the trailing 12 months is
+          <b style="color:${currentRealAssetIncome<0.01?'#ef4444':'var(--text)'}">${fmtCurrency(currentRealAssetIncome)}/mo</b>,
+          covering <b>${incomeCoveragePct.toFixed(2)}%</b> of the ${fmtCurrency(modeledMonthlyExpense)}/mo this panel is measuring against.
+          A large 401(k) or brokerage balance that's purely appreciating in value — no dividends paid out, no rent, no interest
+          swept to cash — contributes $0 here no matter how big it grows. The tier cards below show what it would take <i>if this
+          capital were redeployed</i> into something that actually pays out at that yield; they are not measuring progress you've
+          already made.
+        </div>
       </div>
 
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px;margin-bottom:16px">
@@ -13137,7 +13160,7 @@ function renderBalanceSheet(c) {
           <div style="height:6px;background:var(--surface3,var(--border));border-radius:99px;overflow:hidden;margin-bottom:5px">
             <div style="height:100%;width:${t.pct.toFixed(1)}%;background:${t.pct>=100?'#22c55e':'var(--primary)'};border-radius:99px"></div>
           </div>
-          <div style="font-size:.72rem;color:var(--text3)">${t.pct.toFixed(1)}% there — ${t.gap==null ? '' : fmtCurrency(t.gap)+' to go'}</div>
+          <div style="font-size:.72rem;color:var(--text3)">${t.pct.toFixed(1)}% of capital, if fully redeployed here — ${t.gap==null ? '' : fmtCurrency(t.gap)+' more to invest'}</div>
         </div>`).join('')}
       </div>
     </div>
