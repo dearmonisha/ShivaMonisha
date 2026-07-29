@@ -12464,9 +12464,9 @@ function txnEditAccountModal(editId) {
       <div class="fg" style="grid-column:1/-1">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
           <input type="checkbox" id="tacct-exclude-nw" ${a?.excludeFromNetWorth ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
-          Exclude from Balance Sheet / Net Worth
+          Exclude from Balance Sheet / Net Worth / Cash Flow
         </label>
-        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Use for accounts that aren't really your assets or liabilities — e.g. a Tracking account holding a family member's money you're just managing on their behalf</div>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Use for accounts that aren't really your assets, liabilities, income, or spending — e.g. a Tracking account holding a family member's money you're just managing on their behalf. Also excludes the account's transactions from Wealth (days), the FI investment-goal panel, and the Income &amp; Expenditure statement.</div>
       </div>
       <div class="fg" style="grid-column:1/-1">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
@@ -12904,10 +12904,18 @@ function renderBalanceSheet(c) {
   // expenses at your current spending rate. Wealth (days) = monthly income from
   // Income Asset accounts ÷ daily expense, using the same trailing-12-month window as
   // the rest of this panel so all three numbers stay on equal footing.
+  // Accounts marked "Exclude from Balance Sheet / Net Worth" are, per that checkbox's own
+  // description, money you're managing on someone else's behalf (a family member's tracking
+  // account, etc.) — not really yours. That should mean not-yours for cash-flow/expense
+  // purposes too, not just net worth. Applied here so Wealth (days), the FI panel, and the
+  // reduction-modeling categories below all stop counting a mother-in-law's ATM withdrawal
+  // as your household spending.
+  const excludedAcctIds = new Set(allAccounts.filter(a => a.excludeFromNetWorth).map(a => a.id));
   const trailingExpenseTotal = (() => {
     const txns = (D.transactions||[]).filter(t =>
       !t.isTransfer && (!t.status || t.status === 'approved') &&
       (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+      !excludedAcctIds.has(t.accountId) &&
       !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
     );
     let total = 0;
@@ -12931,6 +12939,7 @@ function renderBalanceSheet(c) {
     const txns = (D.transactions||[]).filter(t =>
       !t.isTransfer && (!t.status || t.status === 'approved') &&
       (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+      !excludedAcctIds.has(t.accountId) &&
       !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
     );
     const byCat = {};
@@ -13210,7 +13219,10 @@ function renderIncomeExpenditure(c) {
     // Adjustment/Starting Balance/Vested/Correction/Contribution entries are book-value
     // corrections or your own money moving accounts, not real income or spend — keep both
     // sides of the statement honest by excluding them the same way the Balance Sheet does.
-    !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
+    !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') &&
+    // Accounts flagged "Exclude from Balance Sheet / Net Worth" hold money that isn't really
+    // yours (e.g. a family member's tracking account) — exclude here too, same reasoning.
+    !(acctById[t.accountId]?.excludeFromNetWorth)
   );
 
   let income = 0;
