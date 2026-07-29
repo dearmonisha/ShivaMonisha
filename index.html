@@ -1042,6 +1042,12 @@ let UI = {
   familyPerson: null,      // active person id in family ledger
   famPage: 0,              // current page (0-indexed)
   famPageSize: 25,         // rows per page
+  txnPage: 0,              // Transactions tab: single-account view page (0-indexed)
+  txnPageSize: 100,        // Transactions tab: single-account view rows per page
+  txnAllPage: 0,           // Transactions tab: All Accounts view page (0-indexed)
+  txnAllPageSize: 100,     // Transactions tab: All Accounts view rows per page
+  txnSearchPage: 0,        // Transactions tab: search-results page (0-indexed)
+  txnSearchPageSize: 100,  // Transactions tab: search-results rows per page
   ccView: 'interest',      // 'interest' | 'outstanding'
   ccYears: null,           // Set of selected years for trend charts (or Set(['all']))
   ccCardFilter: 'both',    // 'both' | 'total' | 'cards'
@@ -1615,8 +1621,11 @@ async function loadState() {
   }
 }
 
+let _txnDataVersion = 0; // bumped on every mutation so cached per-account balances (see txnCurrentBalance) invalidate correctly
+
 function dirty() {
   UI.dirty = true;
+  _txnDataVersion++;
   refreshSaveUI();
 }
 
@@ -10664,12 +10673,24 @@ function txnRunningBalances(acct, txns) {
   });
 }
 
+// Cache of per-account current balances, invalidated by _txnDataVersion (bumped in
+// dirty()). The Transactions left nav recomputes txnCurrentBalance() for every account
+// on every render — with 14k+ transactions across 50 accounts, that was re-sorting and
+// re-walking the full ledger 50x per render. Caching per account and invalidating only
+// when the data actually changes fixes the sluggishness without touching call sites.
+let _txnBalCache = { version: -1, data: new Map() };
+
 function txnCurrentBalance(acct) {
+  if (_txnBalCache.version !== _txnDataVersion) {
+    _txnBalCache = { version: _txnDataVersion, data: new Map() };
+  }
+  if (_txnBalCache.data.has(acct.id)) return _txnBalCache.data.get(acct.id);
   // Exclude pending and rejected transactions from balance calculation
   const txns = (D.transactions||[]).filter(t => t.accountId === acct.id && (!t.status || t.status === 'approved'));
   const rows  = txnRunningBalances(acct, txns);
-  if (!rows.length) return parseFloat(acct.openingBalance) || 0;
-  return rows[rows.length - 1]._bal;
+  const bal = rows.length ? rows[rows.length - 1]._bal : (parseFloat(acct.openingBalance) || 0);
+  _txnBalCache.data.set(acct.id, bal);
+  return bal;
 }
 
 // ── Obligations → Transactions auto-population ───────────────
@@ -11406,6 +11427,39 @@ function txnInlineRow(t, acct) {
 }
 
 // ── All Accounts flat view ────────────────────────────────────────────
+// ── Shared pager for large transaction lists (perf: avoids rendering thousands
+// of DOM rows into one scroll container at once) ────────────────────────────
+function _txnPagerHTML(total, page, pageSize, setterFnName) {
+  if (total <= pageSize) return '';
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const startIdx = page * pageSize;
+  const endIdx   = Math.min(startIdx + pageSize, total);
+  let pageNums = '';
+  const lo = Math.max(0, page - 2), hi = Math.min(totalPages - 1, page + 2);
+  if (lo > 0) pageNums += `<button class="btn btn-sm" onclick="${setterFnName}(0)">1</button>`;
+  if (lo > 1) pageNums += `<span style="color:var(--text3);padding:0 2px">…</span>`;
+  for (let p = lo; p <= hi; p++) {
+    const active = p === page ? ' btn-primary' : '';
+    pageNums += `<button class="btn btn-sm${active}" onclick="${setterFnName}(${p})">${p+1}</button>`;
+  }
+  if (hi < totalPages - 2) pageNums += `<span style="color:var(--text3);padding:0 2px">…</span>`;
+  if (hi < totalPages - 1) pageNums += `<button class="btn btn-sm" onclick="${setterFnName}(${totalPages-1})">${totalPages}</button>`;
+  return `
+    <div class="fam-pager">
+      <span class="fam-page-info">Showing ${total===0?0:startIdx+1}–${endIdx} of ${total} transactions</span>
+      <button class="btn btn-sm" onclick="${setterFnName}(${page-1})" ${page===0?'disabled':''}>‹ Prev</button>
+      ${pageNums}
+      <button class="btn btn-sm" onclick="${setterFnName}(${page+1})" ${page===totalPages-1?'disabled':''}>Next ›</button>
+    </div>`;
+}
+
+function _txnClampPage(uiKey, total, pageSizeKey) {
+  const pageSize = UI[pageSizeKey] || 100;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  UI[uiKey] = Math.max(0, Math.min(UI[uiKey] || 0, totalPages - 1));
+  return UI[uiKey];
+}
+
 function _renderAllAccountsView(panel) {
   const acctMap = {};
   (D.txnAccounts||[]).forEach(a => { acctMap[a.id] = a; });
@@ -11470,9 +11524,16 @@ function _renderAllAccountsView(panel) {
   const _fltNetColor = _fltNet >= 0 ? 'var(--danger)' : 'var(--ok)';
   const _fltNetLabel = (_fltNet < 0 ? '−' : '') + fmtC(Math.abs(_fltNet));
 
+  // Paginate — rendering all filtered rows (potentially thousands) into one
+  // scroll container is what was causing laggy scrolling in the Transactions tab.
+  const _allPageSize = UI.txnAllPageSize || 100;
+  const _allPage = _txnClampPage('txnAllPage', allTxns.length, 'txnAllPageSize');
+  const _allStartIdx = _allPage * _allPageSize;
+  const pageTxnsAll = allTxns.slice(_allStartIdx, _allStartIdx + _allPageSize);
+
   const _selSetAll = new Set(UI.txnSelected||[]);
-  const _visibleIds = allTxns.map(t => t.id);
-  const rows = allTxns.map(t => {
+  const _visibleIds = pageTxnsAll.map(t => t.id);
+  const rows = pageTxnsAll.map(t => {
     const acctName = acctMap[t.accountId]?.name || '—';
     const isSplit  = t.splits && t.splits.length > 0;
     const isXfer   = !!t.isTransfer;
@@ -11504,23 +11565,23 @@ function _renderAllAccountsView(panel) {
   const filterBar = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
       <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
-      <input type="date" value="${_df||''}" onchange="UI.txnDateFrom=this.value;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date">
+      <input type="date" value="${_df||''}" onchange="UI.txnDateFrom=this.value;UI.txnAllPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date">
       <span style="color:var(--text3)">to</span>
-      <input type="date" value="${_dt||''}" onchange="UI.txnDateTo=this.value;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date">
+      <input type="date" value="${_dt||''}" onchange="UI.txnDateTo=this.value;UI.txnAllPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date">
       <span style="color:var(--text3);margin-left:6px">🏷</span>
-      <select onchange="UI.txnCatFilter=this.value;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid ${_cf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);max-width:190px" title="Filter by Expense Type">
+      <select onchange="UI.txnCatFilter=this.value;UI.txnAllPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid ${_cf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);max-width:190px" title="Filter by Expense Type">
         <option value="">All Expense Types</option>
         ${_catFilterOpts}
       </select>
-      <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleAll}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
+      <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;UI.txnAllPage=0;renderTxnRight()" style="${_reimbPillStyleAll}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
       <span style="color:var(--text3);margin-left:4px">👤</span>
       <input type="text" value="${esc(_pf)}" placeholder="Payee…" list="txn-payee-list"
         style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
         title="Filter by payee — type to filter, Enter or click away to apply"
-        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();},350)"
-        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();}"
+        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnAllPage=0;renderTxnRight();},350)"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnAllPage=0;renderTxnRight();}"
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear All</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];UI.txnAllPage=0;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear All</button>
         <span style="color:var(--primary);font-weight:600">${allTxns.length} of ${totalCommitted} shown</span>
         <span style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:99px;background:color-mix(in srgb,${_fltNetColor} 10%,transparent);border:1px solid color-mix(in srgb,${_fltNetColor} 30%,transparent);font-size:.76rem;font-weight:700;color:${_fltNetColor};white-space:nowrap" title="Net amount of filtered transactions (Debits − Credits)">
           Net ${_fltNetLabel}
@@ -11573,7 +11634,8 @@ function _renderAllAccountsView(panel) {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>` : `<div class="txn-empty"><div class="txn-empty-icon">📋</div><strong>No transactions match the current filter</strong></div>`}
-    </div>`;
+    </div>
+    ${_txnPagerHTML(allTxns.length, _allPage, _allPageSize, 'setTxnAllPage')}`;
   requestAnimationFrame(() => {
     initTxnColResize(panel);
     if (_savedScrollAll) {
@@ -11581,6 +11643,21 @@ function _renderAllAccountsView(panel) {
       if (wrap) wrap.scrollTop = _savedScrollAll;
     }
   });
+}
+
+function setTxnAllPage(p) {
+  UI.txnAllPage = Math.max(0, p);
+  renderTxnRight();
+}
+
+function setTxnPage(p) {
+  UI.txnPage = Math.max(0, p);
+  renderTxnRight();
+}
+
+function setTxnSearchPage(p) {
+  UI.txnSearchPage = Math.max(0, p);
+  renderTxnRight();
 }
 
 // ── Column resize defaults & init ────────────────────────────────────────────
@@ -11764,13 +11841,19 @@ function _renderTxnSearchResults(panel, query) {
   if (cnt) { cnt.textContent = allTxns.length + ' result' + (allTxns.length!==1?'s':''); cnt.style.display=''; }
   if (clr) clr.style.display = '';
 
+  // Paginate — search can match thousands of rows across 14k+ transactions
+  const _srPageSize = UI.txnSearchPageSize || 100;
+  const _srPage = _txnClampPage('txnSearchPage', allTxns.length, 'txnSearchPageSize');
+  const _srStartIdx = _srPage * _srPageSize;
+  const pageTxnsSR = allTxns.slice(_srStartIdx, _srStartIdx + _srPageSize);
+
   const _selSetSR   = new Set(UI.txnSelected||[]);
-  const _visIdsSR   = allTxns.map(t => t.id);
+  const _visIdsSR   = pageTxnsSR.map(t => t.id);
   const _selCountSR = _visIdsSR.filter(id => _selSetSR.has(id)).length;
   const _allChkSR   = _visIdsSR.length > 0 && _selCountSR === _visIdsSR.length;
   const _visIdsJsonSR = JSON.stringify(_visIdsSR);
 
-  const rows = allTxns.map(t => {
+  const rows = pageTxnsSR.map(t => {
     // Inline edit mode for this row
     if (UI.txnEditRow === t.id) return txnSearchInlineRow(t, acctMap[t.accountId]);
 
@@ -11831,7 +11914,8 @@ function _renderTxnSearchResults(panel, query) {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>` : `<div class="txn-empty"><strong>No transactions match "${esc(query)}"</strong></div>`}
-    </div>`;
+    </div>
+    ${_txnPagerHTML(allTxns.length, _srPage, _srPageSize, 'setTxnSearchPage')}`;
   requestAnimationFrame(() => {
     initTxnColResize(panel);
     if (_savedScrollSR) {
@@ -12008,7 +12092,23 @@ function renderTxnRight() {
   // New-row or edit-row at top
   const newRowHTML = (UI.txnNewRow && !UI.txnEditRow) ? txnInlineRow(null, acct) : '';
 
-  const rows = filteredRows.map(t => {
+  // Paginate — rendering every transaction for a large account (e.g. 2,800+ rows)
+  // into one scroll container is what was causing laggy scrolling in this tab.
+  const _pageSize = UI.txnPageSize || 100;
+  let _page = _txnClampPage('txnPage', filteredRows.length, 'txnPageSize');
+  // If the row being edited isn't on the current page, jump to whichever page contains it
+  // so an edit action never appears to "vanish".
+  if (UI.txnEditRow) {
+    const _editIdx = filteredRows.findIndex(t => t.id === UI.txnEditRow);
+    if (_editIdx >= 0) {
+      const _editPage = Math.floor(_editIdx / _pageSize);
+      if (_editPage !== _page) { _page = _editPage; UI.txnPage = _page; }
+    }
+  }
+  const _startIdx = _page * _pageSize;
+  const pageRows = filteredRows.slice(_startIdx, _startIdx + _pageSize);
+
+  const rows = pageRows.map(t => {
     // Editing this row inline
     if (UI.txnEditRow === t.id) return txnInlineRow(t, acct);
 
@@ -12100,23 +12200,23 @@ function renderTxnRight() {
   const filterBar = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
       <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
-      <input type="date" id="txn-df-from" value="${_df||''}" onchange="UI.txnDateFrom=this.value;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date">
+      <input type="date" id="txn-df-from" value="${_df||''}" onchange="UI.txnDateFrom=this.value;UI.txnPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date">
       <span style="color:var(--text3)">to</span>
-      <input type="date" id="txn-df-to" value="${_dt||''}" onchange="UI.txnDateTo=this.value;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date">
+      <input type="date" id="txn-df-to" value="${_dt||''}" onchange="UI.txnDateTo=this.value;UI.txnPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date">
       <span style="color:var(--text3);margin-left:6px">🏷</span>
-      <select id="txn-cf-sel" onchange="UI.txnCatFilter=this.value;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid ${_cf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);max-width:190px" title="Filter by Expense Type">
+      <select id="txn-cf-sel" onchange="UI.txnCatFilter=this.value;UI.txnPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid ${_cf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);max-width:190px" title="Filter by Expense Type">
         <option value="">All Expense Types</option>
         ${_catFilterOpts}
       </select>
-      <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;renderTxnRight()" style="${_reimbPillStyleSingle}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
+      <button onclick="UI.txnReimbFilter=!UI.txnReimbFilter;UI.txnPage=0;renderTxnRight()" style="${_reimbPillStyleSingle}" title="Show only reimbursable expense type transactions and ♻-flagged receipts">♻ Reimbursable</button>
       <span style="color:var(--text3);margin-left:4px">👤</span>
       <input type="text" id="txn-pf-inp" value="${esc(_pf)}" placeholder="Payee…" list="txn-payee-list"
         style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
         title="Filter by payee — type to filter, Enter or click away to apply"
-        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();},350)"
-        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];renderTxnRight();}"
+        oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnPage=0;renderTxnRight();},350)"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnPage=0;renderTxnRight();}"
       ${anyFilterActive ? `
-        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
+        <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];UI.txnPage=0;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
         <span style="color:var(--primary);font-weight:600">${filteredRows.length} of ${committedTxns.length} shown</span>` :
         `<span style="color:var(--text3);opacity:.6">${committedTxns.length} transaction${committedTxns.length!==1?'s':''}</span>`}
       <div style="margin-left:auto">
@@ -12186,7 +12286,8 @@ function renderTxnRight() {
         <span style="font-size:.75rem;color:var(--text3)">Opening balance: ${fmtCurrency(parseFloat(acct.openingBalance)||0)} as of ${fmtDate(acct.openingDate)}</span>
         <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="BA.txnStartNew()">＋ Add First Transaction</button>
       </div>`}
-    </div>`;
+    </div>
+    ${_txnPagerHTML(filteredRows.length, _page, _pageSize, 'setTxnPage')}`;
 
   requestAnimationFrame(() => initTxnColResize(panel));
 
@@ -14187,17 +14288,25 @@ Object.assign(BA, {
     renderTransactions();
   },
   txnSetSearch(val) {
-    UI.txnSearch = val || '';
-    const cnt = document.getElementById('txn-search-count');
-    const clr = document.getElementById('txn-search-clear');
+    // Debounced: with 14k+ transactions, re-filtering and rebuilding the whole
+    // results table on every single keystroke is what made typing feel laggy.
+    clearTimeout(UI._txnSearchTimer);
     if (!val) {
+      const cnt = document.getElementById('txn-search-count');
+      const clr = document.getElementById('txn-search-clear');
       if (cnt) cnt.style.display = 'none';
       if (clr) clr.style.display = 'none';
     }
-    renderTxnRight();
+    UI._txnSearchTimer = setTimeout(() => {
+      UI.txnSearch = val || '';
+      UI.txnSearchPage = 0;
+      renderTxnRight();
+    }, 250);
   },
   txnClearSearch() {
+    clearTimeout(UI._txnSearchTimer);
     UI.txnSearch = '';
+    UI.txnSearchPage = 0;
     const inp = document.getElementById('txn-search-input');
     if (inp) inp.value = '';
     const cnt = document.getElementById('txn-search-count');
@@ -14342,6 +14451,7 @@ Object.assign(BA, {
     if (!UI.txnAccount) { toast('Select an account first','err'); return; }
     UI.txnNewRow  = true;
     UI.txnEditRow = null;
+    UI.txnPage    = 0; // the new inline row renders at the top of page 1
     UI._txnCatUserChanged = false;
     BA._resetSplitState();
     renderTxnRight();
