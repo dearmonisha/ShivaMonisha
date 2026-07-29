@@ -1304,6 +1304,10 @@ function _applyData(raw) {
   if (!D.reservePots)  D.reservePots  = { reserveAccountId: '' };
   if (!D.pathToFreedom) D.pathToFreedom = { extraMonthly: 0 };
   if (D.pathToFreedom.extraMonthly == null) D.pathToFreedom.extraMonthly = 0;
+  // Historical min-due/statement-balance data, keyed by ccCardId → 'YYYY-MM' → {due,paid,outstanding,dueDate,metMin}.
+  // Separate from the Monthly tab / cycles tracking entirely — used only by the Path to Freedom
+  // "Are you keeping pace?" panel to extend its window further back than live tracking goes.
+  if (!D.ptfMinDueHistory) D.ptfMinDueHistory = {};
   // Backfill promo-expiration / paid-in-full fields on CC cards (Path to Freedom)
   (D.ccTracker?.cards || []).forEach(c => {
     if (c.promoExpiration === undefined) c.promoExpiration = '';
@@ -14113,6 +14117,7 @@ function renderDebtPayoff() {
 // ══════════════════════════════════════════════════════════════════════
 let _ptfChart = null;
 const PTF_MAX_MONTHS = 600;
+const PTF_LEDGER_START = '2026-01'; // balance-trend window start — adjust if your "new approach" start date changes
 
 function ptfCardMinPayment(ccCardId, balance) {
   const tmpl = (D.templates || []).find(t => t.ccCardId === ccCardId);
@@ -14126,42 +14131,79 @@ function ptfCardMinPayment(ccCardId, balance) {
   return Math.max(25, Math.round(balance * 0.02 * 100) / 100);
 }
 
-// Recorded statement-cycle history for a card: due/paid/outstanding-after-payment for each
-// cycle that has actually come due (excludes future cycles that just haven't happened yet,
-// which would otherwise look like a "missed minimum"). This is the raw material for judging
-// whether minimums are being met and whether the balance is actually trending down.
+// Statement-cycle history for a card: due/paid/outstanding for each cycle that's actually come
+// due, merged from two sources — the live cycles/templates tracking (recent, ongoing) and
+// D.ptfMinDueHistory (older statements backfilled once, from outside the Monthly tab entirely).
+// The two windows don't overlap (history stops where live tracking starts), so this produces
+// one continuous month-by-month series wherever both exist.
 function ptfPaymentHistory(ccCardId, asOf) {
-  const tmpl = (D.templates || []).find(t => t.ccCardId === ccCardId);
-  if (!tmpl) return [];
-  const months = Object.keys(D.cycles || {}).sort();
-  const rows = [];
-  months.forEach(m => {
-    const pay = (D.cycles[m]?.payments || []).find(p => p.templateId === tmpl.id);
-    if (!pay || pay.amountDue == null) return;
-    if (pay.dueDate && pay.dueDate > asOf) return; // not due yet — nothing to judge
-    rows.push({
+  const rowsByMonth = {};
+
+  const histForCard = D.ptfMinDueHistory?.[ccCardId] || {};
+  Object.entries(histForCard).forEach(([m, rec]) => {
+    if (rec.dueDate && rec.dueDate > asOf) return;
+    rowsByMonth[m] = {
       month: m,
-      due: parseFloat(pay.amountDue) || 0,
-      paid: pay.amountPaid != null ? parseFloat(pay.amountPaid) : null,
-      metMin: pay.amountPaid != null && (parseFloat(pay.amountPaid) >= (parseFloat(pay.amountDue) || 0) - 0.01),
-      outstanding: pay.outstandingBalance != null ? parseFloat(pay.outstandingBalance) : null,
-    });
+      due: parseFloat(rec.due) || 0,
+      paid: rec.paid != null ? parseFloat(rec.paid) : null,
+      metMin: !!rec.metMin,
+      outstanding: rec.outstanding != null ? parseFloat(rec.outstanding) : null,
+    };
   });
-  return rows;
+
+  const tmpl = (D.templates || []).find(t => t.ccCardId === ccCardId);
+  if (tmpl) {
+    Object.keys(D.cycles || {}).sort().forEach(m => {
+      const pay = (D.cycles[m]?.payments || []).find(p => p.templateId === tmpl.id);
+      if (!pay || pay.amountDue == null) return;
+      if (pay.dueDate && pay.dueDate > asOf) return; // not due yet — nothing to judge
+      const due = parseFloat(pay.amountDue) || 0;
+      const paid = pay.amountPaid != null ? parseFloat(pay.amountPaid) : null;
+      rowsByMonth[m] = {
+        month: m,
+        due,
+        paid,
+        // Nothing owed (e.g. an unused store card that cycled with a $0 balance) always counts
+        // as met, regardless of whether a payment record exists for that month.
+        metMin: due <= 0.01 || (paid != null && paid >= due - 0.01),
+        outstanding: pay.outstandingBalance != null ? parseFloat(pay.outstandingBalance) : null,
+      };
+    });
+  }
+
+  return Object.keys(rowsByMonth).sort().map(m => rowsByMonth[m]);
 }
 
-// Verdict on whether the balance is actually going down over the recorded window, not just
-// whether minimums are being met — the two are independent. A card can meet its minimum every
-// single month and still grow if new charges (plus interest) outpace what's paid.
-function ptfPaceVerdict(history) {
-  const withBal = history.filter(h => h.outstanding != null);
-  if (withBal.length < 2) return { label: 'Not enough history yet', color: 'var(--text3)', change: null, pct: null };
-  const first = withBal[0].outstanding, last = withBal[withBal.length - 1].outstanding;
+// Verdict on whether the balance is actually going down over a window, not just whether
+// minimums are being met — the two are independent. A card can meet its minimum every single
+// month and still grow if new charges (plus interest) outpace what's paid. Takes a plain array
+// of balance values (oldest → newest), regardless of source (statement cycles or ledger).
+function ptfPaceVerdict(values) {
+  if (values.length < 2) return { label: 'Not enough history yet', color: 'var(--text3)', change: null, pct: null };
+  const first = values[0], last = values[values.length - 1];
   const change = last - first;
   const pct = first > 0 ? (change / first * 100) : 0;
   if (last <= first * 0.97) return { label: '📉 Paying down', color: '#22c55e', change, pct };
   if (last >= first * 1.03) return { label: '📈 Growing despite payments', color: '#ef4444', change, pct };
   return { label: '➡️ Flat — covering minimum only', color: '#d97706', change, pct };
+}
+
+// Month-end ledger balance for a CC account from `startYm` through `asOf` — independent of the
+// cycles/templates tracking (which only goes back to when statement-level tracking started).
+// Since the raw transaction ledger goes back to account opening, this gives a much longer,
+// smoother read on whether the balance is actually trending down, without needing any new data.
+function ptfLedgerMonthlyBalances(acct, startYm, asOf) {
+  const out = [];
+  let [y, m] = startYm.split('-').map(Number);
+  const [endY, endM] = asOf.slice(0,7).split('-').map(Number);
+  while (y < endY || (y === endY && m <= endM)) {
+    const lastDay = new Date(y, m, 0).getDate();
+    let dateStr = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+    if (dateStr > asOf) dateStr = asOf;
+    out.push({ month: `${y}-${String(m).padStart(2,'0')}`, balance: Math.max(0, finBalanceAsOf(acct, dateStr)) });
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
 }
 
 function ptfSparkline(values, color) {
@@ -14354,12 +14396,31 @@ function renderPathToFreedom() {
   // trending down? Separate questions — a card can meet its minimum every month and
   // still grow if new charges + interest outpace what's paid toward it.
   const paceRows = activeAttack.map(c => {
+    // Combined statement history (backfilled historical + live cycles/templates tracking) —
+    // gives both min-due compliance AND real statement-balance figures, which are more
+    // authoritative than a ledger reconstruction wherever they exist.
     const hist = ptfPaymentHistory(c.ccCardId, asOf);
-    const verdict = ptfPaceVerdict(hist);
-    const values = hist.filter(h => h.outstanding != null).map(h => h.outstanding);
     const missedCount = hist.filter(h => !h.metMin).length;
-    return { c, hist, verdict, values, missedCount };
-  }).filter(r => r.hist.length);
+    const histValues = hist.filter(h => h.outstanding != null).map(h => h.outstanding);
+    // Balance trend: prefer the real statement-history balances above; only fall back to a
+    // ledger reconstruction (account opening onward) if there isn't enough statement history
+    // for this card to judge a trend from.
+    let values = histValues, windowLabel = hist.length ? hist[0].month : null;
+    if (values.length < 2) {
+      const acct = (D.txnAccounts || []).find(x => x.id === c.id);
+      const ledger = acct ? ptfLedgerMonthlyBalances(acct, PTF_LEDGER_START, asOf) : [];
+      values = ledger.map(x => x.balance);
+      windowLabel = ledger.length ? ledger[0].month : PTF_LEDGER_START;
+    }
+    const verdict = ptfPaceVerdict(values);
+    // The overall Jan-to-now change can hide a reversal — e.g. a lump payment early in the
+    // window makes the whole window look like "paying down" even if the last few months have
+    // been climbing back up. Surface the recent trend (last 3 months, or fewer if not enough
+    // history) alongside the overall one so an early one-off doesn't mask current direction.
+    const recentSpan = Math.min(3, values.length - 1);
+    const recentChange = recentSpan > 0 ? values[values.length - 1] - values[values.length - 1 - recentSpan] : null;
+    return { c, hist, verdict, values, missedCount, windowLabel, recentSpan, recentChange };
+  }).filter(r => r.values.length || r.hist.length);
   const growingCount = paceRows.filter(r => r.verdict.color === '#ef4444').length;
   const anyMissedMin = paceRows.some(r => r.missedCount > 0);
 
@@ -14462,13 +14523,14 @@ function renderPathToFreedom() {
         <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
           <div style="font-weight:700;font-size:.85rem">📊 Are you keeping pace?</div>
           <div style="font-size:.73rem;color:var(--text3);margin-top:2px">
-            Minimum-due compliance and balance trend over the ${paceRows[0]?.hist.length || 0} recorded statement cycles.
+            Balance trend and minimum-due compliance are both from real statement history now — backfilled data plus
+            live tracking, per card (window varies by card; shown per row below).
             Meeting the minimum every month and the balance actually going down are two different things —
             new charges plus interest can outpace what's paid even when nothing is technically missed.
           </div>
         </div>
         <div style="padding:10px 14px;font-size:.8rem;${anyMissedMin ? 'color:#ef4444' : 'color:var(--ok)'}">
-          ${anyMissedMin ? '⚠ At least one card missed its minimum due in a recorded cycle — see per-card detail below.' : '✓ Minimum due has been met every recorded cycle across all cards.'}
+          ${anyMissedMin ? '⚠ At least one card missed its minimum due at least once historically — see per-card detail below.' : '✓ Minimum due has been met every recorded month across all cards.'}
           ${growingCount ? ` &nbsp;·&nbsp; <b style="color:#ef4444">${growingCount} card${growingCount!==1?'s are':' is'} growing</b> despite that — covering the minimum isn't the same as paying it down.` : ''}
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:.82rem">
@@ -14481,12 +14543,15 @@ function renderPathToFreedom() {
           ${paceRows.map(r => `
           <tr style="border-top:1px solid var(--border)">
             <td style="padding:8px 10px;font-weight:700">${esc(r.c.name)}</td>
-            <td style="padding:8px 10px">${ptfSparkline(r.values, r.verdict.color)}</td>
+            <td style="padding:8px 10px">${ptfSparkline(r.values, r.verdict.color)}<div style="font-size:.62rem;color:var(--text3);margin-top:1px">since ${r.windowLabel ? bFmtMonth(r.windowLabel) : '—'}</div></td>
             <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.verdict.change>0?'#ef4444':r.verdict.change<0?'#22c55e':'var(--text)'}">
               ${r.verdict.change==null ? '—' : (r.verdict.change>0?'+':'') + fmtCurrency(r.verdict.change) + ' (' + (r.verdict.pct>0?'+':'') + r.verdict.pct.toFixed(0) + '%)'}
             </td>
-            <td style="padding:8px 10px;text-align:center;${r.missedCount>0?'color:#ef4444;font-weight:700':'color:var(--text3)'}">${r.hist.length - r.missedCount}/${r.hist.length}</td>
-            <td style="padding:8px 10px;font-weight:700;color:${r.verdict.color}">${r.verdict.label}</td>
+            <td style="padding:8px 10px;text-align:center;${r.hist.length ? (r.missedCount>0?'color:#ef4444;font-weight:700':'color:var(--text3)') : 'color:var(--text3)'}">${r.hist.length ? (r.hist.length - r.missedCount)+'/'+r.hist.length : 'no data'}</td>
+            <td style="padding:8px 10px;font-weight:700;color:${r.verdict.color}">
+              ${r.verdict.label}
+              ${r.recentChange != null ? `<div style="font-size:.66rem;font-weight:400;color:${r.recentChange>0?'#ef4444':r.recentChange<0?'var(--ok)':'var(--text3)'};margin-top:1px">last ${r.recentSpan}mo: ${r.recentChange>0?'+':''}${fmtCurrency(r.recentChange)} ${r.recentChange>0?'↑ climbing again':r.recentChange<0?'↓':'flat'}</div>` : ''}
+            </td>
           </tr>`).join('') || `<tr><td colspan="5" style="padding:14px;color:var(--text3)">No recorded statement-cycle history yet</td></tr>`}
         </table>
       </div>
