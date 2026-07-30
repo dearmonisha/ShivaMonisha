@@ -13228,6 +13228,11 @@ function renderIncomeExpenditure(c) {
     !(acctById[t.accountId]?.excludeFromNetWorth)
   );
 
+  // Categories flagged "reimbursable" (e.g. Family Shopping, Tanvi Expenses) are pass-through
+  // spend you expect to get paid back for — same treatment as the Budget/Category Trends views,
+  // which already exclude these from totals so they don't distort real household expenditure.
+  const reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
+
   let income = 0;
   const expenseByCat = {};
   txns.forEach(t => {
@@ -13242,10 +13247,11 @@ function renderIncomeExpenditure(c) {
       // only the split lines represent real spend, so count those and skip the parent
       // (otherwise the full amount gets double-counted into Uncategorized).
       t.splits.forEach(s => {
+        if (reimbCatIds.has(s.categoryId)) return;
         const lbl = txnCatLabel(s.categoryId) || 'Uncategorized';
         expenseByCat[lbl] = (expenseByCat[lbl]||0) + (parseFloat(s.amount)||0);
       });
-    } else if (debit > 0 && t.categoryId !== '__income__') {
+    } else if (debit > 0 && t.categoryId !== '__income__' && !reimbCatIds.has(t.categoryId)) {
       const lbl = txnCatLabel(t.categoryId) || 'Uncategorized';
       expenseByCat[lbl] = (expenseByCat[lbl]||0) + debit;
     }
