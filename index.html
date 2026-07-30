@@ -1100,6 +1100,8 @@ let UI = {
   finIEMonth:     ymNow(),
   finIEQuarter:   null,     // 'YYYY-Q1'..'YYYY-Q4', defaults to current quarter
   finIEYear:      new Date().getFullYear(),
+  // Path to Freedom — "Are you keeping pace?" year filter ('all' or a 'YYYY' string)
+  ptfPaceYear:    'all',
 };
 
 let editCtx = null; // active inline edit context
@@ -14564,6 +14566,11 @@ function ptfSetExtra(val) {
   renderPathToFreedom();
 }
 
+function ptfSetPaceYear(y) {
+  UI.ptfPaceYear = y || 'all';
+  renderPathToFreedom();
+}
+
 function ptfMonthsLabel(n) {
   if (n == null) return '—';
   if (n <= 0) return 'Paid off';
@@ -14607,6 +14614,13 @@ function renderPathToFreedom() {
   // right now, so it doesn't get flagged even if the expiration date is close.
   const urgentPromos = activeAttack.filter(c => c.promoExpiration && c.promoOnTrack === false);
 
+  // Years available for the pace-panel pill selector — union of backfilled min-due history
+  // months and live cycle-tracking months, across every card.
+  const paceYearsAvailable = [...new Set(
+    Object.values(D.ptfMinDueHistory || {}).flatMap(months => Object.keys(months).map(m => m.slice(0,4)))
+      .concat(Object.keys(D.cycles || {}).map(m => m.slice(0,4)))
+  )].filter(Boolean).sort();
+
   // ── Reality check: are minimums actually being met, and is the balance actually
   // trending down? Separate questions — a card can meet its minimum every month and
   // still grow if new charges + interest outpace what's paid toward it.
@@ -14615,17 +14629,22 @@ function renderPathToFreedom() {
     // gives both min-due compliance AND real statement-balance figures, which are more
     // authoritative than a ledger reconstruction wherever they exist.
     const hist = ptfPaymentHistory(c.ccCardId, asOf);
-    const missedCount = hist.filter(h => !h.metMin).length;
-    const histValues = hist.filter(h => h.outstanding != null).map(h => h.outstanding);
+    // Scope to the selected year pill, if any — "all" behaves exactly as before.
+    const paceYear = UI.ptfPaceYear || 'all';
+    const scopedHist = paceYear === 'all' ? hist : hist.filter(h => h.month.startsWith(paceYear));
+    const missedCount = scopedHist.filter(h => !h.metMin).length;
+    const histValues = scopedHist.filter(h => h.outstanding != null).map(h => h.outstanding);
     // Balance trend: prefer the real statement-history balances above; only fall back to a
-    // ledger reconstruction (account opening onward) if there isn't enough statement history
-    // for this card to judge a trend from.
-    let values = histValues, windowLabel = hist.length ? hist[0].month : null;
+    // ledger reconstruction (account opening onward, or just the selected year) if there isn't
+    // enough statement history for this card to judge a trend from.
+    let values = histValues, windowLabel = scopedHist.length ? scopedHist[0].month : null;
     if (values.length < 2) {
       const acct = (D.txnAccounts || []).find(x => x.id === c.id);
-      const ledger = acct ? ptfLedgerMonthlyBalances(acct, PTF_LEDGER_START, asOf) : [];
+      const ledgerStart = paceYear === 'all' ? PTF_LEDGER_START : `${paceYear}-01`;
+      const ledgerEnd = paceYear === 'all' ? asOf : (paceYear < asOf.slice(0,4) ? `${paceYear}-12-31` : asOf);
+      const ledger = acct ? ptfLedgerMonthlyBalances(acct, ledgerStart, ledgerEnd) : [];
       values = ledger.map(x => x.balance);
-      windowLabel = ledger.length ? ledger[0].month : PTF_LEDGER_START;
+      windowLabel = ledger.length ? ledger[0].month : ledgerStart;
     }
     const verdict = ptfPaceVerdict(values);
     // The overall Jan-to-now change can hide a reversal — e.g. a lump payment early in the
@@ -14634,10 +14653,14 @@ function renderPathToFreedom() {
     // history) alongside the overall one so an early one-off doesn't mask current direction.
     const recentSpan = Math.min(3, values.length - 1);
     const recentChange = recentSpan > 0 ? values[values.length - 1] - values[values.length - 1 - recentSpan] : null;
-    return { c, hist, verdict, values, missedCount, windowLabel, recentSpan, recentChange };
+    return { c, hist: scopedHist, verdict, values, missedCount, windowLabel, recentSpan, recentChange };
   }).filter(r => r.values.length || r.hist.length);
   const growingCount = paceRows.filter(r => r.verdict.color === '#ef4444').length;
   const anyMissedMin = paceRows.some(r => r.missedCount > 0);
+  // Total change over the selected window, summed across all cards with a known change —
+  // the headline number for "as a whole, is total revolving debt actually going down?"
+  const totalChangeOverWindow = paceRows.reduce((s, r) => s + (r.verdict.change || 0), 0);
+  const totalChangeKnown = paceRows.some(r => r.verdict.change != null);
 
   const cardRow = (c, i) => {
     const isUrgent = c.promoExpiration && c.promoOnTrack === false;
@@ -14740,18 +14763,26 @@ function renderPathToFreedom() {
       </div>
 
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:20px">
-        <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
-          <div style="font-weight:700;font-size:.85rem">📊 Are you keeping pace?</div>
-          <div style="font-size:.73rem;color:var(--text3);margin-top:2px">
-            Balance trend and minimum-due compliance are both from real statement history now — backfilled data plus
-            live tracking, per card (window varies by card; shown per row below).
-            Meeting the minimum every month and the balance actually going down are two different things —
-            new charges plus interest can outpace what's paid even when nothing is technically missed.
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:700;font-size:.85rem">📊 Are you keeping pace?</div>
+            <div style="font-size:.73rem;color:var(--text3);margin-top:2px">
+              Balance trend and minimum-due compliance are both from real statement history now — backfilled data plus
+              live tracking, per card (window varies by card; shown per row below)${(UI.ptfPaceYear||'all')!=='all' ? `, scoped to <b>${UI.ptfPaceYear}</b>` : ''}.
+              Meeting the minimum every month and the balance actually going down are two different things —
+              new charges plus interest can outpace what's paid even when nothing is technically missed.
+            </div>
           </div>
+          ${paceYearsAvailable.length ? `
+          <div class="stabs" style="flex-shrink:0">
+            <button class="stab ${(UI.ptfPaceYear||'all')==='all'?'active':''}" onclick="ptfSetPaceYear('all')">All</button>
+            ${paceYearsAvailable.map(y => `<button class="stab ${UI.ptfPaceYear===y?'active':''}" onclick="ptfSetPaceYear('${y}')">${y}</button>`).join('')}
+          </div>` : ''}
         </div>
         <div style="padding:10px 14px;font-size:.8rem;${anyMissedMin ? 'color:#ef4444' : 'color:var(--ok)'}">
           ${anyMissedMin ? '⚠ At least one card missed its minimum due at least once historically — see per-card detail below.' : '✓ Minimum due has been met every recorded month across all cards.'}
           ${growingCount ? ` &nbsp;·&nbsp; <b style="color:#ef4444">${growingCount} card${growingCount!==1?'s are':' is'} growing</b> despite that — covering the minimum isn't the same as paying it down.` : ''}
+          ${totalChangeKnown ? ` &nbsp;·&nbsp; <b style="color:${totalChangeOverWindow>0?'#ef4444':totalChangeOverWindow<0?'var(--ok)':'var(--text)'}">Total change over window: ${totalChangeOverWindow>0?'+':''}${fmtCurrency(totalChangeOverWindow)}</b>` : ''}
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:.82rem">
           <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
@@ -14773,6 +14804,14 @@ function renderPathToFreedom() {
               ${r.recentChange != null ? `<div style="font-size:.66rem;font-weight:400;color:${r.recentChange>0?'#ef4444':r.recentChange<0?'var(--ok)':'var(--text3)'};margin-top:1px">last ${r.recentSpan}mo: ${r.recentChange>0?'+':''}${fmtCurrency(r.recentChange)} ${r.recentChange>0?'↑ climbing again':r.recentChange<0?'↓':'flat'}</div>` : ''}
             </td>
           </tr>`).join('') || `<tr><td colspan="5" style="padding:14px;color:var(--text3)">No recorded statement-cycle history yet</td></tr>`}
+          ${paceRows.length ? `
+          <tr style="border-top:2px solid var(--border);background:var(--surface2)">
+            <td style="padding:8px 10px;font-weight:800" colspan="2">Total change over window</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:800;color:${totalChangeOverWindow>0?'#ef4444':totalChangeOverWindow<0?'#22c55e':'var(--text)'}">
+              ${totalChangeKnown ? (totalChangeOverWindow>0?'+':'') + fmtCurrency(totalChangeOverWindow) : '—'}
+            </td>
+            <td colspan="2"></td>
+          </tr>` : ''}
         </table>
       </div>
 
@@ -14793,6 +14832,14 @@ function renderPathToFreedom() {
         <table style="width:100%;border-collapse:collapse;font-size:.82rem">
           ${tableHead}
           ${activeAttack.map(cardRow).join('') || '<tr><td colspan="8" style="padding:14px;color:var(--text3)">No revolving credit-card debt 🎉</td></tr>'}
+          ${activeAttack.length ? `
+          <tr style="border-top:2px solid var(--border);background:var(--surface2)">
+            <td colspan="2" style="padding:9px 10px;font-weight:800">Total</td>
+            <td style="padding:9px 10px;text-align:right;font-weight:800;${totalDebt>0?'color:var(--danger)':''}">${fmtCurrency(totalDebt)}</td>
+            <td></td>
+            <td style="padding:9px 10px;text-align:right;font-weight:800">${fmtCurrency(totalMin)}</td>
+            <td colspan="3"></td>
+          </tr>` : ''}
         </table>
       </div>
 
