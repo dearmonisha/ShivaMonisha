@@ -1100,8 +1100,9 @@ let UI = {
   finIEMonth:     ymNow(),
   finIEQuarter:   null,     // 'YYYY-Q1'..'YYYY-Q4', defaults to current quarter
   finIEYear:      new Date().getFullYear(),
-  // Path to Freedom — "Are you keeping pace?" year filter ('all' or a 'YYYY' string)
-  ptfPaceYear:    'all',
+  // Path to Freedom — "Are you keeping pace?" year filter. Empty array = all years (no filter);
+  // otherwise a list of 'YYYY' strings, multi-selectable via the pill selector.
+  ptfPaceYears:   [],
 };
 
 let editCtx = null; // active inline edit context
@@ -14567,7 +14568,12 @@ function ptfSetExtra(val) {
 }
 
 function ptfSetPaceYear(y) {
-  UI.ptfPaceYear = y || 'all';
+  // 'all' (or no arg) clears the filter entirely. Otherwise toggle the clicked year in/out of
+  // the multi-select list so several years can be viewed together.
+  if (!y || y === 'all') { UI.ptfPaceYears = []; renderPathToFreedom(); return; }
+  const set = new Set(UI.ptfPaceYears || []);
+  if (set.has(y)) set.delete(y); else set.add(y);
+  UI.ptfPaceYears = [...set].sort();
   renderPathToFreedom();
 }
 
@@ -14629,20 +14635,27 @@ function renderPathToFreedom() {
     // gives both min-due compliance AND real statement-balance figures, which are more
     // authoritative than a ledger reconstruction wherever they exist.
     const hist = ptfPaymentHistory(c.ccCardId, asOf);
-    // Scope to the selected year pill, if any — "all" behaves exactly as before.
-    const paceYear = UI.ptfPaceYear || 'all';
-    const scopedHist = paceYear === 'all' ? hist : hist.filter(h => h.month.startsWith(paceYear));
+    // Scope to the selected year pills, if any — an empty selection behaves exactly as before
+    // (all history). Multiple years selected together are treated as one combined window —
+    // e.g. picking 2024 + 2026 shows only those months, skipping 2025 in between.
+    const paceYears = (UI.ptfPaceYears && UI.ptfPaceYears.length) ? UI.ptfPaceYears : null;
+    const scopedHist = paceYears ? hist.filter(h => paceYears.includes(h.month.slice(0,4))) : hist;
     const missedCount = scopedHist.filter(h => !h.metMin).length;
     const histValues = scopedHist.filter(h => h.outstanding != null).map(h => h.outstanding);
     // Balance trend: prefer the real statement-history balances above; only fall back to a
-    // ledger reconstruction (account opening onward, or just the selected year) if there isn't
-    // enough statement history for this card to judge a trend from.
+    // ledger reconstruction (account opening onward, or spanning just the selected years) if
+    // there isn't enough statement history for this card to judge a trend from.
     let values = histValues, windowLabel = scopedHist.length ? scopedHist[0].month : null;
     if (values.length < 2) {
       const acct = (D.txnAccounts || []).find(x => x.id === c.id);
-      const ledgerStart = paceYear === 'all' ? PTF_LEDGER_START : `${paceYear}-01`;
-      const ledgerEnd = paceYear === 'all' ? asOf : (paceYear < asOf.slice(0,4) ? `${paceYear}-12-31` : asOf);
-      const ledger = acct ? ptfLedgerMonthlyBalances(acct, ledgerStart, ledgerEnd) : [];
+      const yearsSorted = paceYears ? [...paceYears].sort() : null;
+      const ledgerStart = yearsSorted ? `${yearsSorted[0]}-01` : PTF_LEDGER_START;
+      const ledgerEnd = yearsSorted ? (yearsSorted[yearsSorted.length-1] < asOf.slice(0,4) ? `${yearsSorted[yearsSorted.length-1]}-12-31` : asOf) : asOf;
+      let ledger = acct ? ptfLedgerMonthlyBalances(acct, ledgerStart, ledgerEnd) : [];
+      // Ledger reconstruction is contiguous month-by-month across the full span — if the
+      // selected years skip a gap (e.g. 2024 + 2026, no 2025), drop the in-between months so
+      // the trend only reflects the years actually picked.
+      if (yearsSorted) ledger = ledger.filter(x => yearsSorted.includes(x.month.slice(0,4)));
       values = ledger.map(x => x.balance);
       windowLabel = ledger.length ? ledger[0].month : ledgerStart;
     }
@@ -14768,15 +14781,15 @@ function renderPathToFreedom() {
             <div style="font-weight:700;font-size:.85rem">📊 Are you keeping pace?</div>
             <div style="font-size:.73rem;color:var(--text3);margin-top:2px">
               Balance trend and minimum-due compliance are both from real statement history now — backfilled data plus
-              live tracking, per card (window varies by card; shown per row below)${(UI.ptfPaceYear||'all')!=='all' ? `, scoped to <b>${UI.ptfPaceYear}</b>` : ''}.
+              live tracking, per card (window varies by card; shown per row below)${(UI.ptfPaceYears && UI.ptfPaceYears.length) ? `, scoped to <b>${UI.ptfPaceYears.join(' + ')}</b>` : ''}.
               Meeting the minimum every month and the balance actually going down are two different things —
               new charges plus interest can outpace what's paid even when nothing is technically missed.
             </div>
           </div>
           ${paceYearsAvailable.length ? `
-          <div class="stabs" style="flex-shrink:0">
-            <button class="stab ${(UI.ptfPaceYear||'all')==='all'?'active':''}" onclick="ptfSetPaceYear('all')">All</button>
-            ${paceYearsAvailable.map(y => `<button class="stab ${UI.ptfPaceYear===y?'active':''}" onclick="ptfSetPaceYear('${y}')">${y}</button>`).join('')}
+          <div class="stabs" style="flex-shrink:0" title="Click to toggle a year on/off — pick more than one to view them together">
+            <button class="stab ${!(UI.ptfPaceYears&&UI.ptfPaceYears.length)?'active':''}" onclick="ptfSetPaceYear('all')">All</button>
+            ${paceYearsAvailable.map(y => `<button class="stab ${(UI.ptfPaceYears||[]).includes(y)?'active':''}" onclick="ptfSetPaceYear('${y}')">${y}</button>`).join('')}
           </div>` : ''}
         </div>
         <div style="padding:10px 14px;font-size:.8rem;${anyMissedMin ? 'color:#ef4444' : 'color:var(--ok)'}">
