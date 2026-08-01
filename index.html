@@ -11618,9 +11618,10 @@ function _renderAllAccountsView(panel) {
   const filterBar = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
       <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
-      <input type="date" value="${_df||''}" onchange="UI.txnDateFrom=this.value;UI.txnAllPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date">
+      <input type="date" id="txn-all-df-from" value="${_df||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-all-df-from','txn-all-df-to','txnAllPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date — press Enter or click Search to apply">
       <span style="color:var(--text3)">to</span>
-      <input type="date" value="${_dt||''}" onchange="UI.txnDateTo=this.value;UI.txnAllPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date">
+      <input type="date" id="txn-all-df-to" value="${_dt||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-all-df-from','txn-all-df-to','txnAllPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date — press Enter or click Search to apply">
+      <button onclick="BA.txnApplyDateFilter('txn-all-df-from','txn-all-df-to','txnAllPage')" style="font-size:.76rem;padding:3px 10px;background:color-mix(in srgb,var(--primary) 10%,transparent);border:1px solid color-mix(in srgb,var(--primary) 30%,transparent);color:var(--primary);border-radius:5px;cursor:pointer;font-weight:600" title="Apply the date range above">🔍 Search</button>
       <span style="color:var(--text3);margin-left:6px">🏷</span>
       <select onchange="UI.txnCatFilter=this.value;UI.txnAllPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid ${_cf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);max-width:190px" title="Filter by Expense Type">
         <option value="">All Expense Types</option>
@@ -11632,7 +11633,7 @@ function _renderAllAccountsView(panel) {
         style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
         title="Filter by payee — type to filter, Enter or click away to apply"
         oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnAllPage=0;renderTxnRight();},350)"
-        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnAllPage=0;renderTxnRight();}"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnAllPage=0;renderTxnRight();}">
       ${anyFilterActive ? `
         <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];UI.txnAllPage=0;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)">✕ Clear All</button>
         <span style="color:var(--primary);font-weight:600">${allTxns.length} of ${totalCommitted} shown</span>
@@ -12253,9 +12254,10 @@ function renderTxnRight() {
   const filterBar = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
       <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
-      <input type="date" id="txn-df-from" value="${_df||''}" onchange="UI.txnDateFrom=this.value;UI.txnPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date">
+      <input type="date" id="txn-df-from" value="${_df||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-df-from','txn-df-to','txnPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date — press Enter or click Search to apply">
       <span style="color:var(--text3)">to</span>
-      <input type="date" id="txn-df-to" value="${_dt||''}" onchange="UI.txnDateTo=this.value;UI.txnPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date">
+      <input type="date" id="txn-df-to" value="${_dt||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-df-from','txn-df-to','txnPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date — press Enter or click Search to apply">
+      <button onclick="BA.txnApplyDateFilter('txn-df-from','txn-df-to','txnPage')" style="font-size:.76rem;padding:3px 10px;background:color-mix(in srgb,var(--primary) 10%,transparent);border:1px solid color-mix(in srgb,var(--primary) 30%,transparent);color:var(--primary);border-radius:5px;cursor:pointer;font-weight:600" title="Apply the date range above">🔍 Search</button>
       <span style="color:var(--text3);margin-left:6px">🏷</span>
       <select id="txn-cf-sel" onchange="UI.txnCatFilter=this.value;UI.txnPage=0;renderTxnRight()" style="font-size:.76rem;padding:2px 6px;border:1px solid ${_cf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);max-width:190px" title="Filter by Expense Type">
         <option value="">All Expense Types</option>
@@ -12267,7 +12269,7 @@ function renderTxnRight() {
         style="font-size:.76rem;padding:2px 6px;border:1px solid ${_pf?'var(--primary)':'var(--border)'};border-radius:4px;background:var(--surface);color:var(--text);width:130px"
         title="Filter by payee — type to filter, Enter or click away to apply"
         oninput="clearTimeout(UI._pfTimer);UI._pfTimer=setTimeout(()=>{UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnPage=0;renderTxnRight();},350)"
-        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnPage=0;renderTxnRight();}"
+        onkeydown="if(event.key==='Enter'){clearTimeout(UI._pfTimer);UI.txnPayeeFilter=this.value.trim();UI.txnSelected=[];UI.txnPage=0;renderTxnRight();}">
       ${anyFilterActive ? `
         <button onclick="UI.txnDateFrom='';UI.txnDateTo='';UI.txnCatFilter='';UI.txnReimbFilter=false;UI.txnPayeeFilter='';UI.txnSelected=[];UI.txnPage=0;renderTxnRight()" style="font-size:.73rem;padding:1px 8px;background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text3)" title="Clear all filters">✕ Clear</button>
         <span style="color:var(--primary);font-weight:600">${filteredRows.length} of ${committedTxns.length} shown</span>` :
@@ -15158,6 +15160,16 @@ Object.assign(BA, {
   },
   txnClearPayeeFilter() {
     UI.txnPayeeFilter = '';
+    renderTxnRight();
+  },
+  // Date filter is applied explicitly via the Search button (or Enter) rather than on every
+  // onchange — native date inputs fire 'change' segment-by-segment while typing the year, which
+  // was causing the grid to filter on a half-typed, wrong date before you finished typing it.
+  txnApplyDateFilter(fromId, toId, pageKey) {
+    const fromEl = document.getElementById(fromId), toEl = document.getElementById(toId);
+    UI.txnDateFrom = fromEl ? fromEl.value : '';
+    UI.txnDateTo   = toEl   ? toEl.value   : '';
+    UI[pageKey] = 0;
     renderTxnRight();
   },
   // Edit a transaction inline inside search results (stays in search mode)
