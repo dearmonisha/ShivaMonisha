@@ -12162,6 +12162,13 @@ function renderTxnRight() {
   const _startIdx = _page * _pageSize;
   const pageRows = filteredRows.slice(_startIdx, _startIdx + _pageSize);
 
+  // "Select all" should only ever select what's actually visible on screen right now (this
+  // page of the active filter) — never every transaction in the account regardless of filter.
+  const _selSetAcct = new Set(UI.txnSelected||[]);
+  const _visibleIdsAcct = pageRows.map(t => t.id);
+  const _allCheckedAcct = _visibleIdsAcct.length > 0 && _visibleIdsAcct.every(id => _selSetAcct.has(id));
+  const _visIdsJsonAcct = JSON.stringify(_visibleIdsAcct);
+
   const rows = pageRows.map(t => {
     // Editing this row inline
     if (UI.txnEditRow === t.id) return txnInlineRow(t, acct);
@@ -12319,7 +12326,7 @@ function renderTxnRight() {
       <table class="txn-tbl">
         <thead>
           <tr>
-            <th style="width:28px;text-align:center"><input type="checkbox" id="txn-chk-all" onchange="BA.txnSelectAll(this.checked)" title="Select all"></th>
+            <th style="width:28px;text-align:center"><input type="checkbox" id="txn-chk-all" ${_allCheckedAcct?'checked':''} onchange="BA.txnSelectAllVisible(this.checked,${_visIdsJsonAcct.replace(/"/g,'&quot;')})" title="Select all visible"></th>
             <th data-col="txn-date">Date</th>
             <th data-col="txn-payee">Payee</th>
             <th data-col="txn-exptype">Expense Type</th>
@@ -16225,16 +16232,9 @@ Object.assign(BA, {
     else          { UI.txnSelected = UI.txnSelected.filter(x => x !== txnId); }
     renderTxnRight();
   },
-  txnSelectAll(checked) {
-    if (!UI.txnSelected) UI.txnSelected = [];
-    const acct = UI.txnAccount ? (D.txnAccounts||[]).find(a => a.id === UI.txnAccount) : null;
-    const txns = acct
-      ? (D.transactions||[]).filter(t => t.accountId === acct.id && (!t.status || t.status === 'approved'))
-      : [];
-    UI.txnSelected = checked ? txns.map(t => t.id) : [];
-    renderTxnRight();
-  },
-  // Select/deselect a specific list of visible IDs (for All Accounts / Search views)
+  // Select/deselect a specific list of visible IDs — used by every "select all" checkbox
+  // (single-account, All Accounts, and Search views) so it only ever affects what's currently
+  // on screen (respecting the active filter + pagination), never the whole unfiltered dataset.
   txnSelectAllVisible(checked, idsJson) {
     if (!UI.txnSelected) UI.txnSelected = [];
     const ids = Array.isArray(idsJson) ? idsJson : (typeof idsJson === 'string' ? JSON.parse(idsJson) : []);
