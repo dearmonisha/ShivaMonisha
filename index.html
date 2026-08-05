@@ -801,6 +801,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
         <button class="nav-dd-item" id="tab-reserve-pots" onclick="switchView('reserve-pots');closeNavDropdowns()">♻️ Reserve Pots</button>
         <button class="nav-dd-item" id="tab-debt-payoff"  onclick="switchView('debt-payoff');closeNavDropdowns()">🏁 Debt Payoff</button>
         <button class="nav-dd-item" id="tab-path-to-freedom" onclick="switchView('path-to-freedom');closeNavDropdowns()">🚀 Path to Freedom</button>
+        <button class="nav-dd-item" id="tab-mindfulness" onclick="switchView('mindfulness');closeNavDropdowns()">🧘 Mindfulness Review</button>
       </div>
     </div>
 
@@ -952,6 +953,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-reserve-pots" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-debt-payoff"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-path-to-freedom" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
+  <div id="view-mindfulness" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-transactions" style="display:none">
     <div class="tab-sticky-top" id="txn-sticky-hdr">
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px;padding-bottom:6px">
@@ -1103,6 +1105,8 @@ let UI = {
   // Path to Freedom — "Are you keeping pace?" year filter. Empty array = all years (no filter);
   // otherwise a list of 'YYYY' strings, multi-selectable via the pill selector.
   ptfPaceYears:   [],
+  // Mindfulness Review — month being reviewed, defaults to the current month.
+  mindMonth:      ymNow(),
 };
 
 let editCtx = null; // active inline edit context
@@ -1253,6 +1257,12 @@ const NAV_ICON_MAP = {
     dot:_dot('Path to Freedom'),
     bracket:_brk('Path to Freedom'),
   },
+  'tab-mindfulness': {
+    emoji:'🧘 Mindfulness Review',
+    clean:'Mindfulness Review',
+    dot:_dot('Mindfulness Review'),
+    bracket:_brk('Mindfulness Review'),
+  },
 };
 
 function applyTheme(themeId) {
@@ -1322,6 +1332,14 @@ function _applyData(raw) {
     if (c.payInFull === undefined) c.payInFull = false;
     if (c.plannedPayment === undefined) c.plannedPayment = null;
   });
+  // User-defined "Values" for the Mindfulness Review — e.g. Family, Health, Growth — kept
+  // deliberately empty by default so the person defines their own, rather than inheriting a
+  // canned list that may not reflect what actually matters to them.
+  if (!D.values) D.values = [];
+  // Category → Value mapping is optional and lives on the category itself so every transaction
+  // in that category inherits a Value by default; individual transactions can still override
+  // this via their own valueOverride field (set lazily, not backfilled here).
+  (D.budget.categories || []).forEach(c => { if (c.valueId === undefined) c.valueId = null; });
   if (!D.settings)   D.settings   = { theme: 'terracotta', iconStyle: 'emoji' };
   if (!D.settings.theme)     D.settings.theme     = 'terracotta';
   if (!D.settings.iconStyle) D.settings.iconStyle = 'emoji';
@@ -1877,13 +1895,13 @@ function switchView(v) {
     UI.txnHighlightRow = null;
   }
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','financials'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','financials'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual','actuals'];
-  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom'];
+  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -1908,6 +1926,7 @@ function switchView(v) {
   if (v==='reserve-pots')  renderReservePots();
   if (v==='debt-payoff')   renderDebtPayoff();
   if (v==='path-to-freedom') renderPathToFreedom();
+  if (v==='mindfulness')   renderMindfulness();
   if (v==='financials')    renderFinancials();
 }
 
@@ -14909,6 +14928,300 @@ function renderPathToFreedom() {
       },
     },
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// MINDFULNESS REVIEW — map a month's spending to your own Values so you can
+// see what's actually aligning with what matters to you, and what isn't.
+// Values are entirely user-defined (D.values). A category can be mapped to a
+// Value by default (D.budget.categories[].valueId); any individual transaction
+// can override that (t.valueOverride) when a specific purchase doesn't fit the
+// usual pattern for its category.
+// ══════════════════════════════════════════════════════════════════════
+const MIND_VALUE_COLORS = ['#6366f1','#22c55e','#f59e0b','#ec4899','#06b6d4','#8b5cf6','#ef4444','#14b8a6','#eab308','#f97316'];
+const MIND_UNMAPPED = '__unmapped__';
+
+function mindEffectiveValueId(categoryId, txn, catById) {
+  if (txn && txn.valueOverride) return txn.valueOverride;
+  const cat = catById[categoryId];
+  return cat ? (cat.valueId || null) : null;
+}
+
+// ── Values CRUD ──────────────────────────────────────────────
+function mindAddValue() {
+  const inp = id('mind-new-value-inp');
+  const name = inp ? inp.value.trim() : '';
+  if (!name) { if (inp) { inp.style.border = '1px solid var(--danger)'; inp.focus(); } return; }
+  if (!D.values) D.values = [];
+  if (D.values.some(v => v.name.toLowerCase() === name.toLowerCase())) { toast('That Value already exists', 'err'); return; }
+  D.values.push({ id: 'val_' + Math.random().toString(36).slice(2,10), name, color: MIND_VALUE_COLORS[D.values.length % MIND_VALUE_COLORS.length] });
+  dirty();
+  if (inp) inp.value = '';
+  renderMindfulness();
+  toast(`Added Value "${name}"`, 'ok');
+}
+function mindRenameValue(valueId, name) {
+  const v = (D.values||[]).find(x => x.id === valueId);
+  const n = (name||'').trim();
+  if (!v || !n) return;
+  v.name = n;
+  dirty();
+  renderMindfulness();
+}
+function mindSetValueColor(valueId, color) {
+  const v = (D.values||[]).find(x => x.id === valueId);
+  if (!v) return;
+  v.color = color;
+  dirty();
+  renderMindfulness();
+}
+function mindDeleteValue(valueId) {
+  const v = (D.values||[]).find(x => x.id === valueId);
+  if (!v) return;
+  if (!confirm(`Delete Value "${v.name}"? Categories and transactions mapped to it will become Unmapped.`)) return;
+  D.values = (D.values||[]).filter(x => x.id !== valueId);
+  (D.budget.categories||[]).forEach(c => { if (c.valueId === valueId) c.valueId = null; });
+  (D.transactions||[]).forEach(t => { if (t.valueOverride === valueId) t.valueOverride = null; });
+  dirty();
+  renderMindfulness();
+  toast(`Deleted Value "${v.name}"`, 'ok');
+}
+function mindSetCategoryValue(catId, valueId) {
+  const cat = (D.budget.categories||[]).find(c => c.id === catId);
+  if (!cat) return;
+  cat.valueId = valueId || null;
+  dirty();
+  renderMindfulness();
+}
+function mindSetTxnOverride(txnId, valueId) {
+  const t = (D.transactions||[]).find(x => x.id === txnId);
+  if (!t) return;
+  t.valueOverride = valueId || null;
+  dirty();
+  renderMindfulness();
+}
+function mindSetMonth(m) {
+  UI.mindMonth = m;
+  UI.mindTxnPage = 0;
+  renderMindfulness();
+}
+function mindToggleSection(key) {
+  if (!UI.mindCollapsed) UI.mindCollapsed = {};
+  UI.mindCollapsed[key] = !UI.mindCollapsed[key];
+  renderMindfulness();
+}
+
+function renderMindfulness() {
+  const wrap = id('view-mindfulness');
+  if (!wrap) return;
+
+  const month = UI.mindMonth || ymNow();
+  const [my, mm] = month.split('-').map(Number);
+  const monthStart = `${month}-01`;
+  const monthEnd = `${month}-${String(new Date(my, mm, 0).getDate()).padStart(2,'0')}`;
+
+  // Category mapping list is long (every budget category) — collapsed by default so the page
+  // opens on the actually-useful review, not a wall of dropdowns. "Your Values" starts expanded
+  // since it's usually empty/short the first few times you use this page.
+  if (!UI.mindCollapsed) UI.mindCollapsed = {};
+  if (UI.mindCollapsed.mapping === undefined) UI.mindCollapsed.mapping = true;
+
+  const acctById = {}; (D.txnAccounts||[]).forEach(a => { acctById[a.id] = a; });
+  const catById = {};  (D.budget.categories||[]).forEach(c => { catById[c.id] = c; });
+  const groupById = {}; (D.budget.groups||[]).forEach(g => { groupById[g.id] = g; });
+  const valueById = {}; (D.values||[]).forEach(v => { valueById[v.id] = v; });
+  const reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
+
+  // Same "real cash flow" filter as Income & Expenditure — approved, non-transfer, not a
+  // book-value correction, not an account you've excluded from Balance Sheet/Cash Flow.
+  const txns = (D.transactions||[]).filter(t =>
+    !t.isTransfer && (!t.status || t.status === 'approved') &&
+    (t.date||'') >= monthStart && (t.date||'') <= monthEnd &&
+    !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') &&
+    !(acctById[t.accountId]?.excludeFromNetWorth)
+  );
+
+  // One spend "line" per split line, or one per whole transaction otherwise. Income and
+  // reimbursable pass-through spend are excluded — this is about YOUR real spending choices.
+  const lines = [];
+  txns.forEach(t => {
+    const acct = acctById[t.accountId];
+    const isLiabilityAcct = acct && FIN_LIABILITY_TYPES.includes(acct.type);
+    if (!isLiabilityAcct && (t.categoryId === '__income__' || (parseFloat(t.credit)||0) > 0)) return;
+    if (t.splits && t.splits.length) {
+      t.splits.forEach(s => {
+        if (reimbCatIds.has(s.categoryId)) return;
+        const amt = parseFloat(s.amount) || 0;
+        if (amt > 0) lines.push({ txn: t, categoryId: s.categoryId, amount: amt });
+      });
+    } else {
+      const debit = parseFloat(t.debit) || 0;
+      if (debit <= 0 || t.categoryId === '__income__' || reimbCatIds.has(t.categoryId)) return;
+      lines.push({ txn: t, categoryId: t.categoryId, amount: debit });
+    }
+  });
+
+  const byValue = {};
+  lines.forEach(l => {
+    const vid = mindEffectiveValueId(l.categoryId, l.txn, catById) || MIND_UNMAPPED;
+    if (!byValue[vid]) byValue[vid] = { total: 0, count: 0 };
+    byValue[vid].total += l.amount;
+    byValue[vid].count++;
+  });
+
+  const totalSpend = lines.reduce((s,l) => s + l.amount, 0);
+  const unmappedSpend = byValue[MIND_UNMAPPED]?.total || 0;
+  const mappedPct = totalSpend > 0 ? ((totalSpend - unmappedSpend) / totalSpend * 100) : 0;
+
+  const valueRows = Object.entries(byValue)
+    .map(([vid, agg]) => ({
+      vid, agg,
+      name: vid === MIND_UNMAPPED ? 'Unmapped' : (valueById[vid]?.name || 'Deleted Value'),
+      color: vid === MIND_UNMAPPED ? 'var(--text3)' : (valueById[vid]?.color || '#888'),
+    }))
+    .sort((a,b) => b.agg.total - a.agg.total);
+
+  // ── "Manage Values" panel ───────────────────────────────────
+  const valuesListHTML = (D.values||[]).map((v,i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:${i===0?'none':'1px solid var(--border)'}">
+      <input type="color" value="${v.color}" onchange="mindSetValueColor('${v.id}',this.value)" style="width:26px;height:26px;padding:0;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:none" title="Color">
+      <input type="text" value="${esc(v.name)}" onchange="mindRenameValue('${v.id}',this.value)" style="flex:1;font-size:.82rem;font-weight:600;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+      <button onclick="mindDeleteValue('${v.id}')" style="font-size:.72rem;padding:3px 8px;background:none;border:1px solid var(--border);border-radius:5px;cursor:pointer;color:var(--text3)" title="Delete this Value">✕</button>
+    </div>`).join('');
+
+  const manageValuesHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:16px">
+      <div onclick="mindToggleSection('values')" style="padding:10px 14px;font-weight:700;font-size:.85rem;cursor:pointer;display:flex;align-items:center;justify-content:space-between">
+        <span>🎯 Your Values ${(D.values||[]).length ? `<span style="color:var(--text3);font-weight:400">(${D.values.length})</span>` : ''}</span>
+        <span style="color:var(--text3);font-size:.75rem">${UI.mindCollapsed?.values ? '▸ show' : '▾ hide'}</span>
+      </div>
+      ${UI.mindCollapsed?.values ? '' : `
+      <div style="padding:4px 14px 14px">
+        ${(D.values||[]).length ? '' : `<div style="font-size:.8rem;color:var(--text3);padding:8px 0">You haven't defined any Values yet — add the things that actually matter to you (e.g. Family, Health, Growth, Security, Experiences, Generosity), then map your spending categories to them below.</div>`}
+        ${valuesListHTML}
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <input id="mind-new-value-inp" type="text" placeholder="New Value name…" onkeydown="if(event.key==='Enter')mindAddValue()" style="flex:1;font-size:.82rem;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+          <button onclick="mindAddValue()" style="font-size:.78rem;padding:5px 12px;background:var(--primary);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">+ Add Value</button>
+        </div>
+      </div>`}
+    </div>`;
+
+  // ── "Map Categories to Values" panel — grouped by existing budget group ───
+  const valueOptions = (extra) => `<option value="">— Unmapped —</option>` +
+    (D.values||[]).map(v => `<option value="${v.id}" ${extra===v.id?'selected':''}>${esc(v.name)}</option>`).join('');
+
+  const catsByGroup = {};
+  (D.budget.categories||[]).forEach(c => {
+    const gName = groupById[c.groupId]?.name || 'Other';
+    if (!catsByGroup[gName]) catsByGroup[gName] = [];
+    catsByGroup[gName].push(c);
+  });
+  const mappingHTML = Object.keys(catsByGroup).sort().map(gName => `
+    <div style="margin-bottom:10px">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin:8px 0 4px">${esc(gName)}</div>
+      ${catsByGroup[gName].sort((a,b)=>a.name.localeCompare(b.name)).map(c => `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0">
+          <span style="font-size:.8rem;color:var(--text2)">${esc(c.name)}${c.reimbursable ? ` <span style="color:var(--info);font-size:.65rem">♻</span>` : ''}</span>
+          <select onchange="mindSetCategoryValue('${c.id}',this.value)" style="font-size:.76rem;padding:2px 6px;border:1px solid ${c.valueId?'var(--primary)':'var(--border)'};border-radius:5px;background:var(--surface);color:var(--text);min-width:150px">
+            ${valueOptions(c.valueId)}
+          </select>
+        </div>`).join('')}
+    </div>`).join('');
+
+  const mappingPanelHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:20px">
+      <div onclick="mindToggleSection('mapping')" style="padding:10px 14px;font-weight:700;font-size:.85rem;cursor:pointer;display:flex;align-items:center;justify-content:space-between">
+        <span>🗂 Map Categories to Values</span>
+        <span style="color:var(--text3);font-size:.75rem">${UI.mindCollapsed?.mapping ? '▸ show' : '▾ hide'}</span>
+      </div>
+      <div style="font-size:.73rem;color:var(--text3);padding:0 14px 8px">Set this once per category — every transaction inherits it. You can still override an individual transaction below when a specific purchase doesn't fit.</div>
+      ${UI.mindCollapsed?.mapping ? '' : `<div style="padding:0 14px 14px;max-height:420px;overflow-y:auto">${mappingHTML}</div>`}
+    </div>`;
+
+  // ── Spend-by-Value breakdown ─────────────────────────────────
+  const maxRowTotal = Math.max(1, ...valueRows.map(r => r.agg.total));
+  const breakdownHTML = valueRows.length ? valueRows.map(r => `
+    <div style="padding:8px 0;${r.vid===MIND_UNMAPPED?'border-top:1px dashed var(--border);margin-top:4px;padding-top:12px':''}">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+        <span style="font-size:.82rem;font-weight:700;display:flex;align-items:center;gap:6px">
+          <span style="width:10px;height:10px;border-radius:3px;background:${r.color};display:inline-block${r.vid===MIND_UNMAPPED?';border:1px dashed var(--text3);background:transparent':''}"></span>
+          ${esc(r.name)} <span style="font-weight:400;color:var(--text3);font-size:.72rem">(${r.agg.count} txn${r.agg.count!==1?'s':''})</span>
+        </span>
+        <span style="font-size:.85rem;font-weight:700;color:${r.vid===MIND_UNMAPPED?'var(--text3)':'var(--text)'}">${fmtCurrency(r.agg.total)} <span style="font-weight:400;color:var(--text3);font-size:.72rem">(${totalSpend>0?(r.agg.total/totalSpend*100).toFixed(0):0}%)</span></span>
+      </div>
+      <div style="height:7px;border-radius:99px;background:var(--surface2);overflow:hidden">
+        <div style="height:100%;width:${(r.agg.total/maxRowTotal*100).toFixed(1)}%;background:${r.color};${r.vid===MIND_UNMAPPED?'background:repeating-linear-gradient(45deg,var(--text3),var(--text3) 4px,transparent 4px,transparent 8px);opacity:.5':''}"></div>
+      </div>
+    </div>`).join('') : `<div style="padding:14px;color:var(--text3);font-size:.82rem">No spending recorded for ${bFmtMonth(month)} yet.</div>`;
+
+  // ── Transaction-level list with per-transaction override ─────
+  const sortedLines = [...lines].sort((a,b) => b.amount - a.amount);
+  const _pageSize = 50;
+  const _page = UI.mindTxnPage || 0;
+  const pageLines = sortedLines.slice(_page*_pageSize, _page*_pageSize + _pageSize);
+
+  const txnRowsHTML = pageLines.map(l => {
+    const t = l.txn;
+    const vid = mindEffectiveValueId(l.categoryId, t, catById);
+    const isOverride = !!t.valueOverride;
+    return `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:6px 10px;font-size:.76rem;color:var(--text3);white-space:nowrap">${fmtDate(t.date)}</td>
+      <td style="padding:6px 10px;font-size:.8rem;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(t.payee||'')}">${esc(t.payee||'')}</td>
+      <td style="padding:6px 10px;font-size:.74rem;color:var(--text3);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(txnCatLabel(l.categoryId)||'—')}</td>
+      <td style="padding:6px 10px;text-align:right;font-size:.8rem;font-weight:600">${fmtCurrency(l.amount)}</td>
+      <td style="padding:6px 10px">
+        <select onchange="mindSetTxnOverride('${t.id}',this.value)" style="font-size:.74rem;padding:2px 6px;border:1px solid ${isOverride?'var(--primary)':'var(--border)'};border-radius:5px;background:var(--surface);color:var(--text);min-width:140px">
+          <option value="">${vid ? '— use category —' : '— Unmapped —'}</option>
+          ${(D.values||[]).map(v => `<option value="${v.id}" ${t.valueOverride===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}
+        </select>
+        ${isOverride ? `<span style="font-size:.62rem;color:var(--primary);font-weight:600;margin-left:4px">override</span>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+
+  const totalPages = Math.max(1, Math.ceil(sortedLines.length / _pageSize));
+  const pagerHTML = sortedLines.length > _pageSize ? `
+    <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;padding:8px 14px;font-size:.76rem;color:var(--text3)">
+      <button onclick="UI.mindTxnPage=Math.max(0,${_page}-1);renderMindfulness()" ${_page===0?'disabled':''} style="padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);cursor:pointer">‹ Prev</button>
+      Page ${_page+1} of ${totalPages}
+      <button onclick="UI.mindTxnPage=Math.min(${totalPages-1},${_page}+1);renderMindfulness()" ${_page>=totalPages-1?'disabled':''} style="padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);cursor:pointer">Next ›</button>
+    </div>` : '';
+
+  wrap.innerHTML = `
+    <div style="margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:1.05rem;font-weight:800;margin-bottom:2px">🧘 Mindfulness Review</div>
+        <div style="font-size:.78rem;color:var(--text3)">See how this month's spending lines up with what actually matters to you — not just where the money went, but whether it went where you wanted it to.</div>
+      </div>
+      <input type="month" value="${month}" onchange="mindSetMonth(this.value)" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.85rem;font-weight:600">
+    </div>
+
+    ${manageValuesHTML}
+    ${mappingPanelHTML}
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+      ${finCard('Total Spend', fmtCurrency(totalSpend), bFmtMonth(month), '#6366f1')}
+      ${finCard('Aligned to a Value', mappedPct.toFixed(0)+'%', fmtCurrency(totalSpend-unmappedSpend)+' mapped', '#22c55e')}
+      ${finCard('Unmapped', fmtCurrency(unmappedSpend), unmappedSpend>0 ? 'still needs a Value' : 'fully mapped ✓', unmappedSpend>0?'#f59e0b':'var(--ok)')}
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px;margin-bottom:20px">
+      <div style="font-size:.85rem;font-weight:800;margin-bottom:8px">Spend by Value — ${esc(bFmtMonth(month))}</div>
+      ${breakdownHTML}
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+      <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Transactions this month <span style="font-weight:400;color:var(--text3)">— largest first, override any that don't fit their category's usual Value</span></div>
+      <table style="width:100%;border-collapse:collapse">
+        <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
+          <th style="padding:6px 10px">Date</th><th style="padding:6px 10px">Payee</th><th style="padding:6px 10px">Category</th>
+          <th style="padding:6px 10px;text-align:right">Amount</th><th style="padding:6px 10px">Value</th>
+        </tr>
+        ${txnRowsHTML || `<tr><td colspan="5" style="padding:14px;color:var(--text3)">No spending recorded for ${bFmtMonth(month)}</td></tr>`}
+      </table>
+      ${pagerHTML}
+    </div>`;
 }
 
 // ── Move Transaction to Another Account ──────────────────────
