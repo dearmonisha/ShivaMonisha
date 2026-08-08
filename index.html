@@ -771,6 +771,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
     <button class="np" id="tab-transactions" onclick="switchView('transactions')">Transactions</button>
     <button class="np" id="tab-family" onclick="switchView('family')">Family</button>
     <button class="np" id="tab-financials" onclick="switchView('financials')">📑 Financial Statements</button>
+    <button class="np" id="tab-payments" onclick="switchView('payments')">💳 Payments</button>
 
     <!-- Budget group -->
     <div class="nav-dropdown" id="nav-dd-budget">
@@ -947,6 +948,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
     <div id="actualsTableWrap" style="background:var(--surface);border-radius:var(--r2);overflow:hidden"></div>
   </div>
   <div id="view-setup" style="display:none"></div>
+  <div id="view-payments"   style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-financials" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-reports"     style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-cat-trends" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
@@ -1065,6 +1067,8 @@ let UI = {
   budgetMonth:       ymNow(),  // currently viewed budget month
   budgetSelectedCat: null,     // selected category id for right panel
   ccrSelectedCard: null,       // selected CC card id in repayment planner (null = show all)
+  payAmount:   null,           // Payments tab: amount being allocated (null = default to safe-to-deploy)
+  payStrategy: null,           // Payments tab: 'avalanche' | 'util' | 'snowball'
   breakdownMonth: ymNow(), // currently viewed month in Breakdown tab
   annualYear:  new Date().getFullYear(), // currently viewed year in Budget Grid
   actualsYear: new Date().getFullYear(), // currently viewed year in Actuals Grid
@@ -1328,6 +1332,20 @@ function _applyData(raw) {
   if (!D.fiGoals) D.fiGoals = { low: 4.2, medium: 5.0, high: 8.0 };
   if (!D.fiGoals.cutCategories) D.fiGoals.cutCategories = [];
   if (D.fiGoals.extraMonthlyCut == null) D.fiGoals.extraMonthlyCut = 0;
+  // Payments module — statement-keyed repayment engine (see renderPayments)
+  if (!D.payments) D.payments = {};
+  if (!Array.isArray(D.payments.ledger))   D.payments.ledger   = [];
+  if (!Array.isArray(D.payments.earmarks)) D.payments.earmarks = [];
+  if (D.payments.cashFloor == null)        D.payments.cashFloor = 200;
+  if (!D.payments.strategy)                D.payments.strategy  = 'avalanche';
+  if (!D.payments.bankAccountId) {
+    const _pbank = (D.txnAccounts || []).find(a => a.type === 'Bank' && a.status !== 'closed');
+    D.payments.bankAccountId = _pbank ? _pbank.id : '';
+  }
+  // Allocation role per card: 0% promo cards must not compete with 33% cards for extra cash
+  (D.ccTracker?.cards || []).forEach(c => {
+    if (!c.strategyRole) c.strategyRole = c.payInFull ? 'pay-in-full' : ((+c.apr || 0) === 0 ? 'minimum-only' : 'avalanche');
+  });
   if (!D.pathToFreedom) D.pathToFreedom = { extraMonthly: 0 };
   if (D.pathToFreedom.extraMonthly == null) D.pathToFreedom.extraMonthly = 0;
   // Historical min-due/statement-balance data, keyed by ccCardId → 'YYYY-MM' → {due,paid,outstanding,dueDate,metMin}.
@@ -1903,7 +1921,7 @@ function switchView(v) {
     UI.txnHighlightRow = null;
   }
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','financials'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','financials','payments'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
@@ -1937,6 +1955,7 @@ function switchView(v) {
   if (v==='mindfulness')   renderMindfulness();
   if (v==='ratios')        renderFinancialRatios();
   if (v==='financials')    renderFinancials();
+  if (v==='payments')      renderPayments();
 }
 
 function toggleNavDropdown(name, triggerEl) {
@@ -6878,6 +6897,993 @@ function renderBudgetTable(month) {
 }
 
 
+// ════════════════════════════════════════════════════════════
+// PAYMENTS — statement layer, cash runway, allocator, earmarks
+// ════════════════════════════════════════════════════════════
+// Replaces the month-keyed CC Repayment planner with a statement-keyed
+// allocation engine. The old planner asked "did I pay for August's charges?";
+// this asks "given the cash in the bank today, which card do I pay, how much,
+// and by when?"
+
+const PAY_DEFAULT_FLOOR = 200;
+const PAY_HORIZON       = 45;
+
+function payDefaults() {
+  if (!D.payments) D.payments = {};
+  const p = D.payments;
+  if (!Array.isArray(p.ledger))   p.ledger   = [];
+  if (!Array.isArray(p.earmarks)) p.earmarks = [];
+  if (p.cashFloor == null)        p.cashFloor = PAY_DEFAULT_FLOOR;
+  if (!p.strategy)                p.strategy  = 'avalanche';
+  if (!p.bankAccountId) {
+    const bank = (D.txnAccounts || []).find(a => a.type === 'Bank' && a.status !== 'closed');
+    p.bankAccountId = bank ? bank.id : '';
+  }
+  return p;
+}
+
+// ── date helpers (local-time safe; isoDate() uses toISOString and drifts) ──
+function payISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function payAddDays(iso, n) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return payISO(d);
+}
+function payDiffDays(a, b) {
+  return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+}
+function payFmt(v) {
+  const n = Math.round(parseFloat(v) || 0);
+  return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US');
+}
+function payFmt2(v) {
+  const n = parseFloat(v) || 0;
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 });
+}
+
+// ────────────────────────────────────────────────────────────
+// STATEMENT LAYER
+// ────────────────────────────────────────────────────────────
+// Card → template (via ccCardId) → cycle payment (via templateId).
+// templates[] already carries statementDay/dueDay/dueNextMonth, and
+// cycles[YYYY-MM].payments[] carries the actual statementDate, dueDate,
+// amountDue (minimum) and outstandingBalance (statement balance).
+// Nothing here needs manual entry — it's all derived from data already held.
+
+// ── shared rate + promo helpers (used by BOTH the Payments tab and Path to Freedom) ──
+// Two rates matter and they are not the same number. Mattress Firm and Costco carry
+// apr:0 on ccTracker.cards (nothing is accruing today) while the ACCOUNT holds the real
+// contractual rate — 34.99% and 24.74%. Path to Freedom already read the account rate;
+// the Payments tab was reading the card's 0 and understating the risk to nil.
+function ccGoToApr(acct, meta) {
+  if (acct && acct.interestRate != null && acct.interestRate !== '') return parseFloat(acct.interestRate) || 0;
+  return parseFloat(meta && meta.apr) || 0;
+}
+// What is actually accruing right now — 0 while a promo is live or the card is paid in full.
+function ccAccruingApr(acct, meta, asOf) {
+  if (!meta) return 0;
+  if (meta.payInFull) return 0;
+  if (meta.promoExpiration && meta.promoExpiration > (asOf || centralToday())) return 0;
+  return ccGoToApr(acct, meta);
+}
+
+// Count the payment dates that ACTUALLY land before a promo deadline. Discrete dates,
+// not fractional months: with a due day of the 6th, the 6 Feb 2029 payment falls after a
+// 2 Feb 2029 deadline and must not be counted. Path to Freedom's original model divided
+// by elapsed months (29.86) and added a half-month cushion, which both overstated the
+// number of payments and masked shortfalls of up to half an instalment.
+function ccPromoPace(o) {
+  const asOf    = o.asOf || centralToday();
+  const balance = +o.balance || 0;
+  const planned = +o.planned || 0;
+  const promo   = o.promo;
+  const dueDay  = parseInt(o.dueDay, 10);
+  if (!promo || !dueDay || isNaN(dueDay)) return null;
+  if (balance <= 0.005) return { payments: 0, projected: 0, shortfall: 0, required: 0, onTrack: true };
+  if (promo <= asOf) return { payments: 0, projected: 0, shortfall: balance, required: balance, onTrack: false };
+
+  let d = o.nextDue;
+  if (!d || d < asOf) {
+    const t = new Date(asOf + 'T00:00:00');
+    d = payISO(clampDay(t.getFullYear(), t.getMonth(), dueDay));
+    if (d < asOf) d = payNextMonthDay(d, dueDay);
+  }
+  let n = 0, guard = 0;
+  while (d < promo && guard++ < 400) { n++; d = payNextMonthDay(d, dueDay); }
+
+  const projected = planned * n;
+  const shortfall = Math.max(0, balance - projected);
+  const required  = n > 0 ? balance / n : balance;
+  return { payments: n, projected, shortfall, required, onTrack: shortfall <= 0.005 };
+}
+
+function payTemplateFor(cardId) {
+  return (D.templates || []).find(t => t.ccCardId === cardId && t.isActive !== false) || null;
+}
+
+function payCycleRowsFor(templateId) {
+  const rows = [];
+  Object.entries(D.cycles || {}).forEach(([k, cy]) => {
+    (cy.payments || []).forEach(p => {
+      if (p.templateId === templateId && p.dueDate) rows.push({ ...p, _cycle: k });
+    });
+  });
+  return rows.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+}
+
+// Project the statement/due date for the cycle after the last one on file.
+function payProjectNext(tpl, afterDue) {
+  if (!tpl) return null;
+  const sd = parseInt(tpl.statementDay, 10), dd = parseInt(tpl.dueDay, 10);
+  if (isNaN(sd) || isNaN(dd)) return null;
+  const base = new Date((afterDue || centralToday()) + 'T00:00:00');
+  const y = base.getFullYear(), m = base.getMonth();
+  const stmt = clampDay(y, m, sd);
+  const due  = clampDay(y, m + (tpl.dueNextMonth ? 1 : 0), dd);
+  return { statementDate: payISO(stmt), dueDate: payISO(due), projected: true };
+}
+
+function payCardStates() {
+  payDefaults();
+  const today = centralToday();
+  return (D.ccTracker?.cards || [])
+    .filter(c => c.active !== false)
+    .map(c => {
+      const acct = (D.txnAccounts || []).find(a => a.ccCardId === c.id && a.status !== 'closed');
+      if (!acct) return null;
+      const tpl  = payTemplateFor(c.id);
+      const balance = txnCurrentBalance(acct);   // CC accounts return positive = owed
+
+      let open = null, projected = false;
+      if (tpl) {
+        const rows = payCycleRowsFor(tpl.id);
+        open = rows.find(p => p.dueDate >= today) || null;
+        if (!open) {
+          const last = rows[rows.length - 1];
+          const proj = payProjectNext(tpl, last ? last.dueDate : today);
+          if (proj) { open = proj; projected = true; }
+        }
+      }
+
+      const stmtDate = open?.statementDate || null;
+      const dueDate  = open?.dueDate || null;
+      const stmtBal  = (open && open.outstandingBalance != null) ? +open.outstandingBalance : null;
+      const minDue   = (open && open.amountDue != null) ? +open.amountDue : null;
+
+      // Ground truth for "already paid this cycle": transfer credits landing on the
+      // card between statement date and due date. Falls back to the cycle's own
+      // amountPaid if the ledger has nothing (e.g. paid outside the app).
+      let paid = 0;
+      if (stmtDate) {
+        paid = (D.transactions || [])
+          .filter(t => t.accountId === acct.id && t.isTransfer && (+t.credit || 0) > 0 &&
+                       (!t.status || t.status === 'approved') &&
+                       t.date >= stmtDate && (!dueDate || t.date <= dueDate))
+          .reduce((s, t) => s + (+t.credit || 0), 0);
+      }
+      if (paid === 0 && open && open.amountPaid) paid = +open.amountPaid;
+
+      const goToApr = ccGoToApr(acct, c);              // contractual rate if the promo lapses
+      const apr     = ccAccruingApr(acct, c, today);   // what is actually accruing today
+      const limit   = +c.limit || 0;
+      const role    = c.strategyRole || (c.payInFull ? 'pay-in-full' : (apr === 0 ? 'minimum-only' : 'avalanche'));
+      const minUnf  = minDue != null ? Math.max(0, minDue - paid) : 0;
+
+      // Promo pace, shared with Path to Freedom
+      const planned = +c.plannedPayment || 0;
+      const pace = c.promoExpiration
+        ? ccPromoPace({ balance, planned: planned || minDue || 0, promo: c.promoExpiration,
+                        dueDay: tpl ? tpl.dueDay : null, nextDue: dueDate, asOf: today })
+        : null;
+
+      return {
+        id: c.id, name: c.name, card: c, acct, tpl, projected,
+        balance, stmtDate, dueDate, stmtBal, minDue, paid,
+        minUnfunded: minUnf,
+        apr, goToApr, limit, planned,
+        util: limit ? balance / limit : 0,
+        moInterest: balance * apr / 1200,
+        per100: 100 * apr / 1200,
+        daysToDue: dueDate ? payDiffDays(today, dueDate) : null,
+        role, promo: c.promoExpiration || '',
+        pace, promoShortfall: pace ? pace.shortfall : 0,
+        pay: 0
+      };
+    })
+    .filter(Boolean);
+}
+
+// ────────────────────────────────────────────────────────────
+// PROMO RISK — 0% balances that must be cleared by a deadline
+// ────────────────────────────────────────────────────────────
+// A 0% promo card is only harmless while it is on track to hit zero before the
+// promo expires. Mattress Firm at $200/mo autopay lands 29 payments ($5,800)
+// against a $6,077.23 balance before 2 Feb 2029 — $277.23 short. Whether that
+// shortfall costs $277 or five figures depends on the promo type, which is not
+// knowable from the ledger, so this flags the gap rather than guessing.
+
+function payNextMonthDay(iso, day) {
+  const d = new Date(iso + 'T00:00:00');
+  const n = clampDay(d.getFullYear(), d.getMonth() + 1, day);
+  return payISO(n);
+}
+
+function payPromoRisk() {
+  const today = centralToday();
+  return payCardStates()
+    .filter(s => s.pace && s.promo && s.balance > 0.005 && s.promo > today)
+    .map(s => ({
+      ...s,
+      payments:  s.pace.payments,
+      planned:   (+s.card.plannedPayment || 0) || s.minDue || 0,
+      projected: s.pace.projected,
+      shortfall: s.pace.shortfall,
+      required:  s.pace.required,
+      clears:    s.pace.onTrack,
+      monthsToExpiry: Math.max(0, Math.round(payDiffDays(today, s.promo) / 30.44))
+    }));
+}
+
+// ────────────────────────────────────────────────────────────
+// CASH RUNWAY
+// ────────────────────────────────────────────────────────────
+
+// Projects pay dates from OBSERVED income transactions rather than trusting the
+// schedule's stored amount — payHistory drifts (Shiva's schedule says 7,112.56
+// while the bank actually credits 7,116.52). Anchoring on the last real deposit
+// and stepping 14 days is self-correcting.
+function payIncomeEvents(from, to, bankId) {
+  const out = [];
+  const deposits = (D.transactions || []).filter(t =>
+    t.accountId === bankId && t.categoryId === '__income__' &&
+    (+t.credit || 0) > 100 && (!t.status || t.status === 'approved'));
+
+  (D.budget?.incomeSchedules || []).filter(s => s.enabled !== false).forEach(s => {
+    const hist = (s.payHistory || []).slice().sort((a, b) => (a.effectiveDate||'').localeCompare(b.effectiveDate||''));
+    const target = hist.length ? +hist[hist.length-1].amount : (+s.amount || 0);
+    if (!target) return;
+    const matches = deposits
+      .filter(t => Math.abs((+t.credit) - target) <= Math.max(5, target * 0.03))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const last   = matches[matches.length - 1] || null;
+    const amount = last ? +last.credit : target;
+    let d        = last ? last.date : (s.startDate || from);
+    let guard    = 0;
+    while (d < from && guard++ < 400) d = payAddDays(d, 14);
+    while (d <= to && guard++ < 400) {
+      out.push({ date: d, label: s.name, amount, kind: 'income' });
+      d = payAddDays(d, 14);
+    }
+  });
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function payOutflowEvents(from, to) {
+  const P = payDefaults();
+  const out = [];
+  Object.values(D.cycles || {}).forEach(cy => {
+    (cy.payments || []).forEach(p => {
+      if (!p.dueDate || p.dueDate < from || p.dueDate > to) return;
+      if (p.isPaid) return;
+      const amt = +p.amountDue || 0;
+      if (amt <= 0) return;
+      out.push({
+        date: p.dueDate, label: p.name, amount: amt,
+        kind: p.category === 'Credit Cards' ? 'cc-min' : 'committed',
+        cat: p.category || '', auto: !!p.isAutomatic
+      });
+    });
+  });
+  // Autopaid fixed card payments (Mattress Firm's $200 promo instalment) leave the
+  // bank whether or not the issuer has posted a statement, but the cycle row carries
+  // no amountDue until it does — so the runway would miss them entirely.
+  payCardStates().forEach(s => {
+    const planned = +s.card.plannedPayment || 0;
+    if (!planned || !s.dueDate) return;
+    if (s.dueDate < from || s.dueDate > to) return;
+    if (s.minDue != null && s.minDue > 0) return;   // real statement exists; already counted above
+    if (s.paid >= planned - 0.005) return;          // already paid this cycle
+    out.push({
+      date: s.dueDate, label: s.name, amount: planned,
+      kind: 'cc-min', cat: 'Credit Cards', auto: !!(s.tpl && s.tpl.isAutomatic), planned: true
+    });
+  });
+
+  // Pending bank debits that the cycle list doesn't already represent.
+  // Obligations and templates are separate systems and DO overlap (All State
+  // Home 975.82 pending on the 20th vs Home Insurance 975.82 due on the 27th),
+  // so dedupe on amount + date proximity before adding.
+  (D.transactions || []).filter(t =>
+      t.accountId === P.bankAccountId && t.status === 'pending' &&
+      (+t.debit || 0) > 0 && t.date >= from && t.date <= to)
+    .forEach(t => {
+      const amt = +t.debit;
+      const dup = out.some(o => Math.abs(o.amount - amt) <= Math.max(2, amt * 0.03) &&
+                                Math.abs(payDiffDays(o.date, t.date)) <= 10);
+      if (!dup) out.push({ date: t.date, label: t.payee, amount: amt, kind: 'committed', cat: 'Pending', auto: false });
+    });
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function payRunway() {
+  const P     = payDefaults();
+  const bank  = (D.txnAccounts || []).find(a => a.id === P.bankAccountId) || null;
+  const today = centralToday();
+  const to    = payAddDays(today, PAY_HORIZON);
+  const cash  = bank ? txnCurrentBalance(bank) : 0;
+
+  const income = payIncomeEvents(today, to, P.bankAccountId);
+  const outs   = payOutflowEvents(today, to);
+  const events = [...income, ...outs].sort((a, b) => a.date.localeCompare(b.date));
+
+  let bal = cash, trough = cash, troughDate = today;
+  const series = [{ date: today, bal, e: null }];
+  events.forEach(e => {
+    bal += (e.kind === 'income' ? e.amount : -e.amount);
+    series.push({ date: e.date, bal, e });
+    if (bal < trough) { trough = bal; troughDate = e.date; }
+  });
+
+  const nextIncome = income[0] || null;
+  const cut        = nextIncome ? nextIncome.date : to;
+  const lockedNow  = outs.filter(o => o.date < cut).reduce((s, o) => s + o.amount, 0);
+  const safe       = Math.max(0, cash - lockedNow - P.cashFloor);
+
+  return {
+    today, to, bank, cash, income, outs, events, series,
+    trough, troughDate, nextIncome, lockedNow, safe,
+    floor: P.cashFloor,
+    projectedEnd: bal
+  };
+}
+
+// ────────────────────────────────────────────────────────────
+// ALLOCATOR
+// ────────────────────────────────────────────────────────────
+// 1. Every unfunded minimum gets covered first, in due-date order. Non-negotiable —
+//    a missed minimum costs a late fee plus a rate hike, which dwarfs any interest
+//    optimisation downstream.
+// 2. The remainder goes by strategy. 0% cards are skipped under avalanche entirely:
+//    a dollar to Costco or Mattress Firm saves nothing while JCP burns 33.24%.
+
+function payAllocate(pot, strategy, states) {
+  const m = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
+  let left = Math.max(0, +pot || 0);
+
+  m.filter(x => x.minUnfunded > 0.005)
+   .sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'))
+   .forEach(x => {
+     const p = Math.min(x.minUnfunded, left, Math.max(0, x.balance));
+     x.pay += p; left -= p;
+   });
+
+  // Promo catch-up ranks with the minimums, not with the optimisation. A 0% card behind
+  // pace is the highest-value dollar in the book: the downside is not the shortfall, it is
+  // the go-to rate applied to the balance (Mattress Firm's is 34.99% — above every other
+  // card here), and on deferred-interest financing it is charged on the ORIGINAL purchase.
+  m.filter(x => x.promoShortfall > 0.005)
+   .sort((a, b) => (a.promo || '9999').localeCompare(b.promo || '9999'))
+   .forEach(x => {
+     if (left < 1) return;   // sub-dollar crumbs are noise, not an allocation
+     const p = Math.min(x.promoShortfall, left, Math.max(0, x.balance - x.pay));
+     x.pay += p; left -= p;
+   });
+
+  let order;
+  if (strategy === 'util')          order = m.slice().sort((a, b) => b.util - a.util);
+  else if (strategy === 'snowball') order = m.slice().sort((a, b) => a.balance - b.balance);
+  else                              order = m.slice().sort((a, b) => b.apr - a.apr);
+
+  order.forEach(x => {
+    if (left < 1) return;
+    if (x.role === 'minimum-only') return;
+    if (x.role === 'pay-in-full') {
+      const target = (x.stmtBal != null ? x.stmtBal : x.balance) - x.paid - x.pay;
+      const p = Math.min(Math.max(0, target), left);
+      x.pay += p; left -= p; return;
+    }
+    if (strategy === 'avalanche' && x.apr <= 0) return;
+    const room = Math.max(0, x.balance - x.pay);
+    const p = Math.min(room, left);
+    x.pay += p; left -= p;
+  });
+
+  const saved = m.reduce((s, x) => s + x.pay * x.apr / 1200, 0);
+  return {
+    all: m,
+    alloc: m.filter(x => x.pay >= 0.5).sort((a, b) => b.pay - a.pay),
+    left, saved, deployed: (+pot || 0) - left
+  };
+}
+
+// ────────────────────────────────────────────────────────────
+// EARMARKS — money in the runway that isn't yours to deploy
+// ────────────────────────────────────────────────────────────
+// famBalance() is cr - dr, so a NEGATIVE balance means they owe you.
+
+function payEarmarks() {
+  const ccIds = new Set((D.txnAccounts || []).filter(a => a.type === 'Credit Card').map(a => a.id));
+  const acctName = {};
+  (D.txnAccounts || []).forEach(a => { acctName[a.id] = a.name; });
+
+  const people = (D.familyAccounts?.persons || []).map(p => {
+    const entries = (D.familyAccounts?.ledgers?.[p.id]) || [];
+    const bal = entries.reduce((s, t) => s + (+t.cr || 0) - (+t.dr || 0), 0);
+    const byCard = {};
+    entries.forEach(e => {
+      if ((+e.dr || 0) > 0 && e.sourceAcctId && ccIds.has(e.sourceAcctId)) {
+        byCard[e.sourceAcctId] = (byCard[e.sourceAcctId] || 0) + (+e.dr || 0);
+      }
+    });
+    const cards = Object.entries(byCard)
+      .map(([acctId, amt]) => ({ acctId, name: acctName[acctId] || acctId, amount: amt }))
+      .sort((a, b) => b.amount - a.amount);
+    const last = entries.reduce((mx, e) => (e.date > mx ? e.date : mx), '');
+    return { id: p.id, name: p.name, balance: bal, owesYou: -bal, cards, last, count: entries.length };
+  }).filter(p => p.count > 0);
+
+  const receivable = people.filter(p => p.owesYou > 0.005).sort((a, b) => b.owesYou - a.owesYou);
+  const payable    = people.filter(p => p.owesYou < -0.005).sort((a, b) => a.owesYou - b.owesYou);
+  return {
+    people, receivable, payable,
+    totalReceivable: receivable.reduce((s, p) => s + p.owesYou, 0),
+    totalPayable:    payable.reduce((s, p) => s - p.owesYou, 0)
+  };
+}
+
+// ────────────────────────────────────────────────────────────
+// RECORD A PAYMENT
+// ────────────────────────────────────────────────────────────
+// Creates the paired bank→card transfer (same shape the old planner used, so the
+// Transactions tab and every balance downstream keep working) and appends a
+// ccPayments record carrying `purpose` — the field that makes "am I paying down
+// principal or just servicing the minimum?" answerable.
+
+// Classify what a payment is actually doing. Order matters: clearing the statement
+// outranks covering the minimum. The $1 tolerance stops a rounded-up minimum
+// (paying 406.00 against a 405.75 minimum) being misfiled as principal.
+function payPurpose(s, amt) {
+  if (!s) return 'principal';
+  if (s.stmtBal != null && amt >= s.stmtBal - s.paid - 0.005) return 'statement';
+  if (s.minUnfunded > 0.005 && amt <= s.minUnfunded + 1) return 'minimum';
+  return 'principal';
+}
+
+function payRecord(cardAcctId, amount, purpose, opts) {
+  const P    = payDefaults();
+  const o    = opts || {};
+  const amt  = Math.round((+amount || 0) * 100) / 100;
+  if (amt <= 0) return null;
+  const bankId = o.bankAccountId || P.bankAccountId;
+  const card = (D.txnAccounts || []).find(a => a.id === cardAcctId);
+  const bank = (D.txnAccounts || []).find(a => a.id === bankId);
+  if (!card || !bank) return null;
+
+  const today      = o.date || centralToday();
+  const transferId = uid(), debitId = uid(), creditId = uid();
+  const notes      = o.notes || `Payment — ${purpose}`;
+
+  D.transactions.push({
+    id: debitId, accountId: bankId, date: today,
+    payee: `CC Payment to ${card.name}`, debit: amt, credit: 0,
+    categoryId: null, notes, cleared: false, isTransfer: true,
+    transferId, transferPairId: creditId, transferToAcctId: cardAcctId
+  });
+  D.transactions.push({
+    id: creditId, accountId: cardAcctId, date: today,
+    payee: `Payment from ${bank.name}`, debit: 0, credit: amt,
+    categoryId: null, notes, cleared: false, isTransfer: true,
+    transferId, transferPairId: debitId, transferFromAcctId: bankId
+  });
+
+  P.ledger.push({
+    id: uid(), date: today, cardAcctId, cardId: o.cardId || null,
+    fromAccountId: bankId, amount: amt, purpose,
+    statementDate: o.statementDate || null, dueDate: o.dueDate || null,
+    txnId: debitId, strategy: o.strategy || P.strategy
+  });
+  return { debitId, creditId, amount: amt };
+}
+
+// ────────────────────────────────────────────────────────────
+// TRAJECTORY — the feedback loop the old planner never closed
+// ────────────────────────────────────────────────────────────
+// Paying $26.9k/mo to cards while charging $26.7k back means the balance is
+// flat and the interest buys no principal progress. This makes that visible.
+
+function payTrajectory(months) {
+  const n = months || 6;
+  const ccIds = new Set((D.txnAccounts || []).filter(a => a.type === 'Credit Card' && a.status !== 'closed').map(a => a.id));
+  const intCat = (D.budget?.categories || []).find(c => /interest/i.test(c.name || ''));
+  const cur = centralToday().slice(0, 7);
+  const rows = [];
+  for (let i = n; i >= 1; i--) {
+    const m = shiftYM(cur, -i);
+    const tx = (D.transactions || []).filter(t => ccIds.has(t.accountId) && (!t.status || t.status === 'approved') && (t.date || '').startsWith(m));
+    // Interest posts as an ordinary non-transfer debit ON the card, so it is already
+    // inside the raw charge total. Split it out rather than subtracting it twice.
+    const nonXfer  = tx.filter(t => !t.isTransfer);
+    const interest = intCat ? nonXfer.filter(t => t.categoryId === intCat.id).reduce((s, t) => s + (+t.debit || 0), 0) : 0;
+    const charges  = nonXfer.filter(t => !intCat || t.categoryId !== intCat.id)
+                            .reduce((s, t) => s + (+t.debit || 0) - (+t.credit || 0), 0);
+    const pmts     = tx.filter(t => t.isTransfer).reduce((s, t) => s + (+t.credit || 0) - (+t.debit || 0), 0);
+    rows.push({ month: m, charges, pmts, interest, net: charges + interest - pmts });
+  }
+  const avg = k => rows.reduce((s, r) => s + r[k], 0) / rows.length;
+  return {
+    rows,
+    avgCharges: avg('charges'), avgPmts: avg('pmts'),
+    avgInterest: avg('interest'), avgNet: avg('net'),
+    // charges is now net of interest, so this no longer double-counts
+    principalPerMonth: avg('pmts') - avg('charges') - avg('interest')
+  };
+}
+
+// Months to clear the whole book at a given genuine surplus (payments above
+// charges), amortising at the blended rate. Returns null if it never clears.
+function payMonthsToClear(balance, blendedApr, surplus) {
+  if (surplus <= 0) return null;
+  let b = balance, m = 0;
+  const r = blendedApr / 1200;
+  while (b > 0 && m < 1200) { b = b + b * r - surplus; m++; if (b > balance * 3) return null; }
+  return m >= 1200 ? null : m;
+}
+
+// ────────────────────────────────────────────────────────────
+// RENDER
+// ────────────────────────────────────────────────────────────
+
+function renderPayments() {
+  const wrap = id('view-payments');
+  if (!wrap) return;
+  const P = payDefaults();
+  if (UI.payStrategy == null) UI.payStrategy = P.strategy || 'avalanche';
+
+  const R  = payRunway();
+  const st = payCardStates();
+  if (UI.payAmount == null) UI.payAmount = Math.round(R.safe);
+  const A  = payAllocate(UI.payAmount, UI.payStrategy, st);
+  const T  = payTrajectory(6);
+  const E  = payEarmarks();
+
+  const totalOwed = st.reduce((s, x) => s + x.balance, 0);
+  const totalInt  = st.reduce((s, x) => s + x.moInterest, 0);
+  const totalMin  = st.reduce((s, x) => s + x.minUnfunded, 0);
+  const totalLim  = st.reduce((s, x) => s + x.limit, 0);
+  const blended   = totalOwed ? totalInt * 1200 / totalOwed : 0;
+
+  const card = 'background:var(--surface);border:1px solid var(--border);border-radius:10px';
+  const lbl  = 'font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)';
+
+  // ── tiles ──
+  const tile = (label, value, color, sub) => `
+    <div style="${card};padding:11px 13px">
+      <div style="${lbl}">${label}</div>
+      <div style="font-size:1.35rem;font-weight:700;color:${color||'var(--text)'};margin-top:3px;font-variant-numeric:tabular-nums">${value}</div>
+      ${sub ? `<div style="font-size:.68rem;color:var(--text3);margin-top:2px">${sub}</div>` : ''}
+    </div>`;
+
+  // ── promo deadline alerts ──
+  const promos = payPromoRisk();
+  const promoAlerts = promos.filter(p => !p.clears).map(p => `
+    <div style="background:var(--danger-bg);border:1px solid color-mix(in srgb,var(--danger) 35%,transparent);border-radius:10px;padding:12px 15px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:250px">
+          <div style="font-size:.8rem;font-weight:700;color:var(--danger);margin-bottom:3px">
+            ${esc(p.name)} will not clear before its 0% promo ends
+          </div>
+          <div style="font-size:.78rem;color:var(--text2);line-height:1.6">
+            ${payFmt2(p.balance)} outstanding · only <b>${p.payments}</b> payments of ${payFmt2(p.planned)} land before ${fmtDate(p.promo)}
+            = ${payFmt2(p.projected)}. Short by <b style="color:var(--danger)">${payFmt2(p.shortfall)}</b>.
+            Raise the instalment to <b>${payFmt2(p.required)}</b>/mo, or add one payment of ${payFmt2(p.shortfall)}.
+          </div>
+          ${p.goToApr > 0 ? `<div style="font-size:.7rem;color:var(--danger);margin-top:6px;line-height:1.55;border-top:1px dashed color-mix(in srgb,var(--danger) 30%,transparent);padding-top:6px">
+            Go-to rate is <b>${p.goToApr}%</b> — higher than every other card you hold. If this is deferred-interest financing
+            ("no interest if paid in full by…"), missing the deadline charges interest retroactively on the
+            <b>original purchase</b>, not on the ${payFmt2(p.shortfall)}. Worth confirming which type it is on the statement.
+          </div>` : ''}
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <div style="font-size:.62rem;color:var(--text3)">deadline</div>
+          <div style="font-size:.9rem;font-weight:700;color:var(--danger)">${fmtDate(p.promo)}</div>
+          <div style="font-size:.62rem;color:var(--text3)">${p.monthsToExpiry} months</div>
+          <button onclick="PAY.fixPromo('${p.id}')" style="margin-top:5px;font-size:.68rem;padding:4px 10px;border-radius:5px;border:1px solid var(--danger);background:var(--surface);color:var(--danger);cursor:pointer;font-weight:600">Pay the ${payFmt(p.shortfall)} now</button>
+        </div>
+      </div>
+    </div>`).join('');
+
+  const promoOk = promos.filter(p => p.clears).map(p => `
+    <div style="font-size:.7rem;color:var(--text3);margin-bottom:8px">
+      ✓ ${esc(p.name)} on track — ${p.payments} × ${payFmt2(p.planned)} clears ${payFmt2(p.balance)} before ${fmtDate(p.promo)}
+    </div>`).join('');
+
+  const tiles = `
+   ${promoAlerts}${promoOk}
+   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
+    ${tile('Cash today', payFmt(R.cash), 'var(--text)', esc(R.bank ? R.bank.name : ''))}
+    ${tile('Locked before next pay', payFmt(R.lockedNow), R.lockedNow>0?'var(--warn)':'var(--text3)', R.nextIncome ? `next in ${payDiffDays(R.today,R.nextIncome.date)}d · ${esc(R.nextIncome.label)} ${payFmt(R.nextIncome.amount)}` : 'no scheduled pay')}
+    ${tile('Unfunded minimums', payFmt(totalMin), totalMin>0?'var(--danger)':'var(--ok)', totalMin>0?'must clear first':'all covered ✓')}
+    ${tile('Safe to deploy', payFmt(R.safe), 'var(--primary)', `after $${R.floor} floor`)}
+    ${tile('Interest burning', payFmt(totalInt)+'/mo', 'var(--danger)', `${payFmt(totalOwed)} at ${blended.toFixed(1)}% blended`)}
+   </div>`;
+
+  // ── trajectory ──
+  const prog = T.principalPerMonth;
+  const trajBars = T.rows.map(r => {
+    const mx = Math.max(...T.rows.map(x => Math.max(x.charges, x.pmts))) || 1;
+    const h = 44;
+    return `<div style="flex:1;min-width:0;text-align:center">
+      <div style="display:flex;gap:2px;align-items:flex-end;justify-content:center;height:${h}px">
+        <div title="charged ${payFmt(r.charges)}" style="width:9px;height:${Math.max(2,r.charges/mx*h)}px;background:var(--danger);border-radius:2px 2px 0 0;opacity:.75"></div>
+        <div title="paid ${payFmt(r.pmts)}" style="width:9px;height:${Math.max(2,r.pmts/mx*h)}px;background:var(--ok);border-radius:2px 2px 0 0;opacity:.75"></div>
+      </div>
+      <div style="font-size:.6rem;color:var(--text3);margin-top:3px">${r.month.slice(5)}</div>
+    </div>`;
+  }).join('');
+
+  const clearAt = payMonthsToClear(totalOwed, blended, Math.max(0, prog));
+  const trajectory = `
+   <div style="${card};padding:13px 15px;margin-bottom:14px">
+     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+       <div style="flex:1;min-width:230px">
+         <div style="${lbl};margin-bottom:6px">Are you actually paying it down?</div>
+         <div style="font-size:.82rem;color:var(--text2);line-height:1.55">
+           Last 6 months you spent <b style="color:var(--danger)">${payFmt(T.avgCharges)}/mo</b> on cards, were charged
+           <b style="color:var(--danger)">${payFmt(T.avgInterest)}/mo</b> of interest, and paid back
+           <b style="color:var(--ok)">${payFmt(T.avgPmts)}/mo</b> — leaving
+           <b style="color:${prog>0?'var(--ok)':'var(--danger)'}">${prog>0?'+':''}${payFmt(prog)}/mo</b> of real principal progress.
+           ${prog > 500
+             ? `At that pace the book clears in about <b>${clearAt ? Math.round(clearAt/12*10)/10 + ' years' : 'never'}</b>.`
+             : `The balance is effectively flat, so the <b>${payFmt(totalInt)}/mo</b> of interest is buying nothing. Cards are carrying your ordinary spending — extra deployed below only helps if it is not re-charged next month.`}
+         </div>
+       </div>
+       <div style="display:flex;gap:3px;align-items:flex-end;min-width:190px">
+         ${trajBars}
+         <div style="margin-left:8px;font-size:.6rem;color:var(--text3);align-self:center;line-height:1.6">
+           <div><span style="display:inline-block;width:7px;height:7px;background:var(--danger);opacity:.75;border-radius:1px"></span> charged</div>
+           <div><span style="display:inline-block;width:7px;height:7px;background:var(--ok);opacity:.75;border-radius:1px"></span> paid</div>
+         </div>
+       </div>
+     </div>
+   </div>`;
+
+  // ── allocator ──
+  const stratBtn = (k, label, hint) => `
+    <button onclick="PAY.setStrategy('${k}')" title="${esc(hint)}"
+      style="font-size:.72rem;padding:5px 11px;border-radius:6px;cursor:pointer;white-space:nowrap;
+             border:1px solid ${UI.payStrategy===k?'var(--primary)':'var(--border)'};
+             background:${UI.payStrategy===k?'var(--primary)':'var(--surface)'};
+             color:${UI.payStrategy===k?'#fff':'var(--text2)'};font-weight:${UI.payStrategy===k?'600':'400'}">${label}</button>`;
+
+  const cmp = ['avalanche','util','snowball'].map(s => ({ s, saved: payAllocate(UI.payAmount, s, st).saved }));
+  const best = Math.max(...cmp.map(c => c.saved));
+  const cmpTxt = cmp.map(c => {
+    const nm = { avalanche:'Lowest interest', util:'Repair utilisation', snowball:'Smallest first' }[c.s];
+    const d = c.saved - best;
+    return `${nm} ${payFmt2(c.saved)}/mo${d < -0.005 ? ` <span style="color:var(--danger)">(${payFmt2(d)})</span>` : ' <span style="color:var(--ok)">◀ best</span>'}`;
+  }).join(' &nbsp;·&nbsp; ');
+
+  const allocator = `
+   <div style="${card};padding:13px 15px;margin-bottom:14px">
+     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+       <div style="${lbl}">Deploy</div>
+       <input type="text" id="pay-amt" value="${payFmt2(UI.payAmount)}" onchange="PAY.setAmount(this.value)"
+         style="width:120px;font-size:.95rem;font-weight:700;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
+       <input type="range" min="0" max="${Math.max(8000, Math.round(R.safe*1.5))}" step="25" value="${UI.payAmount}"
+         oninput="PAY.setAmount(this.value)" style="flex:1;min-width:150px;accent-color:var(--primary)">
+       <button onclick="PAY.setAmount(${Math.round(R.safe)})" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Safe max</button>
+       <button onclick="PAY.setAmount(${Math.round(totalMin)})" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Minimums only</button>
+     </div>
+     <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:10px">
+       ${stratBtn('avalanche','Lowest interest cost','Highest APR first. Skips 0% cards entirely.')}
+       ${stratBtn('util','Repair utilisation','Highest utilisation first. Protects credit score.')}
+       ${stratBtn('snowball','Clear smallest first','Fewest open balances. Behavioural, not optimal.')}
+       <span style="font-size:.68rem;color:var(--text3);margin-left:4px">${cmpTxt}</span>
+     </div>
+     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px">
+       <div style="font-size:.82rem;color:var(--text2)">
+         Deploying <b style="color:var(--text)">${payFmt(A.deployed)}</b> across <b>${A.alloc.length}</b> card${A.alloc.length===1?'':'s'}
+         stops <b style="color:var(--ok)">${payFmt2(A.saved)}/mo</b> of interest, permanently.
+         ${A.left > 1 ? `<span style="color:var(--warn)"> · ${payFmt(A.left)} unallocated</span>` : ''}
+         ${UI.payAmount > R.safe + 0.5 ? `<span style="color:var(--danger)"> · ${payFmt(UI.payAmount - R.safe)} over safe limit</span>` : ''}
+       </div>
+       <button onclick="PAY.applyAll()" ${A.alloc.length?'':'disabled'}
+         style="font-size:.78rem;font-weight:600;padding:7px 15px;border-radius:7px;border:none;cursor:pointer;
+                background:${A.alloc.length?'var(--primary)':'var(--border)'};color:#fff">Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}</button>
+     </div>
+   </div>`;
+
+  // ── pay queue ──
+  const queueRows = A.all.slice().sort((a, b) => {
+    if ((b.pay > 0.005) !== (a.pay > 0.005)) return (b.pay > 0.005) - (a.pay > 0.005);
+    if (b.pay !== a.pay) return b.pay - a.pay;
+    return b.moInterest - a.moInterest;
+  }).map(x => {
+    const u  = x.limit ? x.balance / x.limit : 0;
+    const u2 = x.limit ? Math.max(0, x.balance - x.pay) / x.limit : 0;
+    const uc = u > 0.8 ? 'var(--danger)' : u > 0.5 ? 'var(--warn)' : 'var(--ok)';
+    const dueSoon = x.daysToDue != null && x.daysToDue <= 7;
+    const planned = +x.card.plannedPayment || 0;
+    const auto    = !!(x.tpl && x.tpl.isAutomatic);
+    const roleTag = x.role === 'pay-in-full'
+      ? `<span title="Statement paid in full each cycle — anything above the statement figure is this cycle's spending, not yet due" style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--ok-bg);color:var(--ok);margin-left:5px">pay in full</span>`
+      : x.role === 'minimum-only'
+      ? `<span title="0% promo — paying extra here saves nothing, but the balance must reach zero before the promo ends" style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--surface2);color:var(--text3);margin-left:5px">0%${planned?' · '+payFmt(planned)+'/mo':' · min only'}${auto?' auto':''}${x.promo?' → '+fmtDate(x.promo):''}</span>`
+      : '';
+    // On a pay-in-full card the balance above the statement is unbilled spending, not debt
+    const unbilled = (x.role === 'pay-in-full' && x.stmtBal != null) ? Math.max(0, x.balance - Math.max(0, x.stmtBal - x.paid)) : 0;
+    const minTag = x.minUnfunded > 0.005 ? `<span style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">min ${payFmt(x.minUnfunded)} due ${fmtDate(x.dueDate)}</span>` : '';
+    const projTag = x.projected ? `<span title="statement not yet issued — dates projected from template" style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--warn-bg);color:var(--warn);margin-left:5px">projected</span>` : '';
+    return `<tr style="border-bottom:1px solid var(--border-light)">
+      <td style="padding:8px 10px">
+        <div style="font-size:.83rem;font-weight:500;color:var(--text)">${esc(x.name)}${minTag}${roleTag}${projTag}</div>
+        <div style="height:4px;background:var(--surface2);border-radius:2px;margin-top:5px;position:relative;max-width:190px">
+          <div style="position:absolute;left:0;top:0;height:4px;width:${Math.min(100,u*100)}%;background:${uc};border-radius:2px"></div>
+          <div style="position:absolute;left:0;top:0;height:4px;width:${Math.min(100,u2*100)}%;background:var(--text);opacity:.28;border-radius:2px"></div>
+        </div>
+        <div style="font-size:.62rem;color:var(--text3);margin-top:2px">util ${Math.round(u*100)}%${x.pay>0.005?` → ${Math.round(u2*100)}%`:''} · limit ${payFmt(x.limit)}</div>
+      </td>
+      <td style="padding:8px 10px;text-align:right;font-size:.8rem;font-variant-numeric:tabular-nums">${payFmt(x.balance)}
+        ${unbilled>1?`<div style="font-size:.58rem;color:var(--text3)">${payFmt(unbilled)} not yet billed</div>`:''}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--text2)">${x.stmtBal!=null?payFmt(x.stmtBal):'<span style="color:var(--text3)">—</span>'}
+        ${x.stmtBal!=null&&x.paid>=x.stmtBal-0.005?'<div style="font-size:.58rem;color:var(--ok)">paid in full ✓</div>':''}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${x.apr.toFixed(2)}%
+        ${x.goToApr > x.apr + 0.005 ? `<div title="Nothing is accruing today, but this is the contractual rate if the promo lapses or you stop paying in full" style="font-size:.58rem;color:var(--warn)">${x.goToApr}% go-to</div>` : ''}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums;color:${x.moInterest>0?'var(--danger)':'var(--text3)'}">${x.moInterest>0?payFmt2(x.moInterest):'—'}<div style="font-size:.6rem;color:var(--text3)">${x.per100>0?payFmt2(x.per100)+' per $100':'no cost'}</div></td>
+      <td style="padding:8px 10px;text-align:right;font-size:.78rem;white-space:nowrap;color:${dueSoon?'var(--warn)':'var(--text2)'}">${x.dueDate?fmtDate(x.dueDate):'—'}<div style="font-size:.6rem;color:var(--text3)">${x.daysToDue==null?'':x.daysToDue<0?Math.abs(x.daysToDue)+'d overdue':x.daysToDue===0?'today':x.daysToDue===1?'tomorrow':x.daysToDue+' days'}</div></td>
+      <td style="padding:8px 10px;text-align:right">
+        <input type="text" id="payq-${x.id}" value="${x.pay>0.005?payFmt2(x.pay):''}" placeholder="0.00"
+          style="width:88px;font-size:.8rem;padding:4px 6px;border:1px solid ${x.pay>0.005?'var(--primary)':'var(--border)'};border-radius:5px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
+        ${x.pay>0.005?`<div style="font-size:.6rem;color:var(--ok);margin-top:2px">−${payFmt2(x.pay*x.apr/1200)}/mo</div>`:''}
+      </td>
+      <td style="padding:8px 6px;text-align:right">
+        <button onclick="PAY.payOne('${x.acct.id}','${x.id}')" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">Pay</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const th = 'padding:7px 10px;text-align:left;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.045em;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap';
+  const queue = `
+   <div style="${card};overflow:hidden;margin-bottom:14px">
+     <div style="padding:11px 15px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+       <div style="font-size:.85rem;font-weight:700;color:var(--text)">Pay queue</div>
+       <div style="font-size:.68rem;color:var(--text3)">${st.length} active cards · ${payFmt(totalOwed)} owed of ${payFmt(totalLim)} available · ${Math.round(totalOwed/totalLim*100)}% utilised</div>
+     </div>
+     <div style="overflow-x:auto">
+       <table style="width:100%;border-collapse:collapse;min-width:840px">
+         <thead><tr>
+           <th style="${th}">Card</th>
+           <th style="${th};text-align:right">Balance</th>
+           <th style="${th};text-align:right">Statement</th>
+           <th style="${th};text-align:right">APR</th>
+           <th style="${th};text-align:right">Costs</th>
+           <th style="${th};text-align:right">Due</th>
+           <th style="${th};text-align:right">Pay</th>
+           <th style="${th}"></th>
+         </tr></thead>
+         <tbody>${queueRows}</tbody>
+       </table>
+     </div>
+   </div>`;
+
+  // ── runway ──
+  const runRows = R.series.filter(s => s.e).map(s => {
+    const e = s.e, inc = e.kind === 'income';
+    const low = s.bal < R.floor;
+    return `<tr style="border-bottom:1px solid var(--border-light)">
+      <td style="padding:5px 10px;font-size:.73rem;color:var(--text3);white-space:nowrap">${fmtDate(e.date)}<span style="color:var(--border);margin:0 4px">·</span>${payDiffDays(R.today,e.date)}d</td>
+      <td style="padding:5px 10px;font-size:.76rem;color:var(--text)">${esc(e.label)}${e.kind==='cc-min'?'<span style="font-size:.58rem;padding:1px 4px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">card minimum</span>':''}${e.auto?'<span style="font-size:.58rem;color:var(--text3);margin-left:5px">auto</span>':''}</td>
+      <td style="padding:5px 10px;text-align:right;font-size:.76rem;font-variant-numeric:tabular-nums;color:${inc?'var(--ok)':'var(--text2)'}">${inc?'+':'−'}${payFmt(e.amount)}</td>
+      <td style="padding:5px 10px;text-align:right;font-size:.76rem;font-weight:600;font-variant-numeric:tabular-nums;color:${low?'var(--danger)':'var(--text)'}">${payFmt(s.bal)}</td>
+    </tr>`;
+  }).join('');
+
+  const runway = `
+   <div style="${card};overflow:hidden;margin-bottom:14px">
+     <div style="padding:11px 15px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+       <div style="font-size:.85rem;font-weight:700;color:var(--text)">Cash runway — next ${PAY_HORIZON} days</div>
+       <div style="font-size:.68rem;color:var(--text3)">
+         low point <b style="color:${R.trough<R.floor?'var(--danger)':'var(--text2)'}">${payFmt(R.trough)}</b> on ${fmtDate(R.troughDate)}
+         · before any card payments
+       </div>
+     </div>
+     <div style="padding:8px 0;max-height:290px;overflow-y:auto">
+       <table style="width:100%;border-collapse:collapse">
+         <thead><tr>
+           <th style="${th}">When</th><th style="${th}">What</th>
+           <th style="${th};text-align:right">Amount</th><th style="${th};text-align:right">Balance</th>
+         </tr></thead>
+         <tbody>${runRows || '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text3);font-size:.78rem">Nothing scheduled</td></tr>'}</tbody>
+       </table>
+     </div>
+     <div style="padding:8px 15px;border-top:1px solid var(--border);font-size:.68rem;color:var(--text3);background:var(--surface2)">
+       Card payments are deliberately excluded from this projection — the allocator above decides those. Historically they run about ${payFmt(T.avgPmts)}/month.
+     </div>
+   </div>`;
+
+  // ── earmarks ──
+  const emRow = (p, owed) => `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid var(--border-light)">
+      <div style="min-width:0;flex:1">
+        <div style="font-size:.8rem;color:var(--text)">${esc(p.name)}</div>
+        ${p.cards.length ? `<div style="font-size:.63rem;color:var(--text3);margin-top:2px">carried on ${p.cards.slice(0,3).map(c=>esc(c.name)+' '+payFmt(c.amount)).join(' · ')}</div>` : ''}
+      </div>
+      <div style="text-align:right;white-space:nowrap">
+        <div style="font-size:.85rem;font-weight:600;font-variant-numeric:tabular-nums;color:${owed?'var(--ok)':'var(--warn)'}">${payFmt(Math.abs(p.owesYou))}</div>
+        ${owed && p.cards.length ? `<button onclick="PAY.routeReimb('${p.id}','${p.cards[0].acctId}')" style="font-size:.62rem;padding:2px 7px;margin-top:3px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text2);cursor:pointer">Route to ${esc(p.cards[0].name)}</button>` : ''}
+      </div>
+    </div>`;
+
+  const earmarks = `
+   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:20px">
+     <div style="${card};padding:13px 15px">
+       <div style="${lbl};margin-bottom:3px">Owed to you — not yours to deploy twice</div>
+       <div style="font-size:1.15rem;font-weight:700;color:var(--ok);margin-bottom:7px;font-variant-numeric:tabular-nums">${payFmt(E.totalReceivable)}</div>
+       ${E.receivable.map(p => emRow(p, true)).join('') || '<div style="font-size:.75rem;color:var(--text3)">Nothing outstanding</div>'}
+       <div style="font-size:.65rem;color:var(--text3);margin-top:8px;line-height:1.5">This sits on cards accruing interest. Routing a reimbursement to the card that carried it is worth ${payFmt2(E.totalReceivable*blended/1200)}/mo.</div>
+     </div>
+     <div style="${card};padding:13px 15px">
+       <div style="${lbl};margin-bottom:3px">You owe — reserve before deploying</div>
+       <div style="font-size:1.15rem;font-weight:700;color:var(--warn);margin-bottom:7px;font-variant-numeric:tabular-nums">${payFmt(E.totalPayable)}</div>
+       ${E.payable.map(p => emRow(p, false)).join('') || '<div style="font-size:.75rem;color:var(--text3)">Nothing outstanding</div>'}
+     </div>
+   </div>`;
+
+  wrap.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:1.05rem;font-weight:700;color:var(--text)">Payments</div>
+        <div style="font-size:.72rem;color:var(--text3)">Statement-aware · ${fmtDate(R.today)}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:.7rem;color:var(--text3)">Cash floor</span>
+        <input type="text" value="${payFmt2(R.floor)}" onchange="PAY.setFloor(this.value)"
+          style="width:82px;font-size:.76rem;padding:4px 7px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right">
+      </div>
+    </div>
+    ${tiles}${trajectory}${allocator}${queue}${runway}${earmarks}`;
+}
+
+// ────────────────────────────────────────────────────────────
+// MODALS
+// ────────────────────────────────────────────────────────────
+// budgetConfirm() escapes its message and labels the affirmative button
+// "Delete", so it can't be reused for a payment confirmation.
+
+let _payResolve = null;
+function payConfirm(title, html, okLabel) {
+  return new Promise(resolve => {
+    _payResolve = resolve;
+    showModal(`
+      <div class="modal-title">${esc(title)}</div>
+      <div style="color:var(--text2);font-size:13px;margin:0 0 18px;line-height:1.7;max-height:320px;overflow-y:auto">${html}</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn" onclick="closeModal();_payResolve(false)">Cancel</button>
+        <button class="btn" style="background:var(--primary);color:#fff;border-color:var(--primary)" onclick="closeModal();_payResolve(true)">${esc(okLabel||'Confirm')}</button>
+      </div>`);
+  });
+}
+function payPrompt(title, msg, defVal) {
+  return new Promise(resolve => {
+    _payResolve = resolve;
+    showModal(`
+      <div class="modal-title">${esc(title)}</div>
+      <p style="color:var(--text2);font-size:13px;margin:0 0 14px;line-height:1.6">${esc(msg)}</p>
+      <input type="text" id="pay-prompt-input" value="${esc(defVal||'')}"
+        style="width:100%;font-size:1rem;padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums"
+        onkeydown="if(event.key==='Enter'){const v=this.value;closeModal();_payResolve(v);}">
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
+        <button class="btn" onclick="closeModal();_payResolve(null)">Cancel</button>
+        <button class="btn" style="background:var(--primary);color:#fff;border-color:var(--primary)"
+          onclick="const v=id('pay-prompt-input').value;closeModal();_payResolve(v)">Record</button>
+      </div>`);
+    setTimeout(() => { const el = id('pay-prompt-input'); if (el) { el.focus(); el.select(); } }, 40);
+  });
+}
+
+// ────────────────────────────────────────────────────────────
+// ACTIONS
+// ────────────────────────────────────────────────────────────
+
+const PAY = {
+  setStrategy(s) { UI.payStrategy = s; payDefaults().strategy = s; dirty(); renderPayments(); },
+  setAmount(v)   { UI.payAmount = Math.max(0, parseFloat(String(v).replace(/[^0-9.]/g,'')) || 0); renderPayments(); },
+  setFloor(v)    { payDefaults().cashFloor = Math.max(0, parseFloat(String(v).replace(/[^0-9.]/g,'')) || 0); dirty(); renderPayments(); },
+
+  payOne(acctId, cardId) {
+    const el = id('payq-' + cardId);
+    const amt = el ? (parseFloat(el.value.replace(/[^0-9.]/g,'')) || 0) : 0;
+    if (amt <= 0) { toast('Enter an amount for that card first', 'err'); return; }
+    const s = payCardStates().find(x => x.id === cardId);
+    const purpose = payPurpose(s, amt);
+    const r = payRecord(acctId, amt, purpose, { cardId, statementDate: s?.stmtDate, dueDate: s?.dueDate, notes: `Payment — ${s?s.name:''}` });
+    if (!r) { toast('Could not record that payment', 'err'); return; }
+    dirty();
+    UI.payAmount = null;
+    renderPayments();
+    toast(`${payFmt2(amt)} to ${s?s.name:'card'} recorded (${purpose})`, 'ok');
+  },
+
+  async applyAll() {
+    const A = payAllocate(UI.payAmount, UI.payStrategy, payCardStates());
+    if (!A.alloc.length) { toast('Nothing to allocate', 'err'); return; }
+    const lines = A.alloc.map(x =>
+      `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0"><span>${esc(x.name)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(x.pay)}</b></div>`).join('');
+    const bankName = (D.txnAccounts || []).find(a => a.id === payDefaults().bankAccountId)?.name || 'bank';
+    const go = await payConfirm('Record these payments?',
+      `${lines}<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;justify-content:space-between;gap:14px">
+         <span>Total from ${esc(bankName)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(A.deployed)}</b></div>
+       <div style="margin-top:10px;color:var(--ok)">Stops ${payFmt2(A.saved)}/mo of interest, permanently.</div>`,
+      `Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}`);
+    if (!go) return;
+    let n = 0;
+    A.alloc.forEach(x => {
+      const purpose = payPurpose(x, x.pay);
+      if (payRecord(x.acct.id, x.pay, purpose, { cardId: x.id, statementDate: x.stmtDate, dueDate: x.dueDate, strategy: UI.payStrategy, notes: `Payment — ${x.name}` })) n++;
+    });
+    dirty();
+    UI.payAmount = null;
+    renderPayments();
+    toast(`${n} payment${n===1?'':'s'} recorded · ${payFmt2(A.saved)}/mo of interest stopped`, 'ok');
+  },
+
+  // Close a promo shortfall — either a one-off catch-up payment now, or by raising
+  // the standing instalment so the autopay itself clears the balance in time.
+  async fixPromo(cardId) {
+    const p = payPromoRisk().find(x => x.id === cardId);
+    if (!p) { toast('That promo is already on track', 'ok'); return; }
+    const go = await payConfirm(`${p.name} — close the ${payFmt2(p.shortfall)} gap`,
+      `<div style="line-height:1.7">
+         Balance <b>${payFmt2(p.balance)}</b> · promo ends <b>${fmtDate(p.promo)}</b><br>
+         ${p.payments} more payments of ${payFmt2(p.planned)} = ${payFmt2(p.projected)}<br>
+         <span style="color:var(--danger)">Shortfall ${payFmt2(p.shortfall)}</span>
+       </div>
+       <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+         This records a <b>${payFmt2(p.shortfall)}</b> payment today and raises the standing instalment to
+         <b>${payFmt2(Math.ceil(p.required))}</b>/mo so the autopay clears it on its own.
+         Update the autopay at the issuer to match.
+       </div>`, `Pay ${payFmt(p.shortfall)} and raise instalment`);
+    if (!go) return;
+    payRecord(p.acct.id, p.shortfall, 'principal', {
+      cardId: p.id, statementDate: p.stmtDate, dueDate: p.dueDate,
+      notes: `Promo catch-up — ${p.name} (expires ${p.promo})`
+    });
+    p.card.plannedPayment = Math.ceil(p.required);
+    dirty();
+    UI.payAmount = null;
+    renderPayments();
+    toast(`${payFmt2(p.shortfall)} paid · instalment raised to ${payFmt2(p.card.plannedPayment)}/mo — update the autopay at ${p.name}`, 'ok');
+  },
+
+  async routeReimb(personId, cardAcctId) {
+    const E = payEarmarks();
+    const p = E.people.find(x => x.id === personId);
+    if (!p) return;
+    const cardCarried = p.cards.find(c => c.acctId === cardAcctId);
+    const suggested = Math.min(p.owesYou, cardCarried ? cardCarried.amount : p.owesYou);
+    const card = (D.txnAccounts || []).find(a => a.id === cardAcctId);
+    const raw = await payPrompt(`Reimbursement from ${p.name}`,
+      `How much has ${p.name} repaid? It will be credited to their ledger and paid straight onto ${card ? card.name : 'the card'}.`,
+      suggested.toFixed(2));
+    if (raw == null) return;
+    const amt = Math.round((parseFloat(String(raw).replace(/[^0-9.]/g,'')) || 0) * 100) / 100;
+    if (amt <= 0) return;
+
+    (D.familyAccounts.ledgers[personId] = D.familyAccounts.ledgers[personId] || []).push({
+      id: uid(), date: centralToday(), description: `Reimbursement received`,
+      dr: 0, cr: amt, notes: `Routed to ${card ? card.name : 'card'}`, isReimbursement: true
+    });
+    payRecord(cardAcctId, amt, 'reimbursement-routed', { notes: `Reimbursement from ${p.name}` });
+    payDefaults().earmarks.push({ id: uid(), date: centralToday(), personId, cardAcctId, amount: amt, status: 'settled' });
+    dirty();
+    renderPayments();
+    toast(`${payFmt2(amt)} from ${p.name} routed to ${card ? card.name : 'card'}`, 'ok');
+  }
+};
+
+
 // ── CC Repayment Planner ──────────────────────────────────────────────────
 function computeCCChargesForMonth(cardAccountId, month) {
   // Only count transactions that have an expense type assigned (not transfers, not income, not unclassified)
@@ -7322,7 +8328,11 @@ function renderCCRepaySection(month) {
   wrap.innerHTML = `
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
-        <div style="font-size:.85rem;font-weight:700;color:var(--text)">💳 CC Repayment Planner — ${monthLabel}</div>
+        <div style="font-size:.85rem;font-weight:700;color:var(--text)">💳 CC Repayment Planner — ${monthLabel}
+          <span onclick="switchView('payments')" title="This panel reconciles charges against a calendar month. The Payments tab works off real statement cycles and tells you what to pay from the cash you actually have."
+            style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:5px;font-size:.62rem;font-weight:600;cursor:pointer;background:var(--warn-bg);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent)">
+            superseded → Payments tab</span>
+        </div>
         <div style="font-size:.74rem;color:var(--text3)">Expense-typed transactions only</div>
       </div>
       ${noDataMsg || `
@@ -14493,6 +15503,7 @@ function ptfBuildCards(asOf) {
     // for ranking/simulation purposes (it shouldn't compete with cards accruing interest today).
     // Behind pace → treat its real APR as live risk and flag the shortfall needed to catch up.
     let promoDaysLeft = null, promoMonthsLeft = null, promoOnTrack = null, promoShortfall = null;
+    let promoPayments = null, promoGap = null;
     if (promoExpiration) {
       const diffDays = (new Date(promoExpiration + 'T00:00:00') - new Date(asOf + 'T00:00:00')) / 86400000;
       promoDaysLeft = Math.round(diffDays);
@@ -14502,11 +15513,25 @@ function ptfBuildCards(asOf) {
       } else if (promoMonthsLeft <= 0) {
         promoOnTrack = false; // promo window already over and still carrying a balance
       } else {
-        const monthsToClearAtMin = minPayment > 0 ? balance / minPayment : Infinity;
-        promoOnTrack = monthsToClearAtMin <= promoMonthsLeft + 0.5; // cushion for day-count/rounding noise
-        if (!promoOnTrack) {
-          const requiredPayment = balance / promoMonthsLeft;
-          promoShortfall = Math.max(0, requiredPayment - minPayment);
+        // Counts the instalments that actually land before the deadline rather than
+        // dividing by elapsed months. The old model (balance/minPayment <= monthsLeft + 0.5)
+        // credited a fractional final payment that never arrives AND carried a half-instalment
+        // cushion, so a balance anywhere in a ~$277 band reported "on track" while still
+        // finishing short. Shared with the Payments tab so both agree.
+        const _tpl = (D.templates || []).find(t => t.ccCardId === a.ccCardId);
+        const pace = ccPromoPace({
+          balance, planned: minPayment, promo: promoExpiration,
+          dueDay: _tpl ? _tpl.dueDay : null, asOf
+        });
+        if (pace) {
+          promoOnTrack   = pace.onTrack;
+          promoPayments  = pace.payments;
+          promoGap       = pace.shortfall;
+          if (!promoOnTrack) promoShortfall = Math.max(0, pace.required - minPayment);
+        } else {
+          const monthsToClearAtMin = minPayment > 0 ? balance / minPayment : Infinity;
+          promoOnTrack = monthsToClearAtMin <= promoMonthsLeft;
+          if (!promoOnTrack) promoShortfall = Math.max(0, balance / promoMonthsLeft - minPayment);
         }
       }
     }
@@ -14524,6 +15549,8 @@ function ptfBuildCards(asOf) {
       promoDaysLeft,
       promoOnTrack,
       promoShortfall,
+      promoPayments,
+      promoGap,
       payInFull: !!meta.payInFull,
       minPayment,
       hasPlannedPayment,
@@ -14740,7 +15767,7 @@ function renderPathToFreedom() {
       <td style="padding:9px 10px;text-align:center">
         <input type="date" value="${c.promoExpiration||''}" onchange="ptfSetPromoExpiration('${c.id}', this.value)"
           style="font-size:.72rem;padding:3px 6px;border-radius:6px;border:1px solid ${isUrgent?'#f59e0b':'var(--border)'};background:var(--surface);color:var(--text)">
-        ${isUrgent ? `<div style="font-size:.66rem;color:#f59e0b;font-weight:700;margin-top:2px">⚠ behind pace — needs +${fmtCurrency(c.promoShortfall||0)}/mo to clear by expiration</div>` : ''}
+        ${isUrgent ? `<div style="font-size:.66rem;color:#f59e0b;font-weight:700;margin-top:2px">⚠ behind pace — ${c.promoPayments != null ? `only ${c.promoPayments} payments land before expiry, leaving ${fmtCurrency(c.promoGap||0)} outstanding. ` : ''}Needs +${fmtCurrency(c.promoShortfall||0)}/mo${c.apr ? ` or the balance starts accruing at ${c.apr}%` : ''}<span onclick="event.stopPropagation();switchView('payments')" style="margin-left:6px;text-decoration:underline;cursor:pointer">fix in Payments →</span></div>` : ''}
         ${isOnTrackPromo ? `<div style="font-size:.66rem;color:var(--ok);font-weight:700;margin-top:2px">✓ on pace to clear in time</div>` : ''}
       </td>
       <td style="padding:9px 10px;text-align:right;font-weight:700;color:${payoffMo===0?'var(--ok)':'var(--text)'}">${ptfMonthsLabel(payoffMo)}</td>
