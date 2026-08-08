@@ -7032,6 +7032,34 @@ function ccPromoPace(o) {
   };
 }
 
+// The contractual minimum a card demands, taken from the minimums entered each month in the
+// Monthly tab (cycles[].payments[].amountDue) and the backfilled ptfMinDueHistory. A card's
+// current cycle is often blank simply because the statement has not been issued yet, so this
+// walks backwards to the most recent real figure.
+//
+// Deliberately does NOT fabricate a fallback the way ptfCardMinPayment() does with 2% of
+// balance. That guess is fine for driving a payoff simulation, but this value is used as a
+// SAFETY FLOOR — recommending a payment below the true minimum triggers a late fee and the
+// penalty APR. When nothing real is on file this returns 0 and callers withhold advice.
+function ccContractualMin(card) {
+  if (!card) return { value: 0, source: null, month: null };
+  const tpl = payTemplateFor(card.id);
+  if (tpl) {
+    const months = Object.keys(D.cycles || {}).sort().reverse();
+    for (const m of months) {
+      const p = (D.cycles[m]?.payments || []).find(x => x.templateId === tpl.id && x.amountDue != null);
+      if (p) return { value: parseFloat(p.amountDue) || 0, source: 'Monthly tab', month: m };
+    }
+  }
+  const hist = D.ptfMinDueHistory?.[card.id] || {};
+  const hm = Object.keys(hist).sort().reverse();
+  for (const m of hm) {
+    if (hist[m] && hist[m].due != null) return { value: parseFloat(hist[m].due) || 0, source: 'min-due history', month: m };
+  }
+  if (+card.statementMinDue > 0) return { value: +card.statementMinDue, source: 'entered manually', month: null };
+  return { value: 0, source: null, month: null };
+}
+
 function payTemplateFor(cardId) {
   return (D.templates || []).find(t => t.ccCardId === cardId && t.isActive !== false) || null;
 }
@@ -7106,10 +7134,13 @@ function payCardStates() {
 
       // Promo pace, shared with Path to Freedom
       const planned = +c.plannedPayment || 0;
+      // Last known contractual minimum — from the Monthly tab, not re-typed by hand
+      const minRef = ccContractualMin(c);
+
       const pace = c.promoExpiration
         ? ccPromoPace({ balance, planned: planned || minDue || 0, promo: c.promoExpiration,
                         dueDay: tpl ? tpl.dueDay : null, nextDue: dueDate, asOf: today,
-                        minFloor: (+c.statementMinDue || minDue || 0) })
+                        minFloor: minRef.value })
         : null;
 
       return {
@@ -7123,6 +7154,7 @@ function payCardStates() {
         daysToDue: dueDate ? payDiffDays(today, dueDate) : null,
         role, promo: c.promoExpiration || '',
         pace, promoShortfall: pace ? pace.shortfall : 0,
+        minRef,
         pay: 0
       };
     })
@@ -7538,21 +7570,24 @@ function renderPayments() {
       <div style="font-size:.74rem;color:${free > 1 ? 'var(--text2)' : 'var(--text3)'};line-height:1.6">
         ✓ <b>${esc(p.name)}</b> on track — ${payFmt2(p.planned)}/mo clears ${payFmt2(p.balance)} before ${fmtDate(p.promo)}${spare != null ? ` with ${spare} payment${spare===1?'':'s'} to spare` : ''}
         ${p.card.promoVerifiedFrom
-          ? `<span style="color:var(--ok)">· verified from ${esc(p.card.promoVerifiedFrom)}</span>`
-          : `<span style="color:var(--warn)" title="This deadline has not been checked against a statement. A wrong date here silently rewrites the payoff plan.">· ⚠ expiry not verified against a statement</span>`}
+          ? `<span style="color:var(--ok)">· expiry verified — ${esc(p.card.promoVerifiedFrom)}</span>`
+          : `<span style="color:var(--warn)" title="A wrong promo deadline silently rewrites the payoff plan, and it is the one field that cannot be derived from transactions. Confirm it against a statement once.">· ⚠ expiry not confirmed</span>
+             <button onclick="PAY.markPromoVerified('${p.id}')" style="margin-left:5px;font-size:.62rem;padding:2px 7px;border-radius:4px;border:1px solid var(--warn);background:var(--surface);color:var(--warn);cursor:pointer">I checked this on a statement</button>`}
       </div>
       ${free > 1 ? `<div style="font-size:.74rem;color:var(--text2);line-height:1.6;margin-top:5px;border-top:1px dashed color-mix(in srgb,var(--ok) 30%,transparent);padding-top:5px">
         Paying ${payFmt2(p.planned)} is <b>${payFmt2(free)}/mo faster than needed</b>. At 0% that money earns nothing here.
         Dropping to <b>${payFmt2(p.pace.suggested)}</b>/mo still clears it in ${p.pace.clearsIn} payments
-        and stays ${payFmt2(p.pace.suggested - p.pace.contractual)} above the ${payFmt2(p.pace.contractual)} contractual minimum
+        and stays ${payFmt2(p.pace.suggested - p.pace.contractual)} above the ${payFmt2(p.pace.contractual)} minimum
+        ${p.minRef && p.minRef.source ? `<span style="color:var(--text3)">(from your ${esc(p.minRef.source)}${p.minRef.month?', '+p.minRef.month:''})</span>` : ''}
         — releasing <b style="color:var(--ok)">${payFmt2(free)}/mo</b>${topApr > 0 ? ` for the ${topApr.toFixed(2)}% cards` : ''}.
         <button onclick="PAY.releasePromo('${p.id}')" style="margin-left:6px;font-size:.66rem;padding:3px 9px;border-radius:5px;border:1px solid var(--ok);background:var(--surface);color:var(--ok);cursor:pointer;font-weight:600">Set to ${payFmt(p.pace.suggested)}/mo</button>
       </div>` : ''}
       ${p.pace.mayBeAbleToReduce ? `<div style="font-size:.74rem;color:var(--text2);line-height:1.6;margin-top:5px;border-top:1px dashed color-mix(in srgb,var(--ok) 30%,transparent);padding-top:5px">
-        ${payFmt2(p.planned)}/mo clears this ${p.pace.currentSpare} payments early, so some of it could probably be released to the
-        ${topApr > 0 ? `${topApr.toFixed(2)}%` : 'interest-bearing'} cards. I can't say how much safely without the
-        <b>minimum payment due</b> from your statement — the arithmetic floor here is ${payFmt2(p.pace.mathFloor)}, but paying under the
-        contractual minimum costs a late fee and the penalty APR${p.goToApr>0?` (${p.goToApr}%)`:''}.
+        ${payFmt2(p.planned)}/mo clears this ${p.pace.currentSpare} payments early, so some could probably be released to the
+        ${topApr > 0 ? `${topApr.toFixed(2)}%` : 'interest-bearing'} cards. No minimum has ever been recorded for this card in the
+        Monthly tab, and the arithmetic floor of ${payFmt2(p.pace.mathFloor)} is not safe to act on — paying under the contractual
+        minimum costs a late fee and the penalty APR${p.goToApr>0?` (${p.goToApr}%)`:''}.
+        Record it in Monthly, or enter it here.
         <button onclick="PAY.confirmPromo('${p.id}')" style="margin-left:6px;font-size:.66rem;padding:3px 9px;border-radius:5px;border:1px solid var(--ok);background:var(--surface);color:var(--ok);cursor:pointer;font-weight:600">Enter minimum due</button>
       </div>` : ''}
     </div>`;
@@ -7687,7 +7722,8 @@ function renderPayments() {
       <td style="padding:8px 10px;text-align:right;font-size:.8rem;font-variant-numeric:tabular-nums">${payFmt(x.balance)}
         ${unbilled>1?`<div style="font-size:.58rem;color:var(--text3)">${payFmt(unbilled)} not yet billed</div>`:''}</td>
       <td style="padding:8px 10px;text-align:right;font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--text2)">${x.stmtBal!=null?payFmt(x.stmtBal):'<span style="color:var(--text3)">—</span>'}
-        ${x.stmtBal!=null&&x.paid>=x.stmtBal-0.005?'<div style="font-size:.58rem;color:var(--ok)">paid in full ✓</div>':''}</td>
+        ${x.stmtBal!=null&&x.paid>=x.stmtBal-0.005?'<div style="font-size:.58rem;color:var(--ok)">paid in full ✓</div>':''}
+        ${x.stmtBal==null&&x.minRef&&x.minRef.value>0?`<div title="No statement issued yet this cycle. Last minimum you recorded in the ${esc(x.minRef.source)}${x.minRef.month?' ('+x.minRef.month+')':''}. Not reserved — nothing is due yet." style="font-size:.58rem;color:var(--text3)">last min ${payFmt(x.minRef.value)}</div>`:''}</td>
       <td style="padding:8px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${x.apr.toFixed(2)}%
         ${x.goToApr > x.apr + 0.005 ? `<div title="Nothing is accruing today, but this is the contractual rate if the promo lapses or you stop paying in full" style="font-size:.58rem;color:var(--warn)">${x.goToApr}% go-to</div>` : ''}</td>
       <td style="padding:8px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums;color:${x.moInterest>0?'var(--danger)':'var(--text3)'}">${x.moInterest>0?payFmt2(x.moInterest):'—'}<div style="font-size:.6rem;color:var(--text3)">${x.per100>0?payFmt2(x.per100)+' per $100':'no cost'}</div></td>
@@ -7916,9 +7952,21 @@ const PAY = {
     toast(`${payFmt2(p.shortfall)} paid · instalment raised to ${payFmt2(p.card.plannedPayment)}/mo — update the autopay at ${p.name}`, 'ok');
   },
 
-  // Capture the contractual minimum from a statement. Without it no reduction can be
-  // recommended safely, so this is the gate in front of releasePromo(). Recording it also
-  // stamps the promo as statement-verified.
+  // Stamp a promo deadline as checked. The expiry is the one field the app cannot derive or
+  // cross-check from transactions, and a wrong one silently rewrites the payoff plan — so it
+  // is flagged until a human confirms it once.
+  markPromoVerified(cardId) {
+    const p = payPromoRisk().find(x => x.id === cardId);
+    if (!p) return;
+    p.card.promoVerifiedFrom = `confirmed ${fmtDate(centralToday())}`;
+    dirty();
+    renderPayments();
+    toast(`${p.name} expiry of ${fmtDate(p.promo)} marked as confirmed`, 'ok');
+  },
+
+  // Capture the contractual minimum by hand. Only reachable when nothing has ever been
+  // recorded for the card in the Monthly tab or min-due history — normally ccContractualMin()
+  // finds it automatically.
   async confirmPromo(cardId) {
     const p = payPromoRisk().find(x => x.id === cardId);
     if (!p) return;
