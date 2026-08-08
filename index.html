@@ -8216,8 +8216,22 @@ function hcCardFinanced() {
       if (nm && amt >= 500) {
         const card = (D.txnAccounts || []).find(a => a.id === t.accountId);
         const meta = (D.ccTracker?.cards || []).find(c => c.id === card?.ccCardId);
+        const apr  = meta ? ccGoToApr(card, meta) : 0;
+        // Did this actually get financed, or was the card cleared straight after?
+        // Using a card as a payment rail and settling it next month is a different
+        // thing from carrying the balance, and costs very different money.
+        let run = 0, clearedOn = null;
+        (D.transactions || [])
+          .filter(x => x.accountId === t.accountId && x.isTransfer && (+x.credit || 0) > 0 &&
+                       (!x.status || x.status === 'approved') && x.date >= t.date)
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .some(x => { run += (+x.credit || 0); if (run >= amt - 0.5) { clearedOn = x.date; return true; } return false; });
+        const days = clearedOn ? Math.max(1, payDiffDays(t.date, clearedOn)) : null;
+        // These cards carry revolving balances, so new purchases get no grace period —
+        // interest accrues from the transaction date until cleared.
+        const interest = apr > 0 ? amt * (apr / 100) * ((days || 90) / 365) : 0;
         hits.push({ date: t.date, payee: t.payee, amount: amt, category: nm,
-                    card: card ? card.name : '', apr: meta ? (+meta.apr || 0) : 0 });
+                    card: card ? card.name : '', apr, clearedOn, days, interest });
       }
     });
   });
@@ -8326,23 +8340,40 @@ function renderHomeCost() {
     </div>`;
 
   // card-financed lumps
+  const finTotal    = fin.reduce((s, f) => s + f.amount, 0);
+  const finCarried  = fin.filter(f => !f.clearedOn);
+  const finCleared  = fin.filter(f => f.clearedOn);
+  const finInterest = fin.reduce((s, f) => s + f.interest, 0);
+  const avgDays     = finCleared.length ? Math.round(finCleared.reduce((s, f) => s + f.days, 0) / finCleared.length) : null;
+  const allClear    = finCarried.length === 0;
+
   const finBlock = fin.length ? `
-    <div style="${card};padding:13px 15px;margin-bottom:14px;border-color:color-mix(in srgb,var(--warn) 40%,transparent)">
-      <div style="${lbl};color:var(--warn);margin-bottom:5px">Home costs put on credit cards</div>
+    <div style="${card};padding:13px 15px;margin-bottom:14px;border-color:color-mix(in srgb,var(--${allClear ? 'ok' : 'warn'}) 40%,transparent)">
+      <div style="${lbl};color:var(--${allClear ? 'ok' : 'warn'});margin-bottom:5px">Home costs paid by card</div>
       <div style="font-size:.78rem;color:var(--text2);line-height:1.6;margin-bottom:8px">
-        ${payFmt(fin.reduce((s, f) => s + f.amount, 0))} of the above went onto cards rather than cash.
-        Unless cleared that cycle, the real cost is higher than the figures above.
+        ${payFmt(finTotal)} of the above went onto cards rather than cash.
+        ${allClear
+          ? `All of it was cleared${avgDays ? ` — ${avgDays} days on the card on average` : ''}, so this was a payment route, not borrowing.
+             It still cost about <b>${payFmt(finInterest)}</b> in interest, because these cards carry balances and so earn no grace period on new purchases.`
+          : `<b style="color:var(--warn)">${payFmt(finCarried.reduce((s, f) => s + f.amount, 0))}</b> of it has not been cleared and is accruing.
+             Estimated interest so far <b>${payFmt(finInterest)}</b>.`}
       </div>
       <table style="width:100%;border-collapse:collapse">
-        <thead><tr><th style="${th}">Date</th><th style="${th}">What</th><th style="${th}">Card</th><th style="${th};text-align:right">Amount</th><th style="${th};text-align:right">APR</th></tr></thead>
+        <thead><tr><th style="${th}">Date</th><th style="${th}">What</th><th style="${th}">Card</th><th style="${th};text-align:right">Amount</th><th style="${th};text-align:right">APR</th><th style="${th}">Cleared</th><th style="${th};text-align:right">Interest cost</th></tr></thead>
         <tbody>${fin.slice(0, 10).map(f => `<tr style="border-bottom:1px solid var(--border-light)">
           <td style="padding:5px 10px;font-size:.74rem;color:var(--text3)">${fmtDate(f.date)}</td>
           <td style="padding:5px 10px;font-size:.76rem">${esc(f.category)}<span style="color:var(--text3)"> · ${esc(f.payee)}</span></td>
           <td style="padding:5px 10px;font-size:.76rem;color:var(--text2)">${esc(f.card)}</td>
           <td style="padding:5px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums;font-weight:600">${payFmt(f.amount)}</td>
-          <td style="padding:5px 10px;text-align:right;font-size:.74rem;color:${f.apr > 20 ? 'var(--danger)' : 'var(--text2)'}">${f.apr ? f.apr.toFixed(2) + '%' : '—'}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.74rem;color:var(--text2)">${f.apr ? f.apr.toFixed(2) + '%' : '—'}</td>
+          <td style="padding:5px 10px;font-size:.72rem;color:${f.clearedOn ? 'var(--ok)' : 'var(--danger)'}">${f.clearedOn ? fmtDate(f.clearedOn) + ' · ' + f.days + 'd' : 'still carried'}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.74rem;font-variant-numeric:tabular-nums;color:var(--text2)">${payFmt2(f.interest)}</td>
         </tr>`).join('')}</tbody>
       </table>
+      <div style="font-size:.66rem;color:var(--text3);margin-top:7px;line-height:1.5">
+        Interest is estimated as amount × APR × days held, assuming no grace period. Processing fees charged by the biller
+        are separate transactions and are already counted in the category totals above.
+      </div>
     </div>` : '';
 
   // configuration
