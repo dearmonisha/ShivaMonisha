@@ -802,6 +802,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
         <button class="nav-dd-item" id="tab-debt-payoff"  onclick="switchView('debt-payoff');closeNavDropdowns()">🏁 Debt Payoff</button>
         <button class="nav-dd-item" id="tab-path-to-freedom" onclick="switchView('path-to-freedom');closeNavDropdowns()">🚀 Path to Freedom</button>
         <button class="nav-dd-item" id="tab-mindfulness" onclick="switchView('mindfulness');closeNavDropdowns()">🧘 Mindfulness Review</button>
+        <button class="nav-dd-item" id="tab-ratios" onclick="switchView('ratios');closeNavDropdowns()">📐 Financial Ratios</button>
       </div>
     </div>
 
@@ -954,6 +955,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-debt-payoff"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-path-to-freedom" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-mindfulness" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
+  <div id="view-ratios" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-transactions" style="display:none">
     <div class="tab-sticky-top" id="txn-sticky-hdr">
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px;padding-bottom:6px">
@@ -1262,6 +1264,12 @@ const NAV_ICON_MAP = {
     clean:'Mindfulness Review',
     dot:_dot('Mindfulness Review'),
     bracket:_brk('Mindfulness Review'),
+  },
+  'tab-ratios': {
+    emoji:'📐 Financial Ratios',
+    clean:'Financial Ratios',
+    dot:_dot('Financial Ratios'),
+    bracket:_brk('Financial Ratios'),
   },
 };
 
@@ -1895,13 +1903,13 @@ function switchView(v) {
     UI.txnHighlightRow = null;
   }
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','financials'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','financials'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual','actuals'];
-  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness'];
+  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -1927,6 +1935,7 @@ function switchView(v) {
   if (v==='debt-payoff')   renderDebtPayoff();
   if (v==='path-to-freedom') renderPathToFreedom();
   if (v==='mindfulness')   renderMindfulness();
+  if (v==='ratios')        renderFinancialRatios();
   if (v==='financials')    renderFinancials();
 }
 
@@ -15222,6 +15231,244 @@ function renderMindfulness() {
       </table>
       ${pagerHTML}
     </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FINANCIAL RATIOS — standard personal-finance ratios computed from the same
+// account classifications (type, cashflowClass, excludeFromNetWorth) already
+// used across the Balance Sheet and Path to Freedom, so numbers stay consistent
+// across the app rather than each page defining its own version of "income" or
+// "debt." Shares the Balance Sheet's "as of" date (UI.finBSAsOf).
+// ══════════════════════════════════════════════════════════════════════
+
+// A loan's real monthly payment, tried in order of reliability:
+//  1) Real payments recorded directly on the loan's own ledger (e.g. Ford Lightning's
+//     recurring "Transfer from PNC" credits) — trailing-12mo total ÷ 12, which naturally
+//     handles whatever cadence the payments actually post at (monthly, biweekly, etc.).
+//  2) A formal EMI record in Setup → Obligations, normalized to a monthly amount.
+//  3) A recurring payee match elsewhere (e.g. "WF Mortgage" debited from checking) when the
+//     loan account itself only ever gets book-value reconciliation adjustments, not payment
+//     transactions — trailing-12mo total ÷ 12.
+// Returns null (not 0) when no signal exists at all, so the UI can flag it instead of
+// silently understating the ratio.
+function finLoanMonthlyPayment(acct, asOf, last12Start) {
+  const ownTxns = (D.transactions||[]).filter(t =>
+    t.accountId === acct.id && (!t.status || t.status === 'approved') &&
+    (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+    !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') && (parseFloat(t.credit)||0) > 0
+  );
+  const ownTotal = ownTxns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0);
+  if (ownTotal > 0) return { value: ownTotal/12, source: 'ledger' };
+
+  const emi = (D.obligations?.emis||[]).find(e => (e.itemName||'').trim().toLowerCase() === (acct.name||'').trim().toLowerCase());
+  if (emi && emi.emiAmount) {
+    const freq = (emi.frequency||'Monthly').toLowerCase();
+    const perYear = freq.includes('bi-week') || freq.includes('biweek') ? 26 : freq.includes('week') ? 52 : freq.includes('quarter') ? 4 : (freq.includes('year')||freq.includes('annual')) ? 1 : 12;
+    return { value: emi.emiAmount * perYear / 12, source: 'obligation' };
+  }
+
+  const payeeTxns = (D.transactions||[]).filter(t =>
+    (!t.status || t.status === 'approved') && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+    !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') &&
+    (t.payee||'').trim().toLowerCase() === (acct.name||'').trim().toLowerCase() &&
+    (parseFloat(t.debit)||0) > 0
+  );
+  const payeeTotal = payeeTxns.reduce((s,t) => s + (parseFloat(t.debit)||0), 0);
+  if (payeeTotal > 0) return { value: payeeTotal/12, source: 'payee-match' };
+
+  return { value: 0, source: 'none' };
+}
+
+// A single ratio "card": value, a plain-language read, and a good/watch/risk band based on
+// commonly-cited personal-finance rules of thumb (not personalized financial advice).
+function finRatioCard(opts) {
+  const { label, value, display, band, bandLabel, note, detail } = opts;
+  const bandColor = band === 'good' ? 'var(--ok)' : band === 'watch' ? '#f59e0b' : band === 'risk' ? '#ef4444' : 'var(--text3)';
+  return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px;flex:1;min-width:260px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+        <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">${esc(label)}</div>
+        ${bandLabel ? `<span style="font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:99px;background:color-mix(in srgb,${bandColor} 14%,transparent);border:1px solid color-mix(in srgb,${bandColor} 32%,transparent);color:${bandColor};white-space:nowrap">${esc(bandLabel)}</span>` : ''}
+      </div>
+      <div style="font-size:1.5rem;font-weight:800;color:${bandColor}">${display}</div>
+      ${note ? `<div style="font-size:.76rem;color:var(--text2);margin-top:6px;line-height:1.4">${note}</div>` : ''}
+      ${detail ? `<div style="font-size:.7rem;color:var(--text3);margin-top:6px;line-height:1.4">${detail}</div>` : ''}
+    </div>`;
+}
+
+function renderFinancialRatios() {
+  const wrap = id('view-ratios');
+  if (!wrap) return;
+
+  const asOf = UI.finBSAsOf || centralToday();
+  const last12Start = finMonthsAgoDate(asOf, 11);
+  const allAccounts = D.txnAccounts || [];
+  const liveAccounts = allAccounts.filter(a => !a.excludeFromNetWorth && a.status !== 'closed');
+  const reimbCatIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
+
+  const rows = liveAccounts.map(a => ({ ...a, _bal: finBalanceAsOf(a, asOf) }));
+  const assetRows     = rows.filter(a => FIN_ASSET_TYPES.includes(a.type));
+  const liabilityRows = rows.filter(a => FIN_LIABILITY_TYPES.includes(a.type));
+  const totalAssets      = assetRows.reduce((s,a) => s + a._bal, 0);
+  const totalLiabilities = liabilityRows.reduce((s,a) => s + Math.max(0, a._bal), 0);
+  const netWorth = totalAssets - totalLiabilities;
+
+  // ── Trailing-12-month income & expense — same "real cash flow" filters as Income &
+  // Expenditure / Mindfulness Review (excludes transfers, book-value adjustments, excluded
+  // accounts, and reimbursable pass-through spend).
+  const trailingTxns = (D.transactions||[]).filter(t =>
+    !t.isTransfer && (!t.status || t.status === 'approved') &&
+    (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+    !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') &&
+    !(allAccounts.find(a=>a.id===t.accountId)?.excludeFromNetWorth)
+  );
+  const acctById = {}; allAccounts.forEach(a => { acctById[a.id] = a; });
+  let incomeTotal12 = 0, expenseTotal12 = 0;
+  trailingTxns.forEach(t => {
+    const acct = acctById[t.accountId];
+    const isLiabilityAcct = acct && FIN_LIABILITY_TYPES.includes(acct.type);
+    const credit = parseFloat(t.credit)||0, debit = parseFloat(t.debit)||0;
+    if (!isLiabilityAcct && (t.categoryId === '__income__' || credit > 0)) incomeTotal12 += credit;
+    if (t.splits && t.splits.length) {
+      t.splits.forEach(s => { if (!reimbCatIds.has(s.categoryId)) expenseTotal12 += parseFloat(s.amount)||0; });
+    } else if (debit > 0 && t.categoryId !== '__income__' && !reimbCatIds.has(t.categoryId)) {
+      expenseTotal12 += debit;
+    }
+  });
+  const monthlyIncome  = incomeTotal12 / 12;
+  const monthlyExpense = expenseTotal12 / 12;
+
+  // ── 1. Savings Rate ──────────────────────────────────────────
+  const savingsRate = incomeTotal12 > 0 ? ((incomeTotal12 - expenseTotal12) / incomeTotal12 * 100) : null;
+  const savingsBand = savingsRate == null ? null : savingsRate >= 20 ? 'good' : savingsRate >= 10 ? 'watch' : 'risk';
+
+  // ── 2. Liquidity / Emergency Fund Ratio (in months of coverage) ──
+  const liquidAssets = rows.filter(a => ['Bank','Tracking'].includes(a.type)).reduce((s,a) => s + a._bal, 0);
+  const liquidityMonths = monthlyExpense > 0 ? liquidAssets / monthlyExpense : null;
+  const liquidityBand = liquidityMonths == null ? null : liquidityMonths >= 6 ? 'good' : liquidityMonths >= 3 ? 'watch' : 'risk';
+
+  // ── 3. Debt-to-Income (monthly debt service ÷ gross monthly income) ──
+  const ccCards = ptfBuildCards(asOf);
+  const ccMonthlyDebt = ccCards.filter(c => !c.payInFull).reduce((s,c) => s + c.minPayment, 0);
+  const loanAccts = rows.filter(a => a.type === 'Loans');
+  const loanPayments = loanAccts.map(a => ({ acct: a, pay: finLoanMonthlyPayment(a, asOf, last12Start) }));
+  const loanMonthlyDebt = loanPayments.reduce((s,l) => s + l.pay.value, 0);
+  const loanNoData = loanPayments.filter(l => l.pay.source === 'none');
+  const totalMonthlyDebt = ccMonthlyDebt + loanMonthlyDebt;
+  const dti = monthlyIncome > 0 ? (totalMonthlyDebt / monthlyIncome * 100) : null;
+  const dtiBand = dti == null ? null : dti <= 36 ? 'good' : dti <= 43 ? 'watch' : 'risk';
+
+  // ── 4. Credit Utilization (revolving balance ÷ credit limit) ──
+  const cardsWithLimit = ccCards.filter(c => c.limit != null && c.limit > 0);
+  const cardsNoLimit = ccCards.filter(c => c.limit == null || c.limit <= 0);
+  const totalCCBalance = cardsWithLimit.reduce((s,c) => s + c.balance, 0);
+  const totalCCLimit   = cardsWithLimit.reduce((s,c) => s + c.limit, 0);
+  const utilization = totalCCLimit > 0 ? (totalCCBalance / totalCCLimit * 100) : null;
+  const utilBand = utilization == null ? null : utilization <= 10 ? 'good' : utilization <= 30 ? 'watch' : 'risk';
+
+  // ── 5. Debt-to-Asset / Solvency Ratio ──────────────────────────
+  const debtToAsset = totalAssets > 0 ? (totalLiabilities / totalAssets * 100) : null;
+  const debtToAssetBand = debtToAsset == null ? null : debtToAsset <= 30 ? 'good' : debtToAsset <= 50 ? 'watch' : 'risk';
+
+  // ── 6. Net Worth to (Annual) Income ────────────────────────────
+  const nwToIncome = incomeTotal12 > 0 ? (netWorth / incomeTotal12) : null;
+
+  // ── 7. Investment Assets Ratio (income-producing assets ÷ net worth) ──
+  const incomeAssetBalance = rows.filter(a => a.cashflowClass === 'income-asset').reduce((s,a) => s + a._bal, 0);
+  const investAssetsRatio = netWorth > 0 ? (incomeAssetBalance / netWorth * 100) : null;
+
+  // ── 8. Financial Independence / Wealth Ratio (real cash income from income-asset
+  // accounts ÷ expenses — same measure as the Balance Sheet's Wealth (days), as a %) ──
+  const incomeAssetRows = rows.filter(a => a.cashflowClass === 'income-asset');
+  const realAssetIncomeMonthly = (() => {
+    let total = 0;
+    incomeAssetRows.forEach(a => {
+      const txns = (D.transactions||[]).filter(t =>
+        t.accountId === a.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+        (!t.status || t.status === 'approved') && (parseFloat(t.credit)||0) > 0 &&
+        !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
+      );
+      total += txns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0) / 12;
+    });
+    return total;
+  })();
+  const fiRatio = monthlyExpense > 0 ? (realAssetIncomeMonthly / monthlyExpense * 100) : null;
+
+  const pctStr = (v, d=1) => v == null ? '—' : v.toFixed(d) + '%';
+
+  const cashFlowCards = [
+    finRatioCard({
+      label: 'Savings Rate', value: savingsRate, display: pctStr(savingsRate,1),
+      band: savingsBand, bandLabel: savingsBand==='good'?'Healthy':savingsBand==='watch'?'Okay':savingsBand==='risk'?'Low':null,
+      note: `(${fmtCurrency(incomeTotal12)} income − ${fmtCurrency(expenseTotal12)} expenses) ÷ income, trailing 12 months.`,
+      detail: 'Rule of thumb: 20%+ is healthy, 10–20% okay, under 10% worth a look.',
+    }),
+    finRatioCard({
+      label: 'Liquidity / Emergency Fund', value: liquidityMonths, display: liquidityMonths==null?'—':liquidityMonths.toFixed(1)+' mo',
+      band: liquidityBand, bandLabel: liquidityBand==='good'?'Well covered':liquidityBand==='watch'?'Building':liquidityBand==='risk'?'Thin':null,
+      note: `${fmtCurrency(liquidAssets)} in Bank/Tracking accounts ÷ ${fmtCurrency(monthlyExpense)}/mo average expense.`,
+      detail: 'Rule of thumb: 6+ months covered is healthy, 3–6 building, under 3 thin. Excludes Investment/Real Estate as not instantly accessible.',
+    }),
+    finRatioCard({
+      label: 'Debt-to-Income (DTI)', value: dti, display: pctStr(dti,1),
+      band: dtiBand, bandLabel: dtiBand==='good'?'Healthy':dtiBand==='watch'?'Elevated':dtiBand==='risk'?'High':null,
+      note: `${fmtCurrency(totalMonthlyDebt)}/mo required debt payments ÷ ${fmtCurrency(monthlyIncome)}/mo income.`,
+      detail: `Lender rule of thumb: ≤36% healthy, up to 43% is the usual mortgage-approval ceiling.${loanNoData.length ? ` ⚠ No payment data found for: ${loanNoData.map(l=>esc(l.acct.name)).join(', ')} — excluded, so this may understate DTI.` : ''}`,
+    }),
+    finRatioCard({
+      label: 'Credit Utilization', value: utilization, display: pctStr(utilization,1),
+      band: utilBand, bandLabel: utilBand==='good'?'Excellent':utilBand==='watch'?'Fair':utilBand==='risk'?'High':null,
+      note: `${fmtCurrency(totalCCBalance)} revolving balance ÷ ${fmtCurrency(totalCCLimit)} total credit limit.`,
+      detail: `Rule of thumb: under 10% is excellent for credit scoring, under 30% is fair, above that starts to hurt.${cardsNoLimit.length ? ` (${cardsNoLimit.length} card${cardsNoLimit.length!==1?'s':''} missing a credit limit, excluded: ${cardsNoLimit.map(c=>esc(c.name)).join(', ')})` : ''}`,
+    }),
+  ];
+
+  const netWorthCards = [
+    finRatioCard({
+      label: 'Debt-to-Asset (Solvency)', value: debtToAsset, display: pctStr(debtToAsset,1),
+      band: debtToAssetBand, bandLabel: debtToAssetBand==='good'?'Low leverage':debtToAssetBand==='watch'?'Moderate':debtToAssetBand==='risk'?'High leverage':null,
+      note: `${fmtCurrency(totalLiabilities)} total liabilities ÷ ${fmtCurrency(totalAssets)} total assets.`,
+      detail: 'Rule of thumb: under 30% is low leverage, 30–50% moderate, above 50% means more than half of what you own is financed by debt.',
+    }),
+    finRatioCard({
+      label: 'Net Worth to Income', value: nwToIncome, display: nwToIncome==null?'—':nwToIncome.toFixed(2)+'x',
+      band: null,
+      note: `${fmtCurrency(netWorth)} net worth ÷ ${fmtCurrency(incomeTotal12)} trailing-12mo income.`,
+      detail: 'Common milestone rules of thumb (varies a lot by source): ~1x income by 30, 3x by 40, 6x by 50, 8x by 60 — a gut-check, not a target tailored to you.',
+    }),
+    finRatioCard({
+      label: 'Investment Assets Ratio', value: investAssetsRatio, display: pctStr(investAssetsRatio,1),
+      band: null,
+      note: `${fmtCurrency(incomeAssetBalance)} tagged Income Asset ÷ ${fmtCurrency(netWorth)} net worth.`,
+      detail: 'Higher means more of your net worth is in accounts you\'ve tagged as income-producing (vs. personal-use assets like your home). This is capital available to redeploy, not cash flow already being produced — see the Investment Goal panel on the Balance Sheet for that distinction.',
+    }),
+    finRatioCard({
+      label: 'Financial Independence Ratio', value: fiRatio, display: pctStr(fiRatio,1),
+      band: fiRatio==null?null:fiRatio>=100?'good':fiRatio>=25?'watch':'risk',
+      bandLabel: fiRatio==null?null:fiRatio>=100?'Independent':fiRatio>=25?'Building':'Early',
+      note: `${fmtCurrency(realAssetIncomeMonthly)}/mo real cash income from Income Asset accounts ÷ ${fmtCurrency(monthlyExpense)}/mo expenses.`,
+      detail: '100% means your income-asset accounts alone cover your expenses with no salary needed — the same idea as Wealth (days) on the Balance Sheet, shown here as a percentage.',
+    }),
+  ];
+
+  wrap.innerHTML = `
+    <div style="margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:1.05rem;font-weight:800;margin-bottom:2px">📐 Financial Ratios</div>
+        <div style="font-size:.78rem;color:var(--text3)">Standard personal-finance ratios computed from your accounts and trailing-12-month activity. Rules of thumb shown are common benchmarks, not personalized financial advice.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:.78rem;color:var(--text3)">As of</label>
+        <input type="date" value="${asOf}" onchange="UI.finBSAsOf=this.value;renderFinancialRatios()" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.82rem">
+      </div>
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin:4px 0 8px">Cash Flow &amp; Debt</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:22px">${cashFlowCards.join('')}</div>
+
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin:4px 0 8px">Net Worth</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">${netWorthCards.join('')}</div>
+  `;
 }
 
 // ── Move Transaction to Another Account ──────────────────────
