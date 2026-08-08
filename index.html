@@ -804,6 +804,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
         <button class="nav-dd-item" id="tab-path-to-freedom" onclick="switchView('path-to-freedom');closeNavDropdowns()">🚀 Path to Freedom</button>
         <button class="nav-dd-item" id="tab-mindfulness" onclick="switchView('mindfulness');closeNavDropdowns()">🧘 Mindfulness Review</button>
         <button class="nav-dd-item" id="tab-ratios" onclick="switchView('ratios');closeNavDropdowns()">📐 Financial Ratios</button>
+        <button class="nav-dd-item" id="tab-home-cost" onclick="switchView('home-cost');closeNavDropdowns()">🏠 Cost of Home Ownership</button>
       </div>
     </div>
 
@@ -958,6 +959,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-path-to-freedom" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-mindfulness" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-ratios" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
+  <div id="view-home-cost" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-transactions" style="display:none">
     <div class="tab-sticky-top" id="txn-sticky-hdr">
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px;padding-bottom:6px">
@@ -1346,6 +1348,8 @@ function _applyData(raw) {
   (D.ccTracker?.cards || []).forEach(c => {
     if (!c.strategyRole) c.strategyRole = c.payInFull ? 'pay-in-full' : ((+c.apr || 0) === 0 ? 'minimum-only' : 'avalanche');
   });
+  // Cost of Home Ownership — category list is seeded on first use by hcDefaults()
+  if (!D.homeCost) D.homeCost = {};
   if (!D.pathToFreedom) D.pathToFreedom = { extraMonthly: 0 };
   if (D.pathToFreedom.extraMonthly == null) D.pathToFreedom.extraMonthly = 0;
   // Historical min-due/statement-balance data, keyed by ccCardId → 'YYYY-MM' → {due,paid,outstanding,dueDate,metMin}.
@@ -1921,13 +1925,13 @@ function switchView(v) {
     UI.txnHighlightRow = null;
   }
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','financials','payments'].forEach(k => {
+  ['monthly','family','cc','cc-balances','treemap','sankey','budget','breakdown','annual','actuals','setup','obligations','transactions','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','financials','payments','home-cost'].forEach(k => {
     id('view-'+k).style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual','actuals'];
-  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios'];
+  const _insightsViews = ['cc','cc-balances','treemap','sankey','breakdown','reports','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','home-cost'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -1956,6 +1960,7 @@ function switchView(v) {
   if (v==='ratios')        renderFinancialRatios();
   if (v==='financials')    renderFinancials();
   if (v==='payments')      renderPayments();
+  if (v==='home-cost')     renderHomeCost();
 }
 
 function toggleNavDropdown(name, triggerEl) {
@@ -8037,6 +8042,389 @@ const PAY = {
     dirty();
     renderPayments();
     toast(`${payFmt2(amt)} from ${p.name} routed to ${card ? card.name : 'card'}`, 'ok');
+  }
+};
+
+
+// ════════════════════════════════════════════════════════════
+// COST OF HOME OWNERSHIP
+// ════════════════════════════════════════════════════════════
+// What the house actually costs to own, separated from what it costs to BUY.
+// A mortgage payment is not all expense — the principal portion moves money
+// from one pocket to another and is excluded from the true cost figure.
+
+const HC_DEFAULTS = {
+  // Named rather than id-keyed so this survives category renames/rebuilds
+  include: [
+    'Mortgage','Property Tax','Home Insurance','HOA',
+    'Electricity','Gas','FloMo Water',
+    'Lawn Care','Garden Replanting','Backflow Testing','Baker Brothers',
+    'Total Spetic','Culligan','Home Improvement','Pest Control','Home Security'
+  ],
+  // Costs you would still pay as a renter — off by default, toggleable
+  optional: ['House Cleaning','Internet','Locker Rental'],
+  months: 12
+};
+
+function hcDefaults() {
+  if (!D.homeCost) D.homeCost = {};
+  const h = D.homeCost;
+  if (!Array.isArray(h.include)) h.include = HC_DEFAULTS.include.slice();
+  if (h.months == null) h.months = 12;
+  if (h.mortgageCategory == null) h.mortgageCategory = 'Mortgage';
+  if (h.homeAccountId == null) {
+    const a = (D.txnAccounts || []).find(x => x.type === 'Real Estate' && x.status !== 'closed');
+    h.homeAccountId = a ? a.id : '';
+  }
+  if (h.loanAccountId == null) {
+    const a = (D.txnAccounts || []).find(x => x.type === 'Loans' && /mortgage/i.test(x.name) && x.status !== 'closed');
+    h.loanAccountId = a ? a.id : '';
+  }
+  return h;
+}
+
+function hcCatByName(name) {
+  return (D.budget?.categories || []).find(c => c.name === name) || null;
+}
+
+// Spend for one category across a month range, honouring splits
+function hcSpendByMonth(catId, months) {
+  const out = {};
+  months.forEach(m => { out[m] = 0; });
+  const ok = t => (!t.status || t.status === 'approved');
+  (D.transactions || []).forEach(t => {
+    if (!ok(t) || t.isTransfer) return;
+    const m = (t.date || '').slice(0, 7);
+    if (!(m in out)) return;
+    if (t.splits && t.splits.length) {
+      t.splits.forEach(s => { if (s.categoryId === catId) out[m] += (parseFloat(s.amount) || 0); });
+    } else if (t.categoryId === catId) {
+      out[m] += (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+    }
+  });
+  return out;
+}
+
+function hcMonthList(n) {
+  const cur = centralToday().slice(0, 7);
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) out.push(shiftYM(cur, -i));
+  return out;
+}
+
+// Principal repaid over the window, read from the mortgage loan account.
+// Credits on a Loans account reduce the balance, so they ARE the principal.
+// Everything else in the mortgage category is interest plus any escrow.
+function hcPrincipalPaid(months) {
+  const h = hcDefaults();
+  if (!h.loanAccountId) return 0;
+  const set = new Set(months);
+  return (D.transactions || [])
+    .filter(t => t.accountId === h.loanAccountId && (!t.status || t.status === 'approved') &&
+                 set.has((t.date || '').slice(0, 7)))
+    .reduce((s, t) => s + (parseFloat(t.credit) || 0) - (parseFloat(t.debit) || 0), 0);
+}
+
+function hcCompute() {
+  const h = hcDefaults();
+  const months = hcMonthList(h.months);
+  const rows = [];
+  h.include.forEach(name => {
+    const c = hcCatByName(name);
+    if (!c) { rows.push({ name, missing: true, total: 0, byMonth: {}, n: 0 }); return; }
+    const byMonth = hcSpendByMonth(c.id, months);
+    const total = months.reduce((s, m) => s + byMonth[m], 0);
+    const n = months.filter(m => Math.abs(byMonth[m]) > 0.005).length;
+    rows.push({ name, catId: c.id, byMonth, total, n, missing: false });
+  });
+  rows.sort((a, b) => b.total - a.total);
+
+  const gross     = rows.reduce((s, r) => s + r.total, 0);
+  const principal = Math.max(0, hcPrincipalPaid(months));
+  const trueCost  = gross - principal;
+
+  // income over the same window, for the share-of-income figure
+  const ok = t => (!t.status || t.status === 'approved');
+  const set = new Set(months);
+  const income = (D.transactions || [])
+    .filter(t => ok(t) && t.categoryId === '__income__' && set.has((t.date || '').slice(0, 7)))
+    .reduce((s, t) => s + (parseFloat(t.credit) || 0), 0);
+
+  const homeAcct = (D.txnAccounts || []).find(a => a.id === h.homeAccountId);
+  const homeValue = homeAcct ? (parseFloat(homeAcct.openingBalance) || 0) : 0;
+  const loanAcct  = (D.txnAccounts || []).find(a => a.id === h.loanAccountId);
+  const loanBal   = loanAcct ? txnCurrentBalance(loanAcct) : 0;
+
+  const byMonthTotal = {};
+  months.forEach(m => { byMonthTotal[m] = rows.reduce((s, r) => s + (r.byMonth[m] || 0), 0); });
+
+  return {
+    months, rows, gross, principal, trueCost, income, homeValue, loanBal,
+    equity: homeValue - loanBal,
+    byMonthTotal,
+    perMonth: h.months ? gross / h.months : 0,
+    truePerMonth: h.months ? trueCost / h.months : 0,
+    shareOfIncome: income ? trueCost / income : 0,
+    pctOfValue: homeValue ? trueCost / homeValue : 0
+  };
+}
+
+// Categories that look like home costs but are not currently included —
+// so the list can't silently drift as new categories get created.
+function hcSuggestions() {
+  const h = hcDefaults();
+  const inc = new Set(h.include);
+  const groups = {};
+  (D.budget?.groups || []).forEach(g => { groups[g.id] = g.name; });
+  // Keywords are deliberately specific. A loose pattern matched Car Insurance,
+  // Tax Filing Fees and Cleaning Supplies — none of which are home costs.
+  const KEYWORDS = /roof|hvac|septic|lawn|garden|yard|irrigat|backflow|pest|termite|gutter|chimney|hoa|mortgage|property\s*tax|home\s*(improvement|insurance|security|warranty|repair)|appliance|fence|pool|sprinkler|softener|culligan|plumb|handyman|landscap/i;
+  const EXCLUDE = /car|vehicle|auto|truck|india|pet|filing|income|medical|supplies|groceries|goods/i;
+  const out = [];
+  (D.budget?.categories || []).forEach(c => {
+    if (inc.has(c.name)) return;
+    const g = groups[c.groupId] || '';
+    const looksHome = (g === 'Housing' || KEYWORDS.test(c.name)) && !EXCLUDE.test(c.name);
+    if (!looksHome) return;
+    const months = hcMonthList(h.months);
+    const bm = hcSpendByMonth(c.id, months);
+    const total = months.reduce((s, m) => s + bm[m], 0);
+    if (Math.abs(total) < 1) return;
+    out.push({ name: c.name, group: g, total, optional: HC_DEFAULTS.optional.includes(c.name) });
+  });
+  return out.sort((a, b) => b.total - a.total);
+}
+
+// Property tax and similar lumps charged to a credit card — worth surfacing,
+// because a 0%-interest bill paid on a 26% card is not the same bill.
+function hcCardFinanced() {
+  const h = hcDefaults();
+  const months = new Set(hcMonthList(h.months));
+  const ccIds = new Set((D.txnAccounts || []).filter(a => a.type === 'Credit Card').map(a => a.id));
+  const catIds = new Map();
+  h.include.forEach(n => { const c = hcCatByName(n); if (c) catIds.set(c.id, n); });
+  const hits = [];
+  (D.transactions || []).forEach(t => {
+    if ((t.status && t.status !== 'approved') || t.isTransfer) return;
+    if (!ccIds.has(t.accountId)) return;
+    if (!months.has((t.date || '').slice(0, 7))) return;
+    const lines = (t.splits && t.splits.length) ? t.splits
+      : [{ categoryId: t.categoryId, amount: (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0) }];
+    lines.forEach(L => {
+      const nm = catIds.get(L.categoryId);
+      const amt = parseFloat(L.amount) || 0;
+      if (nm && amt >= 500) {
+        const card = (D.txnAccounts || []).find(a => a.id === t.accountId);
+        const meta = (D.ccTracker?.cards || []).find(c => c.id === card?.ccCardId);
+        hits.push({ date: t.date, payee: t.payee, amount: amt, category: nm,
+                    card: card ? card.name : '', apr: meta ? (+meta.apr || 0) : 0 });
+      }
+    });
+  });
+  return hits.sort((a, b) => b.amount - a.amount);
+}
+
+// ── render ───────────────────────────────────────────────────
+
+let _hcChart = null;
+
+function renderHomeCost() {
+  const wrap = id('view-home-cost');
+  if (!wrap) return;
+  const h = hcDefaults();
+  const R = hcCompute();
+  const sug = hcSuggestions();
+  const fin = hcCardFinanced();
+
+  const card = 'background:var(--surface);border:1px solid var(--border);border-radius:10px';
+  const lbl  = 'font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)';
+  const th   = 'padding:7px 10px;text-align:left;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.045em;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap';
+
+  const tile = (label, value, color, sub) => `
+    <div style="${card};padding:11px 13px">
+      <div style="${lbl}">${label}</div>
+      <div style="font-size:1.3rem;font-weight:700;color:${color || 'var(--text)'};margin-top:3px;font-variant-numeric:tabular-nums">${value}</div>
+      ${sub ? `<div style="font-size:.66rem;color:var(--text3);margin-top:2px">${sub}</div>` : ''}
+    </div>`;
+
+  const yrs = (h.months / 12);
+  const tiles = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
+      ${tile('True cost of ownership', payFmt(R.trueCost), 'var(--danger)', `over ${h.months} months · ${payFmt(R.truePerMonth)}/mo`)}
+      ${tile('Cash out the door', payFmt(R.gross), 'var(--text)', `${payFmt(R.perMonth)}/mo including principal`)}
+      ${tile('Built equity', payFmt(R.principal), 'var(--ok)', 'mortgage principal — not a cost')}
+      ${tile('Share of income', (R.shareOfIncome * 100).toFixed(1) + '%', R.shareOfIncome > 0.35 ? 'var(--danger)' : 'var(--warn)', `of ${payFmt(R.income)} earned`)}
+      ${tile('Against home value', (R.pctOfValue / Math.max(yrs, 0.01) * 100).toFixed(2) + '%', 'var(--text2)', `per year on ${payFmt(R.homeValue)}`)}
+    </div>`;
+
+  // equity vs cost bar
+  const gp = R.gross || 1;
+  const split = `
+    <div style="${card};padding:13px 15px;margin-bottom:14px">
+      <div style="${lbl};margin-bottom:7px">Where the housing money went</div>
+      <div style="display:flex;height:26px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">
+        <div style="width:${R.trueCost / gp * 100}%;background:var(--danger);opacity:.8;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.68rem;font-weight:700">${(R.trueCost / gp * 100).toFixed(0)}% spent</div>
+        <div style="width:${R.principal / gp * 100}%;background:var(--ok);opacity:.85;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.68rem;font-weight:700">${(R.principal / gp * 100).toFixed(0)}% equity</div>
+      </div>
+      <div style="font-size:.75rem;color:var(--text2);margin-top:8px;line-height:1.6">
+        Of <b>${payFmt(R.gross)}</b> paid out over ${h.months} months, <b style="color:var(--ok)">${payFmt(R.principal)}</b> reduced the mortgage
+        and stays yours as equity. The remaining <b style="color:var(--danger)">${payFmt(R.trueCost)}</b> — interest, tax, insurance, utilities and upkeep —
+        is the genuine cost of living in the house, about <b>${payFmt(R.truePerMonth)}</b> a month.
+        ${R.homeValue ? `<br>Home valued at ${payFmt(R.homeValue)} against a ${payFmt(R.loanBal)} mortgage — equity of <b>${payFmt(R.equity)}</b>.` : ''}
+      </div>
+    </div>`;
+
+  // breakdown table
+  const maxRow = Math.max(...R.rows.map(r => r.total), 1);
+  const body = R.rows.filter(r => Math.abs(r.total) > 0.005 || r.missing).map(r => {
+    const share = r.total / (R.gross || 1) * 100;
+    return `<tr style="border-bottom:1px solid var(--border-light)">
+      <td style="padding:7px 10px;font-size:.82rem;color:var(--text)">${esc(r.name)}
+        ${r.missing ? '<span style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--warn-bg);color:var(--warn);margin-left:5px">no such category</span>' : ''}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:.82rem;font-variant-numeric:tabular-nums;font-weight:600">${payFmt(r.total)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums;color:var(--text2)">${payFmt(r.total / h.months)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:.75rem;color:var(--text3)">${r.n}/${h.months}</td>
+      <td style="padding:7px 10px;width:32%">
+        <div style="height:7px;background:var(--surface2);border-radius:3px;position:relative">
+          <div style="position:absolute;left:0;top:0;height:7px;width:${Math.max(1, r.total / maxRow * 100)}%;background:var(--primary);opacity:.75;border-radius:3px"></div>
+        </div>
+        <div style="font-size:.6rem;color:var(--text3);margin-top:2px">${share.toFixed(1)}% of total</div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const table = `
+    <div style="${card};overflow:hidden;margin-bottom:14px">
+      <div style="padding:11px 15px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="font-size:.85rem;font-weight:700;color:var(--text)">What makes it up</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          ${[12, 24, 36].map(n => `<button onclick="HC.setMonths(${n})" style="font-size:.7rem;padding:4px 10px;border-radius:6px;cursor:pointer;border:1px solid ${h.months===n?'var(--primary)':'var(--border)'};background:${h.months===n?'var(--primary)':'var(--surface)'};color:${h.months===n?'#fff':'var(--text2)'}">${n} mo</button>`).join('')}
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="${th}">Category</th>
+          <th style="${th};text-align:right">${h.months}-month total</th>
+          <th style="${th};text-align:right">Per month</th>
+          <th style="${th};text-align:right">Months seen</th>
+          <th style="${th}">Share</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+        <tfoot><tr style="background:var(--surface2)">
+          <td style="padding:8px 10px;font-size:.82rem;font-weight:700">Total cash out</td>
+          <td style="padding:8px 10px;text-align:right;font-size:.85rem;font-weight:700;font-variant-numeric:tabular-nums">${payFmt(R.gross)}</td>
+          <td style="padding:8px 10px;text-align:right;font-size:.8rem;font-weight:700;font-variant-numeric:tabular-nums">${payFmt(R.perMonth)}</td>
+          <td colspan="2"></td>
+        </tr></tfoot>
+      </table>
+    </div>`;
+
+  const chart = `
+    <div style="${card};padding:13px 15px;margin-bottom:14px">
+      <div style="${lbl};margin-bottom:8px">Month by month</div>
+      <div style="position:relative;height:230px"><canvas id="hc-canvas"></canvas></div>
+    </div>`;
+
+  // card-financed lumps
+  const finBlock = fin.length ? `
+    <div style="${card};padding:13px 15px;margin-bottom:14px;border-color:color-mix(in srgb,var(--warn) 40%,transparent)">
+      <div style="${lbl};color:var(--warn);margin-bottom:5px">Home costs put on credit cards</div>
+      <div style="font-size:.78rem;color:var(--text2);line-height:1.6;margin-bottom:8px">
+        ${payFmt(fin.reduce((s, f) => s + f.amount, 0))} of the above went onto cards rather than cash.
+        Unless cleared that cycle, the real cost is higher than the figures above.
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr><th style="${th}">Date</th><th style="${th}">What</th><th style="${th}">Card</th><th style="${th};text-align:right">Amount</th><th style="${th};text-align:right">APR</th></tr></thead>
+        <tbody>${fin.slice(0, 10).map(f => `<tr style="border-bottom:1px solid var(--border-light)">
+          <td style="padding:5px 10px;font-size:.74rem;color:var(--text3)">${fmtDate(f.date)}</td>
+          <td style="padding:5px 10px;font-size:.76rem">${esc(f.category)}<span style="color:var(--text3)"> · ${esc(f.payee)}</span></td>
+          <td style="padding:5px 10px;font-size:.76rem;color:var(--text2)">${esc(f.card)}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums;font-weight:600">${payFmt(f.amount)}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:.74rem;color:${f.apr > 20 ? 'var(--danger)' : 'var(--text2)'}">${f.apr ? f.apr.toFixed(2) + '%' : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  // configuration
+  const chip = (name, on, extra) => `
+    <button onclick="HC.toggle('${name.replace(/'/g, "\\'")}')"
+      style="font-size:.7rem;padding:4px 10px;border-radius:14px;cursor:pointer;white-space:nowrap;
+             border:1px solid ${on ? 'var(--primary)' : 'var(--border)'};
+             background:${on ? 'color-mix(in srgb,var(--primary) 12%,transparent)' : 'var(--surface)'};
+             color:${on ? 'var(--primary)' : 'var(--text3)'};font-weight:${on ? '600' : '400'}">
+      ${on ? '✓ ' : '+ '}${esc(name)}${extra ? `<span style="opacity:.65"> ${extra}</span>` : ''}</button>`;
+
+  const config = `
+    <div style="${card};padding:13px 15px;margin-bottom:20px">
+      <div style="${lbl};margin-bottom:7px">Included categories</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:${sug.length ? '12px' : '0'}">
+        ${h.include.map(n => chip(n, true)).join('')}
+      </div>
+      ${sug.length ? `
+        <div style="${lbl};margin-bottom:7px;color:var(--warn)">Not included — worth considering</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${sug.map(s => chip(s.name, false, payFmt(s.total))).join('')}
+        </div>
+        <div style="font-size:.66rem;color:var(--text3);margin-top:8px;line-height:1.5">
+          Anything in the Housing group, or matching home-related keywords, that has spending in the window but is not counted.
+          Costs you would also pay renting — cleaning, internet — are a judgement call.
+        </div>` : ''}
+    </div>`;
+
+  wrap.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:1.05rem;font-weight:700;color:var(--text)">🏠 Cost of Home Ownership</div>
+        <div style="font-size:.72rem;color:var(--text3)">Last ${h.months} months to ${fmtDate(centralToday())} · ${R.rows.filter(r => !r.missing).length} categories</div>
+      </div>
+    </div>
+    ${tiles}${split}${table}${chart}${finBlock}${config}`;
+
+  // chart
+  const cv = id('hc-canvas');
+  if (cv && typeof Chart !== 'undefined') {
+    if (_hcChart) { _hcChart.destroy(); _hcChart = null; }
+    const top = R.rows.filter(r => r.total > 0).slice(0, 6);
+    const palette = ['#D97757', '#2E8B57', '#C07A0A', '#6B5344', '#4A7FB5', '#9E5FA8'];
+    _hcChart = new Chart(cv, {
+      type: 'bar',
+      data: {
+        labels: R.months.map(m => {
+          const dt = new Date(+m.slice(0, 4), +m.slice(5, 7) - 1, 1);
+          return dt.toLocaleDateString('en-US', { month: 'short' }) + " '" + m.slice(2, 4);
+        }),
+        datasets: top.map((r, i) => ({
+          label: r.name,
+          data: R.months.map(m => Math.round((r.byMonth[m] || 0) * 100) / 100),
+          backgroundColor: palette[i % palette.length],
+          borderWidth: 0
+        })).concat([{
+          label: 'Everything else',
+          data: R.months.map(m => Math.round((R.byMonthTotal[m] - top.reduce((s, r) => s + (r.byMonth[m] || 0), 0)) * 100) / 100),
+          backgroundColor: '#C9BDB0', borderWidth: 0
+        }])
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: { x: { stacked: true, grid: { display: false }, ticks: { font: { size: 10 } } },
+                  y: { stacked: true, ticks: { font: { size: 10 }, callback: v => '$' + (v / 1000).toFixed(0) + 'k' } } },
+        plugins: {
+          legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 12, padding: 10 } },
+          tooltip: { callbacks: { label: c => c.dataset.label + ': ' + payFmt2(c.raw) } }
+        }
+      }
+    });
+  }
+}
+
+const HC = {
+  setMonths(n) { hcDefaults().months = n; dirty(); renderHomeCost(); },
+  toggle(name) {
+    const h = hcDefaults();
+    const i = h.include.indexOf(name);
+    if (i >= 0) h.include.splice(i, 1); else h.include.push(name);
+    dirty();
+    renderHomeCost();
   }
 };
 
