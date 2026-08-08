@@ -6996,7 +6996,26 @@ function ccPromoPace(o) {
   const projected = planned * n;
   const shortfall = Math.max(0, balance - projected);
   const required  = n > 0 ? balance / n : balance;
-  return { payments: n, projected, shortfall, required, onTrack: shortfall <= 0.005 };
+
+  // Paying a 0% promo faster than its deadline requires is dead money — every dollar above
+  // the floor could be sitting on a card charging 20-33%. But the floor is NOT the maths:
+  // it is the contractual minimum on the statement, because paying under that triggers a
+  // late fee and the penalty APR, which dwarfs any optimisation. Margin keeps a buffer in
+  // case the issuer's minimum ticks up.
+  const contractual = +o.minFloor || 0;
+  const mathFloor   = required;
+  const safeFloor   = Math.max(mathFloor, contractual);
+  const margin      = o.margin == null ? 8 : +o.margin;
+  const suggested   = contractual > 0 ? Math.ceil((safeFloor + margin) / 5) * 5 : Math.ceil(safeFloor / 5) * 5;
+  const freeable    = Math.max(0, planned - suggested);
+  const clearsIn    = suggested > 0 ? Math.ceil(balance / suggested) : null;
+
+  return {
+    payments: n, projected, shortfall, required,
+    onTrack: shortfall <= 0.005,
+    mathFloor, contractual, safeFloor, suggested, freeable, clearsIn,
+    sparePayments: clearsIn != null ? n - clearsIn : null
+  };
 }
 
 function payTemplateFor(cardId) {
@@ -7075,7 +7094,8 @@ function payCardStates() {
       const planned = +c.plannedPayment || 0;
       const pace = c.promoExpiration
         ? ccPromoPace({ balance, planned: planned || minDue || 0, promo: c.promoExpiration,
-                        dueDay: tpl ? tpl.dueDay : null, nextDue: dueDate, asOf: today })
+                        dueDay: tpl ? tpl.dueDay : null, nextDue: dueDate, asOf: today,
+                        minFloor: (+c.statementMinDue || minDue || 0) })
         : null;
 
       return {
@@ -7494,10 +7514,28 @@ function renderPayments() {
       </div>
     </div>`).join('');
 
-  const promoOk = promos.filter(p => p.clears).map(p => `
-    <div style="font-size:.7rem;color:var(--text3);margin-bottom:8px">
-      ✓ ${esc(p.name)} on track — ${p.payments} × ${payFmt2(p.planned)} clears ${payFmt2(p.balance)} before ${fmtDate(p.promo)}
-    </div>`).join('');
+  // A 0% promo paid faster than its deadline needs is idle money — it earns nothing while
+  // other cards charge 19-33%. Surface what could be released without putting the promo at risk.
+  const topApr = Math.max(0, ...st.filter(x => x.role === 'avalanche' && x.balance > 1).map(x => x.apr));
+  const promoOk = promos.filter(p => p.clears).map(p => {
+    const spare = p.pace.sparePayments;
+    const free  = p.pace.freeable;
+    return `<div style="${free > 1 ? 'background:var(--ok-bg);border:1px solid color-mix(in srgb,var(--ok) 30%,transparent);border-radius:10px;padding:10px 13px;' : ''}margin-bottom:10px">
+      <div style="font-size:.74rem;color:${free > 1 ? 'var(--text2)' : 'var(--text3)'};line-height:1.6">
+        ✓ <b>${esc(p.name)}</b> on track — ${payFmt2(p.planned)}/mo clears ${payFmt2(p.balance)} before ${fmtDate(p.promo)}${spare != null ? ` with ${spare} payment${spare===1?'':'s'} to spare` : ''}
+        ${p.card.promoVerifiedFrom
+          ? `<span style="color:var(--ok)">· verified from ${esc(p.card.promoVerifiedFrom)}</span>`
+          : `<span style="color:var(--warn)" title="This deadline has not been checked against a statement. A wrong date here silently rewrites the payoff plan.">· ⚠ expiry not verified against a statement</span>`}
+      </div>
+      ${free > 1 ? `<div style="font-size:.74rem;color:var(--text2);line-height:1.6;margin-top:5px;border-top:1px dashed color-mix(in srgb,var(--ok) 30%,transparent);padding-top:5px">
+        Paying ${payFmt2(p.planned)} is <b>${payFmt2(free)}/mo faster than needed</b>. At 0% that money earns nothing here.
+        Dropping to <b>${payFmt2(p.pace.suggested)}</b>/mo still clears it in ${p.pace.clearsIn} payments
+        ${p.pace.contractual > 0 ? `and stays ${payFmt2(p.pace.suggested - p.pace.contractual)} above the ${payFmt2(p.pace.contractual)} contractual minimum` : ''}
+        — releasing <b style="color:var(--ok)">${payFmt2(free)}/mo</b>${topApr > 0 ? ` for the ${topApr.toFixed(2)}% cards` : ''}.
+        <button onclick="PAY.releasePromo('${p.id}')" style="margin-left:6px;font-size:.66rem;padding:3px 9px;border-radius:5px;border:1px solid var(--ok);background:var(--surface);color:var(--ok);cursor:pointer;font-weight:600">Set to ${payFmt(p.pace.suggested)}/mo</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
 
   const tiles = `
    ${promoAlerts}${promoOk}
@@ -7855,6 +7893,32 @@ const PAY = {
     UI.payAmount = null;
     renderPayments();
     toast(`${payFmt2(p.shortfall)} paid · instalment raised to ${payFmt2(p.card.plannedPayment)}/mo — update the autopay at ${p.name}`, 'ok');
+  },
+
+  // Drop a promo instalment to the lowest level that still clears in time, freeing cash
+  // for cards that are actually charging interest.
+  async releasePromo(cardId) {
+    const p = payPromoRisk().find(x => x.id === cardId);
+    if (!p || !p.pace || p.pace.freeable <= 1) { toast('Nothing to release on that card', 'ok'); return; }
+    const q = p.pace;
+    const go = await payConfirm(`${p.name} — reduce the instalment`,
+      `<div style="line-height:1.7">
+         Balance <b>${payFmt2(p.balance)}</b> at <b>0%</b> · deadline <b>${fmtDate(p.promo)}</b><br>
+         ${q.payments} payments available · you only need <b>${q.clearsIn}</b> at ${payFmt2(q.suggested)}
+       </div>
+       <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);line-height:1.7">
+         ${payFmt2(p.planned)} → <b>${payFmt2(q.suggested)}</b>/mo, releasing <b style="color:var(--ok)">${payFmt2(q.freeable)}/mo</b>.<br>
+         ${q.contractual > 0 ? `Stays ${payFmt2(q.suggested - q.contractual)} above the ${payFmt2(q.contractual)} contractual minimum — paying under that risks a late fee and the penalty APR.<br>` : ''}
+         Clears around ${q.clearsIn} payments from now, ${q.sparePayments} ahead of the deadline.
+       </div>
+       <div style="margin-top:10px;color:var(--warn)">Remember to change the autopay at the issuer — this only updates the plan here.</div>`,
+      `Set to ${payFmt(q.suggested)}/mo`);
+    if (!go) return;
+    p.card.plannedPayment = q.suggested;
+    dirty();
+    UI.payAmount = null;
+    renderPayments();
+    toast(`${p.name} set to ${payFmt2(q.suggested)}/mo · ${payFmt2(q.freeable)}/mo released — update the autopay at the issuer`, 'ok');
   },
 
   async routeReimb(personId, cardAcctId) {
