@@ -7004,17 +7004,31 @@ function ccPromoPace(o) {
   // case the issuer's minimum ticks up.
   const contractual = +o.minFloor || 0;
   const mathFloor   = required;
-  const safeFloor   = Math.max(mathFloor, contractual);
   const margin      = o.margin == null ? 8 : +o.margin;
-  const suggested   = contractual > 0 ? Math.ceil((safeFloor + margin) / 5) * 5 : Math.ceil(safeFloor / 5) * 5;
-  const freeable    = Math.max(0, planned - suggested);
-  const clearsIn    = suggested > 0 ? Math.ceil(balance / suggested) : null;
+  const knowsMin    = contractual > 0;
+
+  // NEVER suggest an instalment when the contractual minimum is unknown. The arithmetic
+  // floor is meaningless on its own: on this card it is $104.78 while the statement demands
+  // $121.92, and paying the lower figure costs a $41 late fee plus the penalty APR — far
+  // more than the optimisation is worth. No statement minimum on file, no recommendation.
+  const safeFloor = knowsMin ? Math.max(mathFloor, contractual) : null;
+  const suggested = knowsMin ? Math.ceil((safeFloor + margin) / 5) * 5 : null;
+  const freeable  = suggested != null ? Math.max(0, planned - suggested) : 0;
+  const clearsIn  = suggested ? Math.ceil(balance / suggested) : null;
+
+  // Pace at what is ACTUALLY being paid today (distinct from the suggested level)
+  const currentClearsIn = planned > 0 ? Math.ceil(balance / planned) : null;
+  const currentSpare    = currentClearsIn != null ? n - currentClearsIn : null;
+  // Looks like there is room to release cash, but we can't say how much safely yet
+  const mayBeAbleToReduce = !knowsMin && currentSpare != null && currentSpare >= 3 && planned > mathFloor + 5;
 
   return {
     payments: n, projected, shortfall, required,
     onTrack: shortfall <= 0.005,
     mathFloor, contractual, safeFloor, suggested, freeable, clearsIn,
-    sparePayments: clearsIn != null ? n - clearsIn : null
+    knowsMin, mayBeAbleToReduce,
+    currentClearsIn, currentSpare,
+    sparePayments: currentSpare
   };
 }
 
@@ -7530,9 +7544,16 @@ function renderPayments() {
       ${free > 1 ? `<div style="font-size:.74rem;color:var(--text2);line-height:1.6;margin-top:5px;border-top:1px dashed color-mix(in srgb,var(--ok) 30%,transparent);padding-top:5px">
         Paying ${payFmt2(p.planned)} is <b>${payFmt2(free)}/mo faster than needed</b>. At 0% that money earns nothing here.
         Dropping to <b>${payFmt2(p.pace.suggested)}</b>/mo still clears it in ${p.pace.clearsIn} payments
-        ${p.pace.contractual > 0 ? `and stays ${payFmt2(p.pace.suggested - p.pace.contractual)} above the ${payFmt2(p.pace.contractual)} contractual minimum` : ''}
+        and stays ${payFmt2(p.pace.suggested - p.pace.contractual)} above the ${payFmt2(p.pace.contractual)} contractual minimum
         — releasing <b style="color:var(--ok)">${payFmt2(free)}/mo</b>${topApr > 0 ? ` for the ${topApr.toFixed(2)}% cards` : ''}.
         <button onclick="PAY.releasePromo('${p.id}')" style="margin-left:6px;font-size:.66rem;padding:3px 9px;border-radius:5px;border:1px solid var(--ok);background:var(--surface);color:var(--ok);cursor:pointer;font-weight:600">Set to ${payFmt(p.pace.suggested)}/mo</button>
+      </div>` : ''}
+      ${p.pace.mayBeAbleToReduce ? `<div style="font-size:.74rem;color:var(--text2);line-height:1.6;margin-top:5px;border-top:1px dashed color-mix(in srgb,var(--ok) 30%,transparent);padding-top:5px">
+        ${payFmt2(p.planned)}/mo clears this ${p.pace.currentSpare} payments early, so some of it could probably be released to the
+        ${topApr > 0 ? `${topApr.toFixed(2)}%` : 'interest-bearing'} cards. I can't say how much safely without the
+        <b>minimum payment due</b> from your statement — the arithmetic floor here is ${payFmt2(p.pace.mathFloor)}, but paying under the
+        contractual minimum costs a late fee and the penalty APR${p.goToApr>0?` (${p.goToApr}%)`:''}.
+        <button onclick="PAY.confirmPromo('${p.id}')" style="margin-left:6px;font-size:.66rem;padding:3px 9px;border-radius:5px;border:1px solid var(--ok);background:var(--surface);color:var(--ok);cursor:pointer;font-weight:600">Enter minimum due</button>
       </div>` : ''}
     </div>`;
   }).join('');
@@ -7895,11 +7916,35 @@ const PAY = {
     toast(`${payFmt2(p.shortfall)} paid · instalment raised to ${payFmt2(p.card.plannedPayment)}/mo — update the autopay at ${p.name}`, 'ok');
   },
 
+  // Capture the contractual minimum from a statement. Without it no reduction can be
+  // recommended safely, so this is the gate in front of releasePromo(). Recording it also
+  // stamps the promo as statement-verified.
+  async confirmPromo(cardId) {
+    const p = payPromoRisk().find(x => x.id === cardId);
+    if (!p) return;
+    const raw = await payPrompt(`${p.name} — minimum payment due`,
+      `Enter the "Total Minimum Payment Due" printed on your latest statement. It is the floor the issuer requires; paying under it triggers a late fee and the penalty APR${p.goToApr>0?` of up to ${p.goToApr}%`:''}. Everything above it on a 0% balance is optional.`,
+      p.minDue ? String(p.minDue) : '');
+    if (raw == null) return;
+    const v = Math.round((parseFloat(String(raw).replace(/[^0-9.]/g,'')) || 0) * 100) / 100;
+    if (v <= 0) { toast('Enter the minimum due to continue', 'err'); return; }
+    p.card.statementMinDue   = v;
+    p.card.promoVerifiedFrom = p.card.promoVerifiedFrom || `statement min ${payFmt2(v)}, entered ${fmtDate(centralToday())}`;
+    dirty();
+    renderPayments();
+    const q = payPromoRisk().find(x => x.id === cardId)?.pace;
+    toast(q && q.freeable > 1
+      ? `Minimum recorded — you could release ${payFmt2(q.freeable)}/mo by dropping to ${payFmt2(q.suggested)}`
+      : `Minimum of ${payFmt2(v)} recorded — current instalment is already close to the floor`, 'ok');
+  },
+
   // Drop a promo instalment to the lowest level that still clears in time, freeing cash
   // for cards that are actually charging interest.
   async releasePromo(cardId) {
     const p = payPromoRisk().find(x => x.id === cardId);
-    if (!p || !p.pace || p.pace.freeable <= 1) { toast('Nothing to release on that card', 'ok'); return; }
+    if (!p || !p.pace) return;
+    if (!p.pace.knowsMin) { PAY.confirmPromo(cardId); return; }   // never reduce blind
+    if (p.pace.freeable <= 1) { toast('Nothing to release on that card', 'ok'); return; }
     const q = p.pace;
     const go = await payConfirm(`${p.name} — reduce the instalment`,
       `<div style="line-height:1.7">
