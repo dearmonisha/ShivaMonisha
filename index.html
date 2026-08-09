@@ -2962,9 +2962,12 @@ function editTplModal(tid) {
         <input type="checkbox" id="t-auto" ${t?.isAutomatic?'checked':''} onchange="toggleAutoField(this)">
         <label for="t-auto" class="flbl">Automatic Payment</label>
       </div></div>
-      <div class="fg" id="t-autogrp" style="${t?.isAutomatic?'':'display:none'}">
-        <label class="flbl">Auto Pay Account</label>
+      <div class="fg" id="t-autogrp">
+        <label class="flbl">Pay From Account <span id="t-acct-hint" style="font-weight:400;color:var(--text3);font-size:.7rem">${t?.isAutomatic?'— debited automatically':'— set this even for manual payments'}</span></label>
         <select class="finput" id="t-acct"><option value="">— Select —</option>${acctOpts}</select>
+        <div style="font-size:.68rem;color:var(--text3);margin-top:3px;line-height:1.45">
+          Tells the Payments tab whether this bill actually leaves your bank. Bills charged to a card are excluded from the cash runway.
+        </div>
       </div>
       <div class="fg full" style="margin-top:4px;padding-top:10px;border-top:1px dashed var(--border)">
         <label class="flbl">Linked CC Tracker Card <span style="font-size:.7rem;font-weight:400;color:var(--text3)">— links statement balance to CC Tracker auto-sync</span></label>
@@ -2988,8 +2991,10 @@ function toggleFixedField(cb) {
   if (g) g.style.display = cb.checked ? '' : 'none';
 }
 function toggleAutoField(cb) {
-  const g = id('t-autogrp');
-  if (g) g.style.display = cb.checked ? '' : 'none';
+  // Pay From stays visible either way — a manual bill still comes out of a specific
+  // account, and the cash runway needs to know which one.
+  const h = id('t-acct-hint');
+  if (h) h.textContent = cb.checked ? '— debited automatically' : '— set this even for manual payments';
 }
 
 function submitTpl(existId) {
@@ -3012,7 +3017,9 @@ function submitTpl(existId) {
     isFixed,
     fixedAmount: isFixed && fixAmt ? parseFloat(fixAmt) : null,
     isAutomatic: isAuto,
-    paymentAccount: isAuto ? (id('t-acct')?.value || null) : null,
+    // Saved whether or not the payment is automatic — manual bills still leave a
+    // specific account, and the Payments runway keys off this
+    paymentAccount: id('t-acct')?.value || null,
     ccCardId: id('t-cccard')?.value || null,
     isActive: existId ? (D.templates.find(t=>t.id===existId)?.isActive ?? true) : true
   };
@@ -7247,22 +7254,38 @@ function payIncomeEvents(from, to, bankId) {
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function payOutflowEvents(from, to) {
+function payOutflowEvents(from, to, meta) {
   const P = payDefaults();
   const out = [];
+  const bank = (D.txnAccounts || []).find(a => a.id === P.bankAccountId);
+  const bankName = (bank ? bank.name : '').trim().toLowerCase();
+  const skipped = [];
+  let unknown = 0;
+
+  // A bill charged to a credit card never touches the bank, so deducting it from cash
+  // understates what is available. `paidFrom` comes from the template's Pay From Account.
+  // Unset means unknown — counted, because under-stating cash is the safer error.
+  const leavesBank = p => {
+    const src = (p.paidFrom || '').trim().toLowerCase();
+    if (!src) { unknown++; return true; }
+    return src === bankName;
+  };
+
   Object.values(D.cycles || {}).forEach(cy => {
     (cy.payments || []).forEach(p => {
       if (!p.dueDate || p.dueDate < from || p.dueDate > to) return;
       if (p.isPaid) return;
       const amt = +p.amountDue || 0;
       if (amt <= 0) return;
+      if (!leavesBank(p)) { skipped.push({ label: p.name, amount: amt, from: p.paidFrom }); return; }
       out.push({
         date: p.dueDate, label: p.name, amount: amt,
         kind: p.category === 'Credit Cards' ? 'cc-min' : 'committed',
-        cat: p.category || '', auto: !!p.isAutomatic
+        cat: p.category || '', auto: !!p.isAutomatic, paidFrom: p.paidFrom || null
       });
     });
   });
+  if (meta) { meta.skipped = skipped; meta.unknown = unknown; }
   // Autopaid fixed card payments (Mattress Firm's $200 promo instalment) leave the
   // bank whether or not the issuer has posted a statement, but the cycle row carries
   // no amountDue until it does — so the runway would miss them entirely.
@@ -7302,7 +7325,8 @@ function payRunway() {
   const cash  = bank ? txnCurrentBalance(bank) : 0;
 
   const income = payIncomeEvents(today, to, P.bankAccountId);
-  const outs   = payOutflowEvents(today, to);
+  const srcMeta = {};
+  const outs   = payOutflowEvents(today, to, srcMeta);
   const events = [...income, ...outs].sort((a, b) => a.date.localeCompare(b.date));
 
   let bal = cash, trough = cash, troughDate = today;
@@ -7322,7 +7346,9 @@ function payRunway() {
     today, to, bank, cash, income, outs, events, series,
     trough, troughDate, nextIncome, lockedNow, safe,
     floor: P.cashFloor,
-    projectedEnd: bal
+    projectedEnd: bal,
+    skipped: srcMeta.skipped || [],
+    unknownSource: srcMeta.unknown || 0
   };
 }
 
@@ -7886,8 +7912,11 @@ function renderPayments() {
          <tbody>${runRows || '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text3);font-size:.78rem">Nothing scheduled</td></tr>'}</tbody>
        </table>
      </div>
-     <div style="padding:8px 15px;border-top:1px solid var(--border);font-size:.68rem;color:var(--text3);background:var(--surface2)">
+     <div style="padding:8px 15px;border-top:1px solid var(--border);font-size:.68rem;color:var(--text3);background:var(--surface2);line-height:1.6">
        Card payments are deliberately excluded from this projection — the allocator above decides those. Historically they run about ${payFmt(T.avgPmts)}/month.
+       ${R.skipped.length ? `<br><span style="color:var(--text2)">Also excluded: <b>${payFmt(R.skipped.reduce((s,x)=>s+x.amount,0))}</b> of bills charged to a card rather than ${esc(R.bank?R.bank.name:'the bank')} —
+         ${R.skipped.slice(0,5).map(x=>esc(x.label)+' ('+esc(x.from)+')').join(', ')}${R.skipped.length>5?` +${R.skipped.length-5} more`:''}.</span>` : ''}
+       ${R.unknownSource ? `<br><span style="color:var(--warn)">${R.unknownSource} upcoming item${R.unknownSource===1?' has':'s have'} no Pay From account set, so ${R.unknownSource===1?'it is':'they are'} counted against ${esc(R.bank?R.bank.name:'the bank')}. Set it in Setup → Payment Templates to sharpen this.</span>` : ''}
      </div>
    </div>`;
 
