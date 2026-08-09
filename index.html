@@ -7703,7 +7703,14 @@ function renderPayments() {
     const u  = x.limit ? x.balance / x.limit : 0;
     const u2 = x.limit ? Math.max(0, x.balance - x.pay) / x.limit : 0;
     const uc = u > 0.8 ? 'var(--danger)' : u > 0.5 ? 'var(--warn)' : 'var(--ok)';
-    const dueSoon = x.daysToDue != null && x.daysToDue <= 7;
+    // Colour the due date by whether ACTION is needed, not merely by proximity.
+    // Orange on a card whose minimum is already covered reads as "still owed" and
+    // sends you hunting for a payment you already made.
+    const soon    = x.daysToDue != null && x.daysToDue <= 7;
+    const owing   = x.minUnfunded > 0.005;
+    const minMet  = !owing && x.minDue != null && x.minDue > 0;
+    const dueColor = owing ? (soon ? 'var(--danger)' : 'var(--warn)')
+                   : minMet ? 'var(--ok)' : 'var(--text2)';
     const planned = +x.card.plannedPayment || 0;
     const auto    = !!(x.tpl && x.tpl.isAutomatic);
     const roleTag = x.role === 'pay-in-full'
@@ -7732,7 +7739,11 @@ function renderPayments() {
       <td style="padding:8px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${x.apr.toFixed(2)}%
         ${x.goToApr > x.apr + 0.005 ? `<div title="Nothing is accruing today, but this is the contractual rate if the promo lapses or you stop paying in full" style="font-size:.58rem;color:var(--warn)">${x.goToApr}% go-to</div>` : ''}</td>
       <td style="padding:8px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums;color:${x.moInterest>0?'var(--danger)':'var(--text3)'}">${x.moInterest>0?payFmt2(x.moInterest):'—'}<div style="font-size:.6rem;color:var(--text3)">${x.per100>0?payFmt2(x.per100)+' per $100':'no cost'}</div></td>
-      <td style="padding:8px 10px;text-align:right;font-size:.78rem;white-space:nowrap;color:${dueSoon?'var(--warn)':'var(--text2)'}">${x.dueDate?fmtDate(x.dueDate):'—'}<div style="font-size:.6rem;color:var(--text3)">${x.daysToDue==null?'':x.daysToDue<0?Math.abs(x.daysToDue)+'d overdue':x.daysToDue===0?'today':x.daysToDue===1?'tomorrow':x.daysToDue+' days'}</div></td>
+      <td style="padding:8px 10px;text-align:right;font-size:.78rem;white-space:nowrap;color:${dueColor}">
+        ${minMet ? '<span title="Minimum for this statement is already covered">✓ </span>' : ''}${x.dueDate?fmtDate(x.dueDate):'—'}
+        <div style="font-size:.6rem;color:var(--text3)">${x.daysToDue==null?'':x.daysToDue<0?Math.abs(x.daysToDue)+'d overdue':x.daysToDue===0?'today':x.daysToDue===1?'tomorrow':x.daysToDue+' days'}</div>
+        ${minMet ? `<div style="font-size:.58rem;color:var(--ok)">min met · paid ${payFmt(x.paid)}</div>` : ''}
+      </td>
       <td style="padding:8px 10px;text-align:right">
         <input type="text" id="payq-${x.id}" value="${x.pay>0.005?payFmt2(x.pay):''}" placeholder="0.00"
           style="width:88px;font-size:.8rem;padding:4px 6px;border:1px solid ${x.pay>0.005?'var(--primary)':'var(--border)'};border-radius:5px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
