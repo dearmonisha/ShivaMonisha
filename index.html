@@ -1304,6 +1304,13 @@ function applyIconStyle(styleId) {
 const BUDGET_EMPTY = { groups:[], categories:[], plans:[], actualTotals:[], income:[], incomeSchedules:[], expenseSchedules:[], ccRepayments:[], rolloverPotLinks:{} };
 function _applyData(raw) {
   D = { ...D, ...raw };
+  // Replacing the dataset must invalidate every cached per-account balance. dirty()
+  // is the only other thing that bumps this, and it is not guaranteed to run here —
+  // so a reload could otherwise serve balances computed from the PREVIOUS file.
+  _txnDataVersion++;
+  _txnBalCache = { version: -1, data: new Map() };
+  // Any view holding a derived figure in UI state must re-derive it against the new data
+  UI.payAmount = null;
   if (!D.familyAccounts) { D.familyAccounts = FAMILY_SEED_DATA; dirty(); }
   if (!D.ccTracker)      { D.ccTracker      = CC_TRACKER_SEED_DATA; dirty(); }
   if (!D.budget)         { D.budget         = { ...BUDGET_EMPTY }; dirty(); }
@@ -1959,7 +1966,10 @@ function switchView(v) {
   if (v==='mindfulness')   renderMindfulness();
   if (v==='ratios')        renderFinancialRatios();
   if (v==='financials')    renderFinancials();
-  if (v==='payments')      renderPayments();
+  // Re-derive the deploy amount from CURRENT cash every time the tab is opened.
+  // Leaving a stale figure here is dangerous: the tiles refresh, the Deploy box does
+  // not, and recording against it can overdraw the account.
+  if (v==='payments')    { UI.payAmount = null; renderPayments(); }
   if (v==='home-cost')     renderHomeCost();
 }
 
@@ -6919,7 +6929,13 @@ function payDefaults() {
   if (!Array.isArray(p.ledger))   p.ledger   = [];
   if (!Array.isArray(p.earmarks)) p.earmarks = [];
   if (p.cashFloor == null)        p.cashFloor = PAY_DEFAULT_FLOOR;
-  if (!p.strategy)                p.strategy  = 'avalanche';
+  if (!p.strategy)                p.strategy  = 'balanced';
+  // One-time move off the plain avalanche default. Pure rate-ordering drains the dearest
+  // card to zero and leaves a maxed card untouched, which is not what you want here.
+  if (!p._balancedDefault) { if (p.strategy === 'avalanche') p.strategy = 'balanced'; p._balancedDefault = true; }
+  // Utilisation floor for the balanced strategy. 30% is the conventional scoring
+  // threshold; below roughly 10% the benefit is largely exhausted.
+  if (p.utilTarget == null)       p.utilTarget = 0.30;
   if (!p.bankAccountId) {
     const bank = (D.txnAccounts || []).find(a => a.type === 'Bank' && a.status !== 'closed');
     p.bankAccountId = bank ? bank.id : '';
@@ -7319,6 +7335,11 @@ function payRunway() {
 // 2. The remainder goes by strategy. 0% cards are skipped under avalanche entirely:
 //    a dollar to Costco or Mattress Firm saves nothing while JCP burns 33.24%.
 
+function payUtilTarget() {
+  const t = parseFloat(payDefaults().utilTarget);
+  return isNaN(t) ? 0.30 : Math.min(0.95, Math.max(0, t));
+}
+
 function payAllocate(pot, strategy, states) {
   const m = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
   let left = Math.max(0, +pot || 0);
@@ -7342,24 +7363,52 @@ function payAllocate(pot, strategy, states) {
      x.pay += p; left -= p;
    });
 
-  let order;
-  if (strategy === 'util')          order = m.slice().sort((a, b) => b.util - a.util);
-  else if (strategy === 'snowball') order = m.slice().sort((a, b) => a.balance - b.balance);
-  else                              order = m.slice().sort((a, b) => b.apr - a.apr);
-
-  order.forEach(x => {
-    if (left < 1) return;
-    if (x.role === 'minimum-only') return;
-    if (x.role === 'pay-in-full') {
-      const target = (x.stmtBal != null ? x.stmtBal : x.balance) - x.paid - x.pay;
-      const p = Math.min(Math.max(0, target), left);
-      x.pay += p; left -= p; return;
-    }
-    if (strategy === 'avalanche' && x.apr <= 0) return;
-    const room = Math.max(0, x.balance - x.pay);
-    const p = Math.min(room, left);
+  // Pay-in-full cards are settled to their statement regardless of strategy
+  m.forEach(x => {
+    if (left < 1 || x.role !== 'pay-in-full') return;
+    const target = (x.stmtBal != null ? x.stmtBal : x.balance) - x.paid - x.pay;
+    const p = Math.min(Math.max(0, target), left);
     x.pay += p; left -= p;
   });
+
+  const eligible = x => x.role !== 'minimum-only' && x.role !== 'pay-in-full';
+
+  // How much of this card can still be paid, stopping at a utilisation floor.
+  // cap = null means "down to zero".
+  const roomTo = (x, cap) => {
+    const stop = (cap != null && x.limit) ? x.limit * cap : 0;
+    return Math.max(0, (x.balance - x.pay) - stop);
+  };
+
+  const spend = (list, cap, skipZeroApr) => {
+    list.forEach(x => {
+      if (left < 1 || !eligible(x)) return;
+      if (skipZeroApr && x.apr <= 0) return;
+      const p = Math.min(roomTo(x, cap), left);
+      x.pay += p; left -= p;
+    });
+  };
+
+  const byApr  = () => m.slice().sort((a, b) => b.apr - a.apr);
+  const byUtil = () => m.slice().sort((a, b) => (b.limit ? (b.balance - b.pay) / b.limit : 0) - (a.limit ? (a.balance - a.pay) / a.limit : 0));
+
+  if (strategy === 'balanced') {
+    // Rate decides the ORDER; utilisation decides WHEN TO STOP. Pure avalanche has no
+    // stopping rule, so it drains the costliest card to zero while a card at 90% is
+    // untouched — and the last dollars into an already-low card buy almost nothing,
+    // since utilisation scoring flattens out below ~30%. So: walk the cards by rate,
+    // paying each only as far as the target, then make a second pass for anything left.
+    const target = payUtilTarget();
+    spend(byApr(), target, true);          // everyone down to the target, dearest first
+    spend(byApr(), null, true);            // then dearest-first to zero
+    spend(byApr(), null, false);           // finally 0% cards, if money still remains
+  } else if (strategy === 'util') {
+    spend(byUtil(), null, false);
+  } else if (strategy === 'snowball') {
+    spend(m.slice().sort((a, b) => a.balance - b.balance), null, false);
+  } else {
+    spend(byApr(), null, true);            // pure avalanche — never touches 0% cards
+  }
 
   const saved = m.reduce((s, x) => s + x.pay * x.apr / 1200, 0);
   return {
@@ -7656,41 +7705,69 @@ function renderPayments() {
              background:${UI.payStrategy===k?'var(--primary)':'var(--surface)'};
              color:${UI.payStrategy===k?'#fff':'var(--text2)'};font-weight:${UI.payStrategy===k?'600':'400'}">${label}</button>`;
 
-  const cmp = ['avalanche','util','snowball'].map(s => ({ s, saved: payAllocate(UI.payAmount, s, st).saved }));
+  // What the account is actually left with — the number that stops an overdraft
+  const afterBal   = R.cash - A.deployed;
+  const overdraws  = afterBal < 0;
+  const belowFloor = !overdraws && afterBal < R.floor - 0.005;
+  const overSafe   = UI.payAmount > R.safe + 0.5;
+
+  const STRAT_NAMES = { balanced:'Balanced', avalanche:'Lowest interest', util:'Repair utilisation', snowball:'Smallest first' };
+  const cmp = ['balanced','avalanche','util','snowball'].map(s => {
+    const A2 = payAllocate(UI.payAmount, s, st);
+    const worstUtil = Math.max(0, ...A2.all.filter(x => x.limit).map(x => (x.balance - x.pay) / x.limit));
+    return { s, saved: A2.saved, worstUtil };
+  });
   const best = Math.max(...cmp.map(c => c.saved));
   const cmpTxt = cmp.map(c => {
-    const nm = { avalanche:'Lowest interest', util:'Repair utilisation', snowball:'Smallest first' }[c.s];
     const d = c.saved - best;
-    return `${nm} ${payFmt2(c.saved)}/mo${d < -0.005 ? ` <span style="color:var(--danger)">(${payFmt2(d)})</span>` : ' <span style="color:var(--ok)">◀ best</span>'}`;
-  }).join(' &nbsp;·&nbsp; ');
+    return `${STRAT_NAMES[c.s]} ${payFmt2(c.saved)}/mo<span style="color:var(--text3)"> · worst card ${Math.round(c.worstUtil * 100)}%</span>${d < -0.005 ? ` <span style="color:var(--danger)">(${payFmt2(d)})</span>` : ' <span style="color:var(--ok)">◀ cheapest</span>'}`;
+  }).join('<br>');
 
   const allocator = `
    <div style="${card};padding:13px 15px;margin-bottom:14px">
      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
        <div style="${lbl}">Deploy</div>
        <input type="text" id="pay-amt" value="${payFmt2(UI.payAmount)}" onchange="PAY.setAmount(this.value)"
-         style="width:120px;font-size:.95rem;font-weight:700;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
+         style="width:120px;font-size:.95rem;font-weight:700;padding:5px 8px;border:${overSafe?'2px solid var(--danger)':'1px solid var(--border)'};border-radius:6px;background:${overSafe?'var(--danger-bg)':'var(--surface)'};color:${overSafe?'var(--danger)':'var(--text)'};text-align:right;font-variant-numeric:tabular-nums">
+       ${overSafe ? `<span style="font-size:.68rem;color:var(--danger);font-weight:600;white-space:nowrap">${payFmt(UI.payAmount - R.safe)} over safe</span>` : ''}
        <input type="range" min="0" max="${Math.max(8000, Math.round(R.safe*1.5))}" step="25" value="${UI.payAmount}"
          oninput="PAY.setAmount(this.value)" style="flex:1;min-width:150px;accent-color:var(--primary)">
        <button onclick="PAY.setAmount(${Math.round(R.safe)})" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Safe max</button>
        <button onclick="PAY.setAmount(${Math.round(totalMin)})" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Minimums only</button>
      </div>
-     <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:10px">
-       ${stratBtn('avalanche','Lowest interest cost','Highest APR first. Skips 0% cards entirely.')}
-       ${stratBtn('util','Repair utilisation','Highest utilisation first. Protects credit score.')}
-       ${stratBtn('snowball','Clear smallest first','Fewest open balances. Behavioural, not optimal.')}
-       <span style="font-size:.68rem;color:var(--text3);margin-left:4px">${cmpTxt}</span>
+     <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+       <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+         ${stratBtn('balanced','Balanced','Dearest card first, but stop at the utilisation target and move to the next. Avoids over-paying one card while another sits maxed.')}
+         ${stratBtn('avalanche','Lowest interest cost','Highest APR first, all the way to zero. Cheapest on paper, ignores utilisation.')}
+         ${stratBtn('util','Repair utilisation','Highest utilisation first, ignoring rate.')}
+         ${stratBtn('snowball','Clear smallest first','Fewest open balances. Behavioural, not optimal.')}
+         ${UI.payStrategy === 'balanced' ? `
+           <span style="display:inline-flex;align-items:center;gap:5px;font-size:.68rem;color:var(--text3);margin-left:2px">
+             stop at
+             ${[0.10, 0.20, 0.30, 0.50].map(t => `<button onclick="PAY.setUtilTarget(${t})"
+               style="font-size:.66rem;padding:2px 7px;border-radius:5px;cursor:pointer;
+                      border:1px solid ${Math.abs(payUtilTarget()-t)<0.005?'var(--primary)':'var(--border)'};
+                      background:${Math.abs(payUtilTarget()-t)<0.005?'color-mix(in srgb,var(--primary) 12%,transparent)':'var(--surface)'};
+                      color:${Math.abs(payUtilTarget()-t)<0.005?'var(--primary)':'var(--text3)'}">${t*100}%</button>`).join('')}
+           </span>` : ''}
+       </div>
+       <div style="font-size:.66rem;color:var(--text3);line-height:1.65;min-width:210px">${cmpTxt}</div>
      </div>
      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px">
        <div style="font-size:.82rem;color:var(--text2)">
          Deploying <b style="color:var(--text)">${payFmt(A.deployed)}</b> across <b>${A.alloc.length}</b> card${A.alloc.length===1?'':'s'}
          stops <b style="color:var(--ok)">${payFmt2(A.saved)}/mo</b> of interest, permanently.
          ${A.left > 1 ? `<span style="color:var(--warn)"> · ${payFmt(A.left)} unallocated</span>` : ''}
-         ${UI.payAmount > R.safe + 0.5 ? `<span style="color:var(--danger)"> · ${payFmt(UI.payAmount - R.safe)} over safe limit</span>` : ''}
+         <div style="margin-top:4px;font-size:.8rem">
+           ${esc(R.bank ? R.bank.name : 'Bank')} after this: <b style="color:${afterBal < 0 ? 'var(--danger)' : afterBal < R.floor ? 'var(--warn)' : 'var(--ok)'};font-variant-numeric:tabular-nums">${payFmt2(afterBal)}</b>
+           ${overdraws ? '<span style="color:var(--danger);font-weight:700"> — this overdraws the account</span>'
+             : belowFloor ? `<span style="color:var(--warn)"> — below your ${payFmt(R.floor)} floor</span>` : ''}
+         </div>
        </div>
        <button onclick="PAY.applyAll()" ${A.alloc.length?'':'disabled'}
          style="font-size:.78rem;font-weight:600;padding:7px 15px;border-radius:7px;border:none;cursor:pointer;
-                background:${A.alloc.length?'var(--primary)':'var(--border)'};color:#fff">Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}</button>
+                background:${!A.alloc.length ? 'var(--border)' : overdraws ? 'var(--danger)' : belowFloor ? 'var(--warn)' : 'var(--primary)'};color:#fff">
+         ${overdraws ? 'Overdraws — check first' : `Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}`}</button>
      </div>
    </div>`;
 
@@ -7900,15 +7977,25 @@ function payPrompt(title, msg, defVal) {
 
 const PAY = {
   setStrategy(s) { UI.payStrategy = s; payDefaults().strategy = s; dirty(); renderPayments(); },
+  setUtilTarget(t) { payDefaults().utilTarget = t; dirty(); renderPayments(); },
   setAmount(v)   { UI.payAmount = Math.max(0, parseFloat(String(v).replace(/[^0-9.]/g,'')) || 0); renderPayments(); },
   setFloor(v)    { payDefaults().cashFloor = Math.max(0, parseFloat(String(v).replace(/[^0-9.]/g,'')) || 0); dirty(); renderPayments(); },
 
-  payOne(acctId, cardId) {
+  async payOne(acctId, cardId) {
     const el = id('payq-' + cardId);
     const amt = el ? (parseFloat(el.value.replace(/[^0-9.]/g,'')) || 0) : 0;
     if (amt <= 0) { toast('Enter an amount for that card first', 'err'); return; }
     const s = payCardStates().find(x => x.id === cardId);
     const purpose = payPurpose(s, amt);
+    const R2 = payRunway();
+    if (R2.cash - amt < 0) {
+      const go = await payConfirm('This overdraws the account',
+        `<div style="line-height:1.7">${esc(R2.bank ? R2.bank.name : 'Bank')} holds <b>${payFmt2(R2.cash)}</b>.<br>
+         Paying <b>${payFmt2(amt)}</b> to ${esc(s ? s.name : 'this card')} leaves
+         <b style="color:var(--danger)">${payFmt2(R2.cash - amt)}</b>.</div>`,
+        'Record anyway');
+      if (!go) return;
+    }
     const r = payRecord(acctId, amt, purpose, { cardId, statementDate: s?.stmtDate, dueDate: s?.dueDate, notes: `Payment — ${s?s.name:''}` });
     if (!r) { toast('Could not record that payment', 'err'); return; }
     dirty();
@@ -7923,11 +8010,24 @@ const PAY = {
     const lines = A.alloc.map(x =>
       `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0"><span>${esc(x.name)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(x.pay)}</b></div>`).join('');
     const bankName = (D.txnAccounts || []).find(a => a.id === payDefaults().bankAccountId)?.name || 'bank';
+    // Recompute cash at the moment of recording, not from whatever the screen last drew.
+    const R2    = payRunway();
+    const after = R2.cash - A.deployed;
+    const warn  = after < 0
+      ? `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:var(--danger-bg);color:var(--danger);font-weight:600">
+           This overdraws ${esc(bankName)}. Balance would go from ${payFmt2(R2.cash)} to ${payFmt2(after)}.</div>`
+      : after < R2.floor - 0.005
+      ? `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:var(--warn-bg);color:var(--warn);font-weight:600">
+           Leaves ${payFmt2(after)} — below your ${payFmt2(R2.floor)} floor.</div>`
+      : '';
     const go = await payConfirm('Record these payments?',
       `${lines}<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;justify-content:space-between;gap:14px">
          <span>Total from ${esc(bankName)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(A.deployed)}</b></div>
+       <div style="display:flex;justify-content:space-between;gap:14px;padding-top:4px">
+         <span>${esc(bankName)} after</span><b style="font-variant-numeric:tabular-nums;color:${after<0?'var(--danger)':'var(--text)'}">${payFmt2(after)}</b></div>
+       ${warn}
        <div style="margin-top:10px;color:var(--ok)">Stops ${payFmt2(A.saved)}/mo of interest, permanently.</div>`,
-      `Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}`);
+      after < 0 ? 'Record anyway — I accept the overdraft' : `Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}`);
     if (!go) return;
     let n = 0;
     A.alloc.forEach(x => {
