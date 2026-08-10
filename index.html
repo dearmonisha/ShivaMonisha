@@ -1563,8 +1563,15 @@ function _showOverlay(mode) {
     <div style="display:flex;flex-direction:column;gap:12px;margin:18px 0;text-align:left">
       <div>
         <label style="font-size:.8rem;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">GitHub Personal Access Token</label>
-        <input id="gh-token" type="password" class="finput" placeholder="ghp_xxxxxxxxxxxx" value="${cfg.token||''}" style="width:100%;box-sizing:border-box">
-        <div style="font-size:.72rem;color:var(--text3);margin-top:3px">Needs <strong>repo</strong> scope. <a href="https://github.com/settings/tokens/new?scopes=repo&description=AccountsManager" target="_blank" style="color:var(--primary)">Create one here ↗</a></div>
+        <div style="position:relative">
+          <input id="gh-token" type="password" class="finput" placeholder="ghp_xxxxxxxxxxxx" value="${cfg.token||''}"
+            autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"
+            oninput="ghTokenHint()" style="width:100%;box-sizing:border-box;padding-right:52px">
+          <button type="button" onclick="ghToggleToken()" id="gh-token-eye"
+            style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:.7rem;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text3);cursor:pointer">Show</button>
+        </div>
+        <div id="gh-token-len" style="font-size:.72rem;margin-top:3px;min-height:15px"></div>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:1px">Needs <strong>repo</strong> scope. <a href="https://github.com/settings/tokens/new?scopes=repo&description=AccountsManager" target="_blank" style="color:var(--primary)">Create one here ↗</a></div>
       </div>
       <div>
         <label style="font-size:.8rem;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Repository (owner/repo)</label>
@@ -1580,7 +1587,38 @@ function _showOverlay(mode) {
     </div>
     <div id="gh-error" style="color:var(--danger);font-size:.8rem;margin-top:12px;min-height:18px;text-align:center"></div>
   `;
-  setTimeout(() => id('gh-token')?.focus(), 50);
+  setTimeout(() => { id('gh-token')?.focus(); ghTokenHint(); }, 50);
+}
+
+// Tokens are pasted on phones and tablets where a truncated or autocorrected paste looks
+// identical to a wrong token. Showing the length turns "invalid token" into something
+// diagnosable: a classic PAT is exactly 40 characters, a fine-grained one about 93.
+function ghCleanToken(s) {
+  // strip zero-width and directional marks that survive .trim() and break the header
+  return String(s || '').replace(/[​-‍﻿‪-‮⁦-⁩]/g, '').trim();
+}
+function ghTokenHint() {
+  const el = id('gh-token'), out = id('gh-token-len');
+  if (!el || !out) return;
+  const raw = el.value, tok = ghCleanToken(raw);
+  if (!tok) { out.textContent = ''; return; }
+  const stripped = raw.length - tok.length;
+  let msg, col;
+  if (/^ghp_[A-Za-z0-9]{36}$/.test(tok))              { msg = `Classic token · ${tok.length} characters ✓`; col = 'var(--ok)'; }
+  else if (/^github_pat_[A-Za-z0-9_]{50,}$/.test(tok)){ msg = `Fine-grained token · ${tok.length} characters ✓`; col = 'var(--ok)'; }
+  else if (/^ghp_/.test(tok))                          { msg = `${tok.length} characters — a classic token should be 40. Looks incomplete.`; col = 'var(--danger)'; }
+  else if (/^github_pat_/.test(tok))                   { msg = `${tok.length} characters — fine-grained tokens are usually ~93. Looks incomplete.`; col = 'var(--danger)'; }
+  else                                                 { msg = `${tok.length} characters — doesn't start with ghp_ or github_pat_.`; col = 'var(--warn)'; }
+  if (stripped > 0) msg += ` (${stripped} hidden character${stripped===1?'':'s'} removed)`;
+  out.textContent = msg;
+  out.style.color = col;
+}
+function ghToggleToken() {
+  const el = id('gh-token'), b = id('gh-token-eye');
+  if (!el || !b) return;
+  const show = el.type === 'password';
+  el.type = show ? 'text' : 'password';
+  b.textContent = show ? 'Hide' : 'Show';
 }
 function _hideFileOverlay() {
   const el = id('file-overlay');
@@ -1589,9 +1627,9 @@ function _hideFileOverlay() {
 
 // ── Connect & initial load ────────────────────────────────────
 async function ghConnect() {
-  const token = id('gh-token')?.value.trim();
-  const repo  = id('gh-repo')?.value.trim();
-  const path  = (id('gh-path')?.value.trim()) || 'accounts-data.json';
+  const token = ghCleanToken(id('gh-token')?.value);
+  const repo  = ghCleanToken(id('gh-repo')?.value);
+  const path  = ghCleanToken(id('gh-path')?.value) || 'accounts-data.json';
   const errEl = id('gh-error');
   const btn   = id('gh-connect-btn');
   if (!token || !repo) { if (errEl) errEl.textContent = 'Token and repository are required.'; return; }
@@ -1621,8 +1659,23 @@ async function _ghFetch(cfg) {
   const res = await fetch(url, {
     headers: { 'Authorization': `Bearer ${cfg.token}`, 'Accept': 'application/vnd.github.v3+json' }
   });
-  if (res.status === 404) throw new Error('File not found — check repo name and file path.');
-  if (res.status === 401) throw new Error('Invalid token — check your Personal Access Token.');
+  // 401/403/404 all mean different fixes, and lumping them together sends you hunting
+  // for the wrong problem. GitHub also returns 404 (not 403) for a private repo the
+  // token cannot see, so say so.
+  if (res.status === 401) {
+    const n = (cfg.token || '').length;
+    throw new Error(`Token rejected by GitHub (401). The token sent was ${n} characters — a classic token is 40, fine-grained about 93. If that looks short, the paste was truncated. Otherwise the token may be expired or revoked.`);
+  }
+  if (res.status === 403) {
+    const sso = res.headers.get('x-github-sso');
+    if (sso) throw new Error('Token needs SSO authorisation for this organisation — approve it in GitHub token settings.');
+    const rl = res.headers.get('x-ratelimit-remaining');
+    if (rl === '0') throw new Error('GitHub rate limit reached — wait a few minutes and retry.');
+    throw new Error('Access forbidden (403) — the token lacks the repo scope, or the repository blocks it.');
+  }
+  if (res.status === 404) {
+    throw new Error(`Not found (404) — either "${cfg.path}" does not exist in ${cfg.repo}, or this token cannot see that private repository. GitHub returns 404 rather than 403 for repos a token has no access to.`);
+  }
   if (!res.ok) throw new Error(`GitHub API error ${res.status}: ${res.statusText}`);
   const json = await res.json();
   ghSetSha(json.sha);
