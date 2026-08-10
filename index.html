@@ -1582,9 +1582,12 @@ function _showOverlay(mode) {
         <input id="gh-path" class="finput" placeholder="accounts-data.json" value="${cfg.path||'accounts-data.json'}" style="width:100%;box-sizing:border-box">
       </div>
     </div>
-    <div class="fo-btns">
+    <div class="fo-btns" style="display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap">
       <button class="fo-btn-p" id="gh-connect-btn" onclick="ghConnect()">Connect &amp; Load</button>
+      <button id="gh-test-btn" onclick="ghDiagnose()"
+        style="font-size:.8rem;padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text2);cursor:pointer">Test token</button>
     </div>
+    <div id="gh-diag" style="font-size:.76rem;margin-top:10px;text-align:left;line-height:1.6"></div>
     <div id="gh-error" style="color:var(--danger);font-size:.8rem;margin-top:12px;min-height:18px;text-align:center"></div>
   `;
   setTimeout(() => { id('gh-token')?.focus(); ghTokenHint(); }, 50);
@@ -1610,9 +1613,63 @@ function ghTokenHint() {
   else if (/^github_pat_/.test(tok))                   { msg = `${tok.length} characters — fine-grained tokens are usually ~93. Looks incomplete.`; col = 'var(--danger)'; }
   else                                                 { msg = `${tok.length} characters — doesn't start with ghp_ or github_pat_.`; col = 'var(--warn)'; }
   if (stripped > 0) msg += ` (${stripped} hidden character${stripped===1?'':'s'} removed)`;
-  out.textContent = msg;
-  out.style.color = col;
+  // Fingerprint: enough to compare the same token across two devices, not enough to use.
+  // Two devices that disagree here are holding different strings, which is the usual
+  // cause of "works on my laptop but not my tablet".
+  const fp = tok.length > 16 ? `${tok.slice(0, 14)}…${tok.slice(-4)}` : tok;
+  out.innerHTML = `<span style="color:${col}">${esc(msg)}</span>` +
+    `<div style="color:var(--text3);font-family:ui-monospace,Menlo,monospace;font-size:.7rem;margin-top:2px">` +
+    `fingerprint ${esc(fp)} · compare this across devices</div>`;
 }
+// "Invalid token" and "token cannot see that repo" are different problems with different
+// fixes, and the contents call cannot tell them apart. This asks GitHub two separate
+// questions: who is this token, and can it reach the repo.
+async function ghDiagnose() {
+  const out = id('gh-diag');
+  const token = ghCleanToken(id('gh-token')?.value);
+  const repo  = ghCleanToken(id('gh-repo')?.value);
+  const path  = ghCleanToken(id('gh-path')?.value) || 'accounts-data.json';
+  if (!out) return;
+  if (!token) { out.innerHTML = '<span style="color:var(--danger)">Enter a token first.</span>'; return; }
+  const H = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
+  const line = (ok, txt) => `<div style="color:${ok ? 'var(--ok)' : 'var(--danger)'}">${ok ? '✓' : '✗'} ${txt}</div>`;
+  out.innerHTML = '<span style="color:var(--text3)">Checking…</span>';
+  const rows = [];
+  try {
+    // 1. Is the token itself accepted?
+    const who = await fetch('https://api.github.com/user', { headers: H });
+    if (who.status === 401) {
+      out.innerHTML = line(false, 'GitHub does not accept this token at all (401 on /user).') +
+        `<div style="color:var(--text2);margin-top:6px">The token is complete but dead — expired, revoked, or auto-revoked by secret scanning if it was ever committed to a repository. Fine-grained tokens always carry an expiry date.</div>
+         <div style="margin-top:6px"><a href="https://github.com/settings/tokens" target="_blank" style="color:var(--primary)">Check status and expiry at github.com/settings/tokens ↗</a></div>`;
+      return;
+    }
+    if (!who.ok) { out.innerHTML = line(false, `Unexpected ${who.status} from /user.`); return; }
+    const u = await who.json();
+    rows.push(line(true, `Token is valid — authenticated as <b>${esc(u.login)}</b>.`));
+
+    // 2. Can it see the repository?
+    if (repo) {
+      const r = await fetch(`https://api.github.com/repos/${repo}`, { headers: H });
+      if (r.ok) {
+        const j = await r.json();
+        rows.push(line(true, `Repository <b>${esc(repo)}</b> reachable${j.private ? ' (private)' : ''}. Push access: ${j.permissions?.push ? 'yes' : '<b>no</b>'}.`));
+        // 3. Can it see the file?
+        const f = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, { headers: H });
+        rows.push(f.ok ? line(true, `File <b>${esc(path)}</b> found.`)
+                       : line(false, `File <b>${esc(path)}</b> not found in that repo (${f.status}).`));
+      } else if (r.status === 404) {
+        rows.push(line(false, `Cannot see <b>${esc(repo)}</b>. As <b>${esc(u.login)}</b> the token either lacks access, or — if it is fine-grained — was not granted this repository. Fine-grained tokens must list each repo explicitly, and one issued for a different owner cannot reach it.`));
+      } else {
+        rows.push(line(false, `Repository check returned ${r.status}.`));
+      }
+    }
+    out.innerHTML = rows.join('');
+  } catch (e) {
+    out.innerHTML = line(false, 'Network error reaching api.github.com — check the connection, a VPN, or a content blocker.');
+  }
+}
+
 function ghToggleToken() {
   const el = id('gh-token'), b = id('gh-token-eye');
   if (!el || !b) return;
