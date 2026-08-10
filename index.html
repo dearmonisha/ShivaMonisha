@@ -7080,6 +7080,13 @@ function payFmt2(v) {
   const n = parseFloat(v) || 0;
   return '$' + n.toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 });
 }
+// Rounding has a direction of safety. Money you MAY spend rounds down, money you MUST pay
+// rounds up. Math.round() on safe-to-deploy overstated it by up to 50c and seeded the
+// deploy box above the true limit.
+function payDown(v) { return Math.floor((parseFloat(v) || 0) * 100) / 100; }
+function payUp(v)   { return Math.ceil((parseFloat(v) || 0) * 100) / 100; }
+function payFmtDown(v) { const n = Math.floor(parseFloat(v) || 0); return '$' + n.toLocaleString('en-US'); }
+function payFmtUp(v)   { const n = Math.ceil(parseFloat(v) || 0);  return '$' + n.toLocaleString('en-US'); }
 
 // ────────────────────────────────────────────────────────────
 // STATEMENT LAYER
@@ -7456,7 +7463,8 @@ function payRunway() {
   // amount, so the binding constraint is the lowest point the balance reaches — which is
   // what stops a bill landing after payday from causing an overdraft.
   const limiting = Math.min(cash, trough);
-  const safe     = Math.max(0, limiting - P.cashFloor);
+  // Floored to the cent so the figure is never above the true limit
+  const safe     = Math.max(0, payDown(limiting - P.cashFloor));
   // What pushed the balance to its lowest point, for the explanation panel
   const troughDriver = series.filter(s => s.e && s.date <= troughDate && s.e.kind !== 'income')
                              .slice(-4).map(s => s.e);
@@ -7711,7 +7719,7 @@ function renderPayments() {
 
   const R  = payRunway();
   const st = payCardStates();
-  if (UI.payAmount == null) UI.payAmount = Math.round(R.safe);
+  if (UI.payAmount == null) UI.payAmount = Math.floor(R.safe);
   const A  = payAllocate(UI.payAmount, UI.payStrategy, st);
   const T  = payTrajectory(6);
   const E  = payEarmarks();
@@ -7798,7 +7806,7 @@ function renderPayments() {
           <div style="font-size:.62rem;color:var(--text3)">deadline</div>
           <div style="font-size:.9rem;font-weight:700;color:var(--danger)">${fmtDate(p.promo)}</div>
           <div style="font-size:.62rem;color:var(--text3)">${p.monthsToExpiry} months</div>
-          <button onclick="PAY.fixPromo('${p.id}')" style="margin-top:5px;font-size:.68rem;padding:4px 10px;border-radius:5px;border:1px solid var(--danger);background:var(--surface);color:var(--danger);cursor:pointer;font-weight:600">Pay the ${payFmt(p.shortfall)} now</button>
+          <button onclick="PAY.fixPromo('${p.id}')" style="margin-top:5px;font-size:.68rem;padding:4px 10px;border-radius:5px;border:1px solid var(--danger);background:var(--surface);color:var(--danger);cursor:pointer;font-weight:600">Pay the ${payFmtUp(p.shortfall)} now</button>
         </div>
       </div>
     </div>`).join('');
@@ -7841,8 +7849,8 @@ function renderPayments() {
    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
     ${tile('Cash today', payFmt(R.cash), 'var(--text)', esc(R.bank ? R.bank.name : ''))}
     ${tile('Locked before next pay', payFmt(R.lockedNow), R.lockedNow>0?'var(--warn)':'var(--text3)', R.nextIncome ? `next in ${payDiffDays(R.today,R.nextIncome.date)}d · ${esc(R.nextIncome.label)} ${payFmt(R.nextIncome.amount)}` : 'no scheduled pay')}
-    ${tile('Unfunded minimums', payFmt(totalMin), totalMin>0?'var(--danger)':'var(--ok)', totalMin>0?'must clear first':'all covered ✓')}
-    ${tile('Safe to deploy', payFmt(R.safe), 'var(--primary)',
+    ${tile('Unfunded minimums', payFmtUp(totalMin), totalMin>0?'var(--danger)':'var(--ok)', totalMin>0?'must clear first':'all covered ✓')}
+    ${tile('Safe to deploy', payFmtDown(R.safe), 'var(--primary)',
            R.trough < R.cash - 0.5 ? `limited by ${fmtDate(R.troughDate)} · after ${payFmt(R.floor)} floor` : `after ${payFmt(R.floor)} floor`, true)}
     ${tile('Interest burning', payFmt(totalInt)+'/mo', 'var(--danger)', `${payFmt(totalOwed)} at ${blended.toFixed(1)}% blended`)}
    </div>`;
@@ -7922,8 +7930,8 @@ function renderPayments() {
        ${overSafe ? `<span style="font-size:.68rem;color:var(--danger);font-weight:600;white-space:nowrap">${payFmt(UI.payAmount - R.safe)} over safe</span>` : ''}
        <input type="range" min="0" max="${Math.max(8000, Math.round(R.safe*1.5))}" step="25" value="${UI.payAmount}"
          oninput="PAY.setAmount(this.value)" style="flex:1;min-width:150px;accent-color:var(--primary)">
-       <button onclick="PAY.setAmount(${Math.round(R.safe)})" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Safe max</button>
-       <button onclick="PAY.setAmount(${Math.round(totalMin)})" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Minimums only</button>
+       <button onclick="PAY.setAmount(${Math.floor(R.safe)})" title="Rounded down — never above the safe limit" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Safe max</button>
+       <button onclick="PAY.setAmount(${payUp(totalMin)})" title="Rounded up — never short of a minimum" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Minimums only</button>
      </div>
      <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
@@ -7987,7 +7995,7 @@ function renderPayments() {
       : '';
     // On a pay-in-full card the balance above the statement is unbilled spending, not debt
     const unbilled = (x.role === 'pay-in-full' && x.stmtBal != null) ? Math.max(0, x.balance - Math.max(0, x.stmtBal - x.paid)) : 0;
-    const minTag = x.minUnfunded > 0.005 ? `<span style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">min ${payFmt(x.minUnfunded)} due ${fmtDate(x.dueDate)}</span>` : '';
+    const minTag = x.minUnfunded > 0.005 ? `<span style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">min ${payFmtUp(x.minUnfunded)} due ${fmtDate(x.dueDate)}</span>` : '';
     const projTag = x.projected ? `<span title="statement not yet issued — dates projected from template" style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--warn-bg);color:var(--warn);margin-left:5px">projected</span>` : '';
     return `<tr style="border-bottom:1px solid var(--border-light)">
       <td style="padding:8px 10px">
@@ -8251,7 +8259,7 @@ const PAY = {
          Update the autopay at the issuer to match.
        </div>`, `Pay ${payFmt(p.shortfall)} and raise instalment`);
     if (!go) return;
-    payRecord(p.acct.id, p.shortfall, 'principal', {
+    payRecord(p.acct.id, payUp(p.shortfall), 'principal', {
       cardId: p.id, statementDate: p.stmtDate, dueDate: p.dueDate,
       notes: `Promo catch-up — ${p.name} (expires ${p.promo})`
     });
