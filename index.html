@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#FAF9F6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Accounts">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="format-detection" content="telephone=no">
 <title>Accounts Manager · Online</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -718,38 +724,60 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-acct-name{font-size:.88rem;font-weight:700;color:var(--text1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mob-acct-bal{font-size:.96rem;font-weight:800;white-space:nowrap}
 .mob-drill-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+/* Mobile transaction rows are tappable → give them affordance + a chevron */
+.mob-txn-row.tappable{cursor:pointer;-webkit-tap-highlight-color:transparent}
+.mob-txn-row.tappable:active{background:var(--hover)}
+.mob-txn-chev{color:var(--text3);font-size:.9rem;margin-left:8px;flex-shrink:0;opacity:.5}
+/* Pull-to-refresh indicator */
+#mob-ptr{position:fixed;top:0;left:0;right:0;z-index:400;display:flex;align-items:center;justify-content:center;
+  height:0;overflow:hidden;background:var(--surface);color:var(--text2);font-size:.78rem;font-weight:700;
+  border-bottom:1px solid var(--border);transition:height .18s ease;pointer-events:none}
 @media(max-width:767px){
   .nav-pills{display:none!important}
   .hdr-space{display:none!important}
   .save-info{display:none!important}
   .exit-btn{display:none!important}
-  .hdr{height:40px;padding:0 12px;gap:8px}
-  .save-btn{padding:4px 10px;font-size:.72rem;gap:3px}
+  .hdr{height:calc(40px + env(safe-area-inset-top));padding:env(safe-area-inset-top) calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left));gap:8px}
+  .save-btn{padding:8px 12px;font-size:.72rem;gap:3px;min-height:36px}
   .save-btn svg{width:11px;height:11px}
   .logo{font-size:.82rem;gap:5px}
   .logo svg{width:17px;height:17px}
   main>div:not(#view-mobile){display:none!important}
   #view-mobile{display:block!important}
   #file-overlay .fo-card{width:92vw;max-width:420px}
-  .mob-fab{display:flex}
+  .mob-fab{display:flex;bottom:calc(24px + env(safe-area-inset-bottom));right:calc(20px + env(safe-area-inset-right))}
   /* Tighter cards on mobile */
-  .mob-cat-card{padding:9px 12px;margin-bottom:5px}
+  .mob-cat-card{padding:11px 12px;margin-bottom:5px}
   .mob-cat-name{font-size:.83rem}
   .mob-cat-remain{font-size:.9rem}
   .mob-cat-sub{font-size:.67rem;margin-bottom:5px}
-  .mob-pot-card{padding:9px 12px;margin-bottom:5px}
-  .mob-total-card{padding:9px 12px;margin-bottom:5px}
+  .mob-pot-card{padding:11px 12px;margin-bottom:5px}
+  .mob-total-card{padding:11px 12px;margin-bottom:5px}
   .mob-group-hdr{font-size:.66rem;margin:12px 0 5px}
-  .mob-tab{padding:7px 3px;font-size:.72rem}
-  .mob-hdr{padding:7px 14px}
+  /* 44px minimum touch target (was 7px/3px padding at .72rem ≈ 27px tall) */
+  .mob-tab{padding:0 3px;font-size:.74rem;min-height:44px;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent}
+  /* Base CSS sticks this at 50px (the DESKTOP header height) but the mobile
+     header is 40px — that 10px gap let list rows show through underneath.
+     JS re-measures both after each render; this is the pre-paint fallback. */
+  .mob-hdr{top:calc(40px + env(safe-area-inset-top));padding:6px calc(14px + env(safe-area-inset-right)) 6px calc(14px + env(safe-area-inset-left))}
   .mob-month{font-size:.9rem;font-weight:800}
-  .mob-section{padding:10px 12px 0}
+  .arrow-btn{width:44px;height:44px;font-size:20px;-webkit-tap-highlight-color:transparent}
+  .mob-section{padding:10px calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left))}
   .mob-section-title{font-size:.63rem;margin-bottom:7px}
   .mob-summary-card{padding:11px 13px;margin-bottom:10px}
-  .mob-txn-row{padding:8px 0}
+  .mob-txn-row{padding:11px 0;min-height:44px}
   .mob-txn-payee{font-size:.81rem}
   .mob-txn-meta{font-size:.67rem}
   .mob-txn-amt{font-size:.86rem}
+  /* ── iOS auto-zoom guard ────────────────────────────────────────────────
+     Mobile Safari (and Chrome/Edge on iOS, which are WebKit underneath) zooms
+     the page whenever a focused form control renders below 16px, and does not
+     zoom back out afterwards. Every mobile field here was .85–.9rem (~13–14px)
+     and set via inline style, so this needs !important to win.
+     Desktop views are display:none at this width, so this is safe to scope
+     to every control. ─────────────────────────────────────────────────── */
+  input,select,textarea{font-size:16px!important}
+  html{-webkit-text-size-adjust:100%}
 }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
@@ -1132,6 +1160,83 @@ function ghGetConfig() {
 function ghSetConfig(cfg) { localStorage.setItem(GH_CONFIG_KEY, JSON.stringify(cfg)); }
 function ghGetSha()     { return localStorage.getItem(GH_SHA_KEY) || null; }
 function ghSetSha(sha)  { if (sha) localStorage.setItem(GH_SHA_KEY, sha); }
+
+// ════════════════════════════════════════════════════════════
+// DATA CACHE (IndexedDB)
+// ════════════════════════════════════════════════════════════
+// The accounts data file is ~5.5 MB. Every page load re-downloaded all of it,
+// which on a phone over cellular is a slow, data-hungry cold start.
+//
+// GitHub's contents endpoint returns the blob SHA in its metadata, and for
+// files over 1 MB it omits the content entirely — so that first request is
+// small. If the SHA matches what we already cached, the 5.5 MB blob fetch is
+// skipped altogether. The SHA changes on every commit, so a stale cache is not
+// possible: a different SHA always means a fresh download.
+//
+// localStorage is not an option here — its quota is ~5 MB, under the file size.
+const IDB_NAME  = 'acct_mgr_cache';
+const IDB_STORE = 'data';
+
+function _idbOpen() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error('no indexedDB'));
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+// Every cache helper resolves rather than throws. A cache is an optimisation:
+// if IndexedDB is unavailable, full, or blocked (private browsing, storage
+// pressure, a locked-down profile), the app must still load normally over the
+// network instead of erroring out.
+async function _cacheGet(sha) {
+  if (!sha) return null;
+  try {
+    const db = await _idbOpen();
+    return await new Promise(resolve => {
+      const tx  = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get('data');
+      req.onsuccess = () => {
+        const rec = req.result;
+        resolve(rec && rec.sha === sha ? rec.payload : null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch { return null; }
+}
+
+async function _cachePut(sha, payload) {
+  if (!sha || !payload) return;
+  try {
+    const db = await _idbOpen();
+    await new Promise(resolve => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      // Single fixed key, so each write replaces the previous snapshot rather
+      // than accumulating one entry per commit.
+      tx.objectStore(IDB_STORE).put({ sha, payload, at: Date.now() }, 'data');
+      tx.oncomplete = () => resolve();
+      tx.onerror    = () => resolve();
+      tx.onabort    = () => resolve();
+    });
+  } catch { /* cache write is best-effort */ }
+}
+
+async function _cacheClear() {
+  try {
+    const db = await _idbOpen();
+    await new Promise(resolve => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete('data');
+      tx.oncomplete = () => resolve();
+      tx.onerror    = () => resolve();
+    });
+  } catch { /* ignore */ }
+}
 
 // ════════════════════════════════════════════════════════════
 // THEME SYSTEM
@@ -1700,7 +1805,7 @@ async function ghConnect() {
     applyTheme(D.settings?.theme);
     applyIconStyle(D.settings?.iconStyle);
     _hideFileOverlay();
-    renderMonthly();
+    if (!_mobIsMobile()) { renderMonthly(); _desktopRendered = true; }
     renderMobileView();
     refreshSaveUI();
     toast('Connected to GitHub ✓', 'ok');
@@ -1736,6 +1841,19 @@ async function _ghFetch(cfg) {
   if (!res.ok) throw new Error(`GitHub API error ${res.status}: ${res.statusText}`);
   const json = await res.json();
   ghSetSha(json.sha);
+
+  // ── Cache short-circuit ────────────────────────────────────────────────
+  // The response above is metadata only for this file (GitHub omits content
+  // over 1 MB), so we now know the current SHA without having paid for the
+  // 5.5 MB body. If our cached copy is from that same commit, use it and skip
+  // the download entirely.
+  const cached = await _cacheGet(json.sha);
+  if (cached) {
+    console.info('[cache] hit for sha', json.sha.slice(0, 7), '— skipped full download');
+    return cached;
+  }
+
+  let parsed;
   // GitHub omits content when file exceeds 1 MB — use Git Blobs API with raw accept header instead
   if (!json.content || json.content.trim() === '') {
     const blobUrl = `https://api.github.com/repos/${cfg.repo}/git/blobs/${json.sha}`;
@@ -1743,10 +1861,14 @@ async function _ghFetch(cfg) {
       headers: { 'Authorization': `Bearer ${cfg.token}`, 'Accept': 'application/vnd.github.raw' }
     });
     if (!rawRes.ok) throw new Error(`Failed to fetch file content: ${rawRes.status}`);
-    return rawRes.json();
+    parsed = await rawRes.json();
+  } else {
+    const decoded = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
+    parsed = JSON.parse(decoded);
   }
-  const decoded = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
-  return JSON.parse(decoded);
+  // Fire-and-forget: never make the load wait on a cache write.
+  _cachePut(json.sha, parsed);
+  return parsed;
 }
 
 async function _ghWrite(cfg, data) {
@@ -1770,7 +1892,11 @@ async function _ghWrite(cfg, data) {
     throw new Error(err.message || `GitHub API error ${res.status}`);
   }
   const json = await res.json();
-  ghSetSha(json.content?.sha);
+  const newSha = json.content?.sha;
+  ghSetSha(newSha);
+  // Prime the cache with what we just pushed, so the next load on this device
+  // is a cache hit instead of re-downloading the file we already have.
+  if (newSha) _cachePut(newSha, JSON.parse(jsonStr));
 }
 
 // ── Save ──────────────────────────────────────────────────────
@@ -1804,7 +1930,11 @@ async function loadState() {
     applyTheme(D.settings?.theme);
     applyIconStyle(D.settings?.iconStyle);
     _hideFileOverlay();
-    renderMonthly();
+    // On a phone the entire desktop Monthly view is display:none, but building
+    // it still costs a full pass over the data and a large DOM insert on the
+    // slowest device. Defer it until the viewport is actually wide enough
+    // (_mobEnsureDesktopRender re-runs this on rotation / resize).
+    if (!_mobIsMobile()) { renderMonthly(); _desktopRendered = true; }
     renderMobileView();
     refreshSaveUI();
   } catch(e) {
@@ -1877,6 +2007,9 @@ async function switchDataFile() {
     if (go) await doSave();
   }
   localStorage.removeItem(GH_SHA_KEY);
+  // Pointing at a different repo/file — the cached snapshot belongs to the old
+  // one, so drop it rather than risk serving it against a coincidental SHA.
+  _cacheClear();
   _showOverlay('setup');
 }
 
@@ -10818,9 +10951,32 @@ function oblMergeImportedData(data) {
 // ════════════════════════════════════════════════════════════
 // MOBILE DASHBOARD
 // ════════════════════════════════════════════════════════════
+
+// ── Scroll restoration ────────────────────────────────────────────────────
+// renderMobileView() replaces the whole subtree's innerHTML, which throws the
+// window back to the top. That is correct when you switch tabs, and wrong for
+// everything else (search, sort, month step, add/edit/delete, drill-back).
+// _mobScrollTarget is consumed by the next render and then resets to 'top':
+//   'top'    → jump to top (tab switch, drilling INTO a category)
+//   'keep'   → hold the position the user was already at
+//   <number> → restore a specific offset (returning from a drill-down)
+let _mobScrollTarget = 'top';
+let _mobDrillReturnY = 0;
+// Tracks whether the (expensive) desktop Monthly view has been built yet.
+// It is skipped entirely on phone-width loads — see loadState().
+let _desktopRendered = false;
+function mobRender(target) {
+  _mobScrollTarget = (target === undefined) ? 'keep' : target;
+  renderMobileView();
+}
+function _mobIsMobile() {
+  return window.matchMedia('(max-width:767px)').matches;
+}
+
 function renderMobileView() {
   const wrap = id('view-mobile');
   if (!wrap) return;
+  const _preY = window.scrollY;
 
   const tab    = UI.mobileTab || 'budget';
   const month  = UI.budgetMonth || ymNow();
@@ -10887,18 +11043,19 @@ function renderMobileView() {
         const acct = (D.txnAccounts || []).find(a => a.id === t.accountId);
         const amt  = (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
         const clr  = amt < 0 ? 'var(--ok)' : 'var(--text)';
-        return `<div class="mob-txn-row">
+        return `<div class="mob-txn-row tappable" onclick="BA.mobileEditTxn('${t.id}')">
           <div class="mob-txn-left">
             <div class="mob-txn-payee">${esc(t.payee || '(no payee)')}</div>
             <div class="mob-txn-meta">${esc([fmtDate(t.date), acct?.name].filter(Boolean).join(' · '))}</div>
           </div>
           <div class="mob-txn-amt" style="color:${clr}">${amt<0?'+':''}${fmtC(Math.abs(amt))}</div>
+          <span class="mob-txn-chev">›</span>
         </div>`;
       }).join('') : `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.85rem">No transactions this month</div>`;
       budgetHTML = `
         <div class="mob-drill-header">
-          <button onclick="UI.mobileDrillCat='';renderMobileView()"
-            style="padding:6px 12px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text2);font-size:.82rem;font-weight:700;cursor:pointer">← Back</button>
+          <button onclick="BA.mobileDrillCat('')"
+            style="padding:10px 14px;min-height:44px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text2);font-size:.82rem;font-weight:700;cursor:pointer">← Back</button>
           <span style="font-size:.95rem;font-weight:800;color:var(--text1)">${esc(drillCat.name)}</span>
         </div>
         <div class="mob-summary-card" style="margin-bottom:12px">
@@ -11090,12 +11247,14 @@ function renderMobileView() {
         const metaParts = selAcctId
           ? [fmtDate(t.date), cat].filter(Boolean)
           : [fmtDate(t.date), acct?.name, cat].filter(Boolean);
-        return `<div class="mob-txn-row">
+        const flag = t.isTransfer ? '⇄ ' : (t.splits && t.splits.length) ? '⑂ ' : '';
+        return `<div class="mob-txn-row tappable" onclick="BA.mobileEditTxn('${t.id}')">
           <div class="mob-txn-left">
-            <div class="mob-txn-payee">${esc(t.payee || '(no payee)')}</div>
+            <div class="mob-txn-payee">${flag}${esc(t.payee || '(no payee)')}</div>
             <div class="mob-txn-meta">${esc(metaParts.join(' · '))}</div>
           </div>
           <div class="mob-txn-amt" style="color:${color}">${isNeg ? '+' : ''}${fmtC(Math.abs(amt))}</div>
+          <span class="mob-txn-chev">›</span>
         </div>`;
       }).join('');
       const countLabel = searchQ
@@ -11277,9 +11436,28 @@ function renderMobileView() {
       ${tab === 'accounts'     ? accountsHTML : ''}
     </div>
     ${tab === 'budget' && !UI.mobileDrillCat ? potsHTML : ''}
-    <div style="height:80px"></div>
+    <div style="height:calc(80px + env(safe-area-inset-bottom))"></div>
     ${tab === 'transactions' ? `<button class="mob-fab" onclick="BA.mobileAddTxn()" title="Add transaction" style="font-size:1.8rem;font-weight:300">+</button>` : ''}
   `;
+
+  // ── Sticky offsets, measured rather than hardcoded ──────────────────────
+  // The tab bar has to sit exactly below the app header + month nav. Those
+  // heights shift with safe-area insets, larger touch targets and the user's
+  // text-size setting, so measure instead of trusting the old 87px constant.
+  const _hdrH  = document.querySelector('.hdr')?.offsetHeight || 40;
+  const _mHdr  = wrap.querySelector('.mob-hdr');
+  const _tabs  = wrap.querySelector('.mob-tabs');
+  if (_mHdr) _mHdr.style.top = _hdrH + 'px';
+  if (_tabs) _tabs.style.top = (_hdrH + (_mHdr ? _mHdr.offsetHeight : 0)) + 'px';
+
+  // ── Restore scroll ──────────────────────────────────────────────────────
+  const _t = _mobScrollTarget;
+  _mobScrollTarget = 'top';
+  requestAnimationFrame(() => {
+    if (_t === 'keep')             window.scrollTo(0, _preY);
+    else if (typeof _t === 'number') window.scrollTo(0, _t);
+    else                            window.scrollTo(0, 0);
+  });
 }
 
 const BA = {
@@ -11329,37 +11507,69 @@ const BA = {
     UI.treemapLevel = level;
     renderTreemap();
   },
-  setMobileTab(tab) { UI.mobileTab = tab; UI.mobileDrillCat = ''; renderMobileView(); },
-  setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; UI.mobileTxnSearch = ''; renderMobileView(); },
-  setMobileTxnSearch(q) { UI.mobileTxnSearch = q || ''; renderMobileView(); },
-  setMobileCardSort(s) { UI.mobileCardSort = s; renderMobileView(); },
-  mobileDrillCat(catId) { UI.mobileDrillCat = catId || ''; renderMobileView(); },
+  setMobileTab(tab) { UI.mobileTab = tab; UI.mobileDrillCat = ''; mobRender('top'); },
+  setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; UI.mobileTxnSearch = ''; mobRender('top'); },
+  // Searching filters the list in place — snapping to the top each keystroke
+  // was disorienting, so hold position.
+  setMobileTxnSearch(q) { UI.mobileTxnSearch = q || ''; mobRender('keep'); },
+  setMobileCardSort(s) { UI.mobileCardSort = s; mobRender('top'); },
+  mobileDrillCat(catId) {
+    // Remember where in the category list they tapped from, so "← Back"
+    // returns them to that row instead of the top of the page.
+    if (catId) _mobDrillReturnY = window.scrollY;
+    UI.mobileDrillCat = catId || '';
+    mobRender(catId ? 'top' : _mobDrillReturnY);
+  },
 
-  mobileAddTxn() {
+  mobileAddTxn() { BA._mobileTxnSheet(null); },
+
+  // Tapping a row in the mobile transaction list opens the same sheet, prefilled.
+  mobileEditTxn(txnId) { BA._mobileTxnSheet(txnId); },
+
+  // Shared add/edit bottom sheet. txnId === null → add mode.
+  _mobileTxnSheet(txnId) {
     // Remove any existing overlay first
     document.getElementById('mob-add-txn-overlay')?.remove();
+
+    const editing = !!txnId;
+    const txn     = editing ? (D.transactions || []).find(t => t.id === txnId) : null;
+    if (editing && !txn) { toast('Transaction not found', 'err'); return; }
+
+    // Transfers and split transactions carry linked/child records that this
+    // simple three-field sheet cannot represent. Editing one here would
+    // silently orphan its pair or drop its splits, so those stay read-only on
+    // mobile — delete still works, and routes through the desktop handler that
+    // knows how to clean up the other side.
+    const isComplex = editing && (txn.isTransfer || (txn.splits && txn.splits.length > 0));
 
     const month   = UI.budgetMonth || ymNow();
     const today   = centralToday();
     const defDate = today.slice(0,7) === month ? today : month + '-01';
-    const accts   = (D.txnAccounts || []).filter(a => a.active !== false && a.status !== 'closed');
+    const accts   = (D.txnAccounts || []).filter(a =>
+      (a.active !== false && a.status !== 'closed') || (editing && a.id === txn.accountId));
     const cats    = D.budget?.categories || [];
     const grps    = D.budget?.groups     || [];
 
+    const curAcct = editing ? (txn.accountId || '') : '';
+    const curCat  = editing ? (txn.categoryId || '') : '';
+    const curType = editing ? ((parseFloat(txn.credit) || 0) > 0 && !(parseFloat(txn.debit) || 0) ? 'credit' : 'debit') : 'debit';
+    const curAmt  = editing ? (Math.abs((parseFloat(txn.debit) || 0) - (parseFloat(txn.credit) || 0)) || '') : '';
+
     // Build options as arrays to avoid any HTML injection issues
     let acctOptsHtml = '<option value="">Select account…</option>';
-    accts.forEach(a => { acctOptsHtml += `<option value="${esc(a.id)}">${esc(a.name)}</option>`; });
+    accts.forEach(a => { acctOptsHtml += `<option value="${esc(a.id)}"${a.id === curAcct ? ' selected' : ''}>${esc(a.name)}</option>`; });
 
-    let catOptsHtml = '<option value="">— Uncategorised —</option>';
+    let catOptsHtml = `<option value=""${!curCat ? ' selected' : ''}>— Uncategorised —</option>`;
     grps.forEach(g => {
       const gc = cats.filter(c => c.groupId === g.id);
       if (!gc.length) return;
       catOptsHtml += `<optgroup label="${esc(g.name)}">`;
-      gc.forEach(c => { catOptsHtml += `<option value="${esc(c.id)}">${esc(c.name)}</option>`; });
+      gc.forEach(c => { catOptsHtml += `<option value="${esc(c.id)}"${c.id === curCat ? ' selected' : ''}>${esc(c.name)}</option>`; });
       catOptsHtml += '</optgroup>';
     });
 
-    const fldStyle = 'width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.9rem;box-sizing:border-box;font-family:inherit';
+    const ro = isComplex ? ' disabled' : '';
+    const fldStyle = 'width:100%;padding:12px;border:1.5px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:16px;box-sizing:border-box;font-family:inherit;min-height:46px';
     const lblStyle = 'font-size:.68rem;font-weight:800;color:var(--text3);display:block;margin-bottom:5px;letter-spacing:.04em;text-transform:uppercase';
     const rowStyle = 'margin-bottom:13px';
 
@@ -11370,62 +11580,66 @@ const BA = {
     overlay.addEventListener('click', e => { if (e.target === overlay) BA.mobileCloseTxnSheet(); });
 
     const sheet = document.createElement('div');
-    sheet.style.cssText = 'background:var(--bg);border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 -4px 28px rgba(0,0,0,.22);padding:20px 18px 40px';
+    sheet.style.cssText = 'background:var(--bg);border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 -4px 28px rgba(0,0,0,.22);padding:20px 18px calc(40px + env(safe-area-inset-bottom))';
     // All buttons use onclick="BA.*" so they always find the overlay by ID — no closure issues
     sheet.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
-        <span style="font-size:1.05rem;font-weight:800;color:var(--text1)">Add Transaction</span>
-        <button onclick="BA.mobileCloseTxnSheet()" style="background:none;border:none;font-size:1.4rem;color:var(--text3);cursor:pointer;line-height:1;padding:4px 6px">✕</button>
+        <span style="font-size:1.05rem;font-weight:800;color:var(--text1)">${editing ? 'Edit Transaction' : 'Add Transaction'}</span>
+        <button onclick="BA.mobileCloseTxnSheet()" style="background:none;border:none;font-size:1.4rem;color:var(--text3);cursor:pointer;line-height:1;padding:8px 10px;min-height:44px;min-width:44px">✕</button>
       </div>
+      ${isComplex ? `<div style="background:color-mix(in srgb,var(--primary) 8%,transparent);border:1px solid color-mix(in srgb,var(--primary) 28%,transparent);border-radius:8px;padding:10px 12px;font-size:.8rem;color:var(--text2);margin-bottom:16px;line-height:1.45">
+        <strong>${txn.isTransfer ? '⇄ Transfer' : '⑂ Split transaction'}</strong> — this one has linked records, so it is read-only here. Edit it on desktop, or delete it below.
+      </div>` : ''}
       <div style="${rowStyle}">
         <label style="${lblStyle}">Date <span style="color:var(--danger)">*</span></label>
-        <input id="mob-at-date" type="date" value="${defDate}" style="${fldStyle}">
+        <input id="mob-at-date" type="date" value="${editing ? esc(txn.date || defDate) : defDate}" style="${fldStyle}"${ro}>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Payee</label>
-        <input id="mob-at-payee" type="text" placeholder="Who did you pay?" style="${fldStyle}">
+        <input id="mob-at-payee" type="text" placeholder="Who did you pay?" value="${editing ? esc(txn.payee || '') : ''}" style="${fldStyle}"${ro}>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Amount <span style="color:var(--danger)">*</span></label>
-        <input id="mob-at-amt" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" style="${fldStyle}">
+        <input id="mob-at-amt" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" value="${curAmt}" style="${fldStyle}"${ro}>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Transaction Type <span style="color:var(--danger)">*</span></label>
-        <select id="mob-at-type" style="${fldStyle}">
-          <option value="debit">Expense (money out −)</option>
-          <option value="credit">Income (money in +)</option>
+        <select id="mob-at-type" style="${fldStyle}"${ro}>
+          <option value="debit"${curType==='debit'?' selected':''}>Expense (money out −)</option>
+          <option value="credit"${curType==='credit'?' selected':''}>Income (money in +)</option>
         </select>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Account <span style="color:var(--danger)">*</span></label>
-        <select id="mob-at-acct" style="${fldStyle}">${acctOptsHtml}</select>
+        <select id="mob-at-acct" style="${fldStyle}"${ro}>${acctOptsHtml}</select>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Category</label>
-        <select id="mob-at-cat" style="${fldStyle}">${catOptsHtml}</select>
+        <select id="mob-at-cat" style="${fldStyle}"${ro}>${catOptsHtml}</select>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Notes</label>
         <textarea id="mob-at-notes" rows="2" placeholder="e.g. needs splitting, receipt info…"
-          style="${fldStyle};resize:none;line-height:1.4"></textarea>
+          style="${fldStyle};resize:none;line-height:1.4;min-height:60px"${ro}>${editing ? esc(txn.notes || '') : ''}</textarea>
       </div>
       <div id="mob-at-err" style="display:none;background:color-mix(in srgb,var(--danger) 10%,transparent);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:7px;padding:8px 12px;font-size:.82rem;color:var(--danger);margin-bottom:12px;font-weight:600"></div>
-      <button onclick="BA.mobileAddTxnSubmit()" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:800;cursor:pointer;letter-spacing:.01em">
-        Save Transaction
-      </button>`;
+      ${isComplex ? '' : `<button onclick="${editing ? `BA.mobileEditTxnSubmit('${txnId}')` : 'BA.mobileAddTxnSubmit()'}" style="width:100%;padding:15px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:800;cursor:pointer;letter-spacing:.01em;min-height:48px">
+        ${editing ? 'Save Changes' : 'Save Transaction'}
+      </button>`}
+      ${editing ? `<button onclick="BA.mobileDeleteTxn('${txnId}')" style="width:100%;padding:14px;margin-top:10px;background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;min-height:48px">
+        Delete Transaction
+      </button>` : ''}`;
 
     overlay.appendChild(sheet);
     document.body.appendChild(overlay);
-    setTimeout(() => { document.getElementById('mob-at-payee')?.focus(); }, 120);
+    if (!editing) setTimeout(() => { document.getElementById('mob-at-payee')?.focus(); }, 120);
   },
 
-  mobileCloseTxnSheet() {
-    document.getElementById('mob-add-txn-overlay')?.remove();
-  },
-
-  mobileAddTxnSubmit() {
-    const g      = id => document.getElementById(id);
-    const errEl  = g('mob-at-err');
+  // Read + validate the sheet's fields. Returns null (and shows the inline
+  // error) when something is wrong, so add and edit share one validation path.
+  _mobileReadTxnSheet() {
+    const g       = i => document.getElementById(i);
+    const errEl   = g('mob-at-err');
     const showErr = msg => { if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; } };
 
     const date   = (g('mob-at-date')?.value   || '').trim();
@@ -11437,21 +11651,79 @@ const BA = {
     const catId  =  g('mob-at-cat')?.value    || null;
     const notes  = (g('mob-at-notes')?.value  || '').trim();
 
-    if (!date)                             { showErr('Please select a date.');                          return; }
-    if (!acctId)                           { showErr('Please select an account.');                      return; }
-    if (!amtRaw || isNaN(amt) || amt <= 0) { showErr('Please enter a valid amount greater than 0.');   return; }
+    if (!date)                             { showErr('Please select a date.');                        return null; }
+    if (!acctId)                           { showErr('Please select an account.');                    return null; }
+    if (!amtRaw || isNaN(amt) || amt <= 0) { showErr('Please enter a valid amount greater than 0.');  return null; }
 
     if (errEl) errEl.style.display = 'none';
+    return { date, payee, amt: Math.round(amt * 100) / 100, acctId, type, catId, notes };
+  },
+
+  mobileEditTxnSubmit(txnId) {
+    const txn = (D.transactions || []).find(t => t.id === txnId);
+    if (!txn) { toast('Transaction not found', 'err'); return; }
+    const f = BA._mobileReadTxnSheet();
+    if (!f) return;
+
+    txn.date       = f.date;
+    txn.payee      = f.payee || '(no payee)';
+    txn.debit      = f.type === 'debit'  ? f.amt : 0;
+    txn.credit     = f.type === 'credit' ? f.amt : 0;
+    txn.accountId  = f.acctId;
+    txn.categoryId = f.catId || null;
+    txn.notes      = f.notes;
+
+    // Budget bars read from D.budget.txnActuals, which only this rebuilds.
+    recomputeTxnActuals();
+    dirty();
+    BA.mobileCloseTxnSheet();
+    mobRender('keep');
+    toast(`Updated: ${txn.payee}`, 'ok');
+  },
+
+  mobileDeleteTxn(txnId) {
+    const txn = (D.transactions || []).find(t => t.id === txnId);
+    if (!txn) return;
+    BA.mobileCloseTxnSheet();
+
+    // Transfers own a second, linked record — hand those to the desktop
+    // handler so the pair is removed together rather than half-deleted.
+    if (txn.isTransfer && txn.transferPairId) {
+      if (!confirm('Delete this transfer and its linked transaction?')) return;
+      D.transactions = D.transactions.filter(t => t.id !== txnId && t.id !== txn.transferPairId);
+      recomputeTxnActuals(); dirty(); mobRender('keep');
+      toast('Transfer deleted', 'ok');
+      return;
+    }
+
+    if (!confirm(`Delete "${txn.payee || 'this transaction'}"? This cannot be undone until you reload without saving.`)) return;
+    const snapshot = JSON.parse(JSON.stringify(txn));
+    D.transactions = (D.transactions || []).filter(t => t.id !== txnId);
+    recomputeTxnActuals(); dirty(); mobRender('keep');
+    toastUndo(`Deleted: ${snapshot.payee || 'transaction'}`, () => {
+      D.transactions = [...(D.transactions || []), snapshot];
+      recomputeTxnActuals(); dirty(); mobRender('keep');
+      toast('Transaction restored ✓', 'ok');
+    });
+  },
+
+  mobileCloseTxnSheet() {
+    document.getElementById('mob-add-txn-overlay')?.remove();
+  },
+
+  mobileAddTxnSubmit() {
+    const f = BA._mobileReadTxnSheet();
+    if (!f) return;
 
     const txn = {
       id: uid(),
-      accountId: acctId,
-      date,
-      payee: payee || '(no payee)',
-      debit:  type === 'debit'  ? Math.round(amt * 100) / 100 : 0,
-      credit: type === 'credit' ? Math.round(amt * 100) / 100 : 0,
-      categoryId: catId || null,
-      notes,
+      accountId: f.acctId,
+      date: f.date,
+      payee: f.payee || '(no payee)',
+      debit:  f.type === 'debit'  ? f.amt : 0,
+      credit: f.type === 'credit' ? f.amt : 0,
+      categoryId: f.catId || null,
+      notes: f.notes,
       cleared: false,
       status: 'approved',
       source: 'mobile'
@@ -11459,10 +11731,14 @@ const BA = {
 
     if (!D.transactions) D.transactions = [];
     D.transactions.push(txn);
+    // Was missing: budget spend/remaining is read off D.budget.txnActuals, which
+    // only recomputeTxnActuals() rebuilds. Without it a transaction added on
+    // mobile did not move the budget bars until the next full page load.
+    recomputeTxnActuals();
     dirty();                     // mark unsaved so the Save → GitHub button activates
     BA.mobileCloseTxnSheet();    // always closes by ID — no closure dependency
-    renderMobileView();
-    toast(`Saved: ${txn.payee} ${type === 'debit' ? '−' : '+'}$${fmtC(amt)}`, 'ok');
+    mobRender('keep');
+    toast(`Saved: ${txn.payee} ${f.type === 'debit' ? '−' : '+'}$${fmtC(f.amt)}`, 'ok');
   },
   ccBalSort(col) {
     const cur = UI.ccBalSort || { col: 'name', dir: 'asc' };
@@ -11470,8 +11746,8 @@ const BA = {
     renderCCBalances();
   },
 
-  mobilePrevMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(), -1); renderMobileView(); },
-  mobileNextMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(),  1); renderMobileView(); },
+  mobilePrevMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(), -1); mobRender('keep'); },
+  mobileNextMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(),  1); mobRender('keep'); },
   budgetPrevMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth,-1);    renderBudget(); },
   budgetNextMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth, 1);    renderBudget(); },
   breakdownPrevMonth() { UI.breakdownMonth = bShiftMonth(UI.breakdownMonth,-1); renderBreakdown(); },
@@ -19483,6 +19759,98 @@ window.addEventListener('beforeunload', e => {
 window.addEventListener('resize', () => {
   if (id('budgetPanelWrap')) _syncBudgetPanelSticky();
 });
+
+// ── Build the desktop view lazily when the viewport grows past the breakpoint ──
+// Phone-width loads skip renderMonthly() to save the work. But a phone rotated
+// to landscape can exceed 767px (an iPhone Pro Max is 932px wide there), which
+// would otherwise reveal an empty Monthly view. Catch that crossing and render
+// on demand — once.
+(function _mobWatchBreakpoint() {
+  const mq = window.matchMedia('(max-width:767px)');
+  const onChange = () => {
+    if (!mq.matches && !_desktopRendered && D && D.budget) {
+      try { renderMonthly(); _desktopRendered = true; }
+      catch (e) { console.error('Deferred desktop render failed', e); }
+    }
+    // Sticky offsets are measured from live element heights, so re-run the
+    // mobile render when coming back to phone width.
+    if (mq.matches) mobRender('keep');
+  };
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else if (mq.addListener) mq.addListener(onChange); // older WebKit
+})();
+
+// ── Pull-to-refresh (mobile only) ─────────────────────────────────────────
+// Re-pulls the data file from GitHub. Guarded on UI.dirty: refreshing throws
+// away in-memory state, and silently discarding unsaved transactions someone
+// entered on their phone would be the worst possible failure here.
+(function _mobPullToRefresh() {
+  let startY = 0, pulling = false, dist = 0;
+  const THRESHOLD = 70;
+
+  const bar = document.createElement('div');
+  bar.id = 'mob-ptr';
+  document.body.appendChild(bar);
+
+  const setBar = (h, label) => {
+    bar.style.height = h + 'px';
+    bar.textContent  = label;
+  };
+
+  window.addEventListener('touchstart', e => {
+    if (!_mobIsMobile()) return;
+    // Only arm the gesture at the very top of the page, otherwise it fights
+    // with normal list scrolling.
+    if (window.scrollY > 0) { pulling = false; return; }
+    if (document.getElementById('mob-add-txn-overlay')) return; // sheet is open
+    startY  = e.touches[0].clientY;
+    pulling = true;
+    dist    = 0;
+  }, { passive: true });
+
+  window.addEventListener('touchmove', e => {
+    if (!pulling) return;
+    dist = e.touches[0].clientY - startY;
+    if (dist <= 0) { setBar(0, ''); return; }
+    // Resistance, so the indicator does not track the finger 1:1
+    const h = Math.min(64, dist * 0.45);
+    setBar(h, dist >= THRESHOLD ? 'Release to refresh' : 'Pull to refresh');
+  }, { passive: true });
+
+  window.addEventListener('touchend', async () => {
+    if (!pulling) return;
+    pulling = false;
+    const triggered = dist >= THRESHOLD;
+    dist = 0;
+    if (!triggered) { setBar(0, ''); return; }
+
+    if (UI.dirty) {
+      setBar(0, '');
+      toast('You have unsaved changes — save first, then refresh', 'err');
+      return;
+    }
+
+    setBar(40, 'Refreshing…');
+    try {
+      const cfg = ghGetConfig();
+      if (!cfg) { setBar(0, ''); return; }
+      const data = await _ghFetch(cfg);
+      _applyData(data);
+      applyTheme(D.settings?.theme);
+      applyIconStyle(D.settings?.iconStyle);
+      _desktopRendered = false;
+      if (!_mobIsMobile()) { renderMonthly(); _desktopRendered = true; }
+      mobRender('top');
+      refreshSaveUI();
+      toast('Up to date ✓', 'ok');
+    } catch (err) {
+      console.error('Pull-to-refresh failed', err);
+      toast('Refresh failed — ' + (err.message || err), 'err');
+    } finally {
+      setBar(0, '');
+    }
+  }, { passive: true });
+})();
 </script>
 </body>
 </html>
