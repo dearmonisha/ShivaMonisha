@@ -7373,7 +7373,10 @@ function payIncomeEvents(from, to, bankId) {
       .sort((a, b) => a.date.localeCompare(b.date));
     const last   = matches[matches.length - 1] || null;
     const amount = last ? +last.credit : target;
-    let d        = last ? last.date : (s.startDate || from);
+    // The anchor deposit is a real, already-posted transaction — it's already baked into
+    // the current cash balance. Project from one cycle AFTER it, never on the same date,
+    // or a same-day deposit gets counted twice (once in the balance, once as a "future" event).
+    let d        = last ? payAddDays(last.date, 14) : (s.startDate || from);
     let guard    = 0;
     while (d < from && guard++ < 400) d = payAddDays(d, 14);
     while (d <= to && guard++ < 400) {
