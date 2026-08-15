@@ -53,8 +53,18 @@ body{font-family:'Aptos','Calibri',-apple-system,BlinkMacSystemFont,'Segoe UI',s
 .hdr-space{flex:1}
 .save-info{font-size:12px;color:var(--text3);white-space:nowrap}
 .save-btn{display:flex;align-items:center;gap:5px;padding:5px 14px;background:var(--primary);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:14.67px;font-weight:700;transition:all .15s}
-.save-btn:hover{background:var(--primary-d)}
-.save-btn.dirty{background:#d97706;box-shadow:none}
+.save-btn:hover:not(:disabled){background:var(--primary-d)}
+/* ── Save state must be readable at a glance ────────────────────────────────
+   The old pair was background #D97757 (clean) vs #d97706 (dirty) — two nearly
+   identical oranges. On mobile that WAS the only signal, because .save-info
+   ("Unsaved changes" / "All saved") is display:none below 767px. So a phone
+   gave you no reliable way to tell whether anything was pending.
+   Now: disabled + grey when there is nothing to save, saturated amber with a
+   halo when there is. Grey vs amber reads instantly; the cursor and the
+   disabled state confirm it. ─────────────────────────────────────────────── */
+.save-btn:disabled{background:var(--surface3);color:var(--text3);cursor:default;box-shadow:none}
+.save-btn.dirty{background:#B45309;color:#fff;box-shadow:0 0 0 3px rgba(180,83,9,.22)}
+.save-btn.dirty:hover{background:#92400E}
 .exit-btn{display:flex;align-items:center;gap:5px;padding:5px 14px;background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:var(--r);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s;margin-left:8px}
 .exit-btn:hover{background:var(--hover);color:var(--text1);border-color:var(--text3)}
 
@@ -724,6 +734,27 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-acct-name{font-size:.88rem;font-weight:700;color:var(--text1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mob-acct-bal{font-size:.96rem;font-weight:800;white-space:nowrap}
 .mob-drill-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+/* ── Bottom-sheet icon actions (Cancel / Delete / Save) ────────────────────
+   Icon-only, so every button carries title + aria-label for screen readers
+   and long-press tooltips. All are ≥56px, comfortably over the 44px target. */
+.mob-sheet-actions{display:flex;gap:18px;justify-content:center;align-items:center;margin-top:24px}
+.mob-icon-btn{width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  border:1.5px solid var(--border);background:var(--surface);color:var(--text2);cursor:pointer;padding:0;flex-shrink:0;
+  transition:transform .12s ease,background .15s,border-color .15s,box-shadow .15s,color .15s;
+  -webkit-tap-highlight-color:transparent}
+.mob-icon-btn:active{transform:scale(.9)}
+.mob-icon-btn svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.mob-icon-btn.delete{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}
+.mob-icon-btn.delete:active{background:color-mix(in srgb,var(--danger) 12%,transparent)}
+/* Save is the primary action: bigger, filled green, with a halo when live.
+   Disabled until something actually changes, so "is there anything to save?"
+   is answered by looking at it. */
+.mob-icon-btn.save{width:66px;height:66px;background:var(--ok);border-color:var(--ok);color:#fff;
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 20%,transparent)}
+.mob-icon-btn.save svg{width:30px;height:30px;stroke-width:2.6}
+.mob-icon-btn.save:disabled{background:var(--surface3);border-color:var(--border);color:var(--text3);
+  box-shadow:none;cursor:default;transform:none}
+.mob-icon-btn.save:disabled:active{transform:none}
 /* Mobile transaction rows are tappable → give them affordance + a chevron */
 .mob-txn-row.tappable{cursor:pointer;-webkit-tap-highlight-color:transparent}
 .mob-txn-row.tappable:active{background:var(--hover)}
@@ -849,9 +880,9 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   </div>
   <div class="hdr-space"></div>
   <span class="save-info" id="save-info">All saved</span>
-  <button class="save-btn" id="save-btn" onclick="doSave()">
+  <button class="save-btn" id="save-btn" onclick="doSave()" disabled title="Everything is saved">
     <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4.5L11.5 1H2zm9.5 1.5 1 1H11V2.5zM3 2h7v2H3V2zm0 9V8h10v3H3zm0 1h10v2H3v-2zm1-4h2v1H4v-1z"/></svg>
-    Save
+    <span class="save-btn-label">Saved</span>
   </button>
   <button class="exit-btn" onclick="switchDataFile()" title="Update GitHub connection settings" style="font-size:.75rem;gap:4px">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
@@ -1916,7 +1947,10 @@ async function doSave() {
     toast('Save failed — ' + (e.message || e), 'err');
     if (si) { si.textContent = 'Save failed'; si.style.color = 'var(--danger)'; }
   } finally {
-    if (sb) sb.disabled = false;
+    // Not a blanket re-enable: on success UI.dirty is false and the button must
+    // stay disabled, otherwise it would go grey-but-clickable and undo the
+    // whole point of the disabled state.
+    if (sb) sb.disabled = !UI.dirty;
   }
 }
 
@@ -1991,13 +2025,25 @@ function showClosePrompt(msg) {
 function refreshSaveUI() {
   const si = id('save-info'), sb = id('save-btn');
   if (UI.dirty) {
-    si.textContent = 'Unsaved changes';
-    si.style.color = 'var(--warn)';
-    sb.classList.add('dirty');
+    if (si) { si.textContent = 'Unsaved changes'; si.style.color = 'var(--warn)'; }
+    if (sb) {
+      sb.classList.add('dirty');
+      sb.disabled = false;
+      sb.title = 'Save your changes to GitHub';
+      const lbl = sb.querySelector('.save-btn-label');
+      if (lbl) lbl.textContent = 'Save';
+    }
   } else {
-    si.textContent = 'All saved';
-    si.style.color = 'var(--text3)';
-    sb.classList.remove('dirty');
+    if (si) { si.textContent = 'All saved'; si.style.color = 'var(--text3)'; }
+    if (sb) {
+      sb.classList.remove('dirty');
+      // Nothing to save → the button is inert. This is the whole signal on
+      // mobile, where the "All saved" text label is hidden.
+      sb.disabled = true;
+      sb.title = 'Everything is saved';
+      const lbl = sb.querySelector('.save-btn-label');
+      if (lbl) lbl.textContent = 'Saved';
+    }
   }
 }
 
@@ -10965,6 +11011,16 @@ let _mobDrillReturnY = 0;
 // Tracks whether the (expensive) desktop Monthly view has been built yet.
 // It is skipped entirely on phone-width loads — see loadState().
 let _desktopRendered = false;
+
+// ── Add/edit sheet change tracking ────────────────────────────────────────
+// Snapshot of the sheet's fields as it was opened. Compared on every input to
+// decide whether the Save icon is live, and whether Cancel should confirm.
+const _MOB_SHEET_FIELDS = ['mob-at-date','mob-at-payee','mob-at-amt','mob-at-type','mob-at-acct','mob-at-cat','mob-at-notes'];
+let _mobSheetBaseline = '';
+let _mobSheetIsEdit   = false;
+function _mobSheetSnapshot() {
+  return JSON.stringify(_MOB_SHEET_FIELDS.map(f => document.getElementById(f)?.value ?? ''));
+}
 function mobRender(target) {
   _mobScrollTarget = (target === undefined) ? 'keep' : target;
   renderMobileView();
@@ -11576,8 +11632,9 @@ const BA = {
     const overlay = document.createElement('div');
     overlay.id    = 'mob-add-txn-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;display:flex;align-items:flex-end;justify-content:center';
-    // Tap backdrop to close
-    overlay.addEventListener('click', e => { if (e.target === overlay) BA.mobileCloseTxnSheet(); });
+    // Tap backdrop to close — same guarded path as the Cancel icon, so a stray
+    // tap outside the sheet cannot silently bin a half-typed transaction.
+    overlay.addEventListener('click', e => { if (e.target === overlay) BA.mobileCancelTxnSheet(); });
 
     const sheet = document.createElement('div');
     sheet.style.cssText = 'background:var(--bg);border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;box-shadow:0 -4px 28px rgba(0,0,0,.22);padding:20px 18px calc(40px + env(safe-area-inset-bottom))';
@@ -11585,10 +11642,10 @@ const BA = {
     sheet.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
         <span style="font-size:1.05rem;font-weight:800;color:var(--text1)">${editing ? 'Edit Transaction' : 'Add Transaction'}</span>
-        <button onclick="BA.mobileCloseTxnSheet()" style="background:none;border:none;font-size:1.4rem;color:var(--text3);cursor:pointer;line-height:1;padding:8px 10px;min-height:44px;min-width:44px">✕</button>
+        <button onclick="BA.mobileCancelTxnSheet()" aria-label="Close" style="background:none;border:none;font-size:1.4rem;color:var(--text3);cursor:pointer;line-height:1;padding:8px 10px;min-height:44px;min-width:44px">✕</button>
       </div>
       ${isComplex ? `<div style="background:color-mix(in srgb,var(--primary) 8%,transparent);border:1px solid color-mix(in srgb,var(--primary) 28%,transparent);border-radius:8px;padding:10px 12px;font-size:.8rem;color:var(--text2);margin-bottom:16px;line-height:1.45">
-        <strong>${txn.isTransfer ? '⇄ Transfer' : '⑂ Split transaction'}</strong> — this one has linked records, so it is read-only here. Edit it on desktop, or delete it below.
+        <strong>${txn.isTransfer ? '⇄ Transfer' : '⑂ Split transaction'}</strong> — this one has linked records, so it is read-only here. Edit it on desktop, or use the delete icon below.
       </div>` : ''}
       <div style="${rowStyle}">
         <label style="${lblStyle}">Date <span style="color:var(--danger)">*</span></label>
@@ -11623,16 +11680,60 @@ const BA = {
           style="${fldStyle};resize:none;line-height:1.4;min-height:60px"${ro}>${editing ? esc(txn.notes || '') : ''}</textarea>
       </div>
       <div id="mob-at-err" style="display:none;background:color-mix(in srgb,var(--danger) 10%,transparent);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:7px;padding:8px 12px;font-size:.82rem;color:var(--danger);margin-bottom:12px;font-weight:600"></div>
-      ${isComplex ? '' : `<button onclick="${editing ? `BA.mobileEditTxnSubmit('${txnId}')` : 'BA.mobileAddTxnSubmit()'}" style="width:100%;padding:15px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:800;cursor:pointer;letter-spacing:.01em;min-height:48px">
-        ${editing ? 'Save Changes' : 'Save Transaction'}
-      </button>`}
-      ${editing ? `<button onclick="BA.mobileDeleteTxn('${txnId}')" style="width:100%;padding:14px;margin-top:10px;background:transparent;color:var(--danger);border:1.5px solid var(--danger);border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;min-height:48px">
-        Delete Transaction
-      </button>` : ''}`;
+      <div class="mob-sheet-actions">
+        <button class="mob-icon-btn cancel" onclick="BA.mobileCancelTxnSheet()" title="Cancel — close without saving" aria-label="Cancel, close without saving">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        ${editing ? `<button class="mob-icon-btn delete" onclick="BA.mobileDeleteTxn('${txnId}')" title="Delete this transaction" aria-label="Delete this transaction">
+          <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        </button>` : ''}
+        ${isComplex ? '' : `<button id="mob-at-save" class="mob-icon-btn save" disabled
+          onclick="${editing ? `BA.mobileEditTxnSubmit('${txnId}')` : 'BA.mobileAddTxnSubmit()'}"
+          title="${editing ? 'No changes yet' : 'Fill in date, amount and account'}"
+          aria-label="${editing ? 'Save changes' : 'Save transaction'}">
+          <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>`}
+      </div>`;
 
     overlay.appendChild(sheet);
     document.body.appendChild(overlay);
+
+    // ── Track edits so Save can be enabled only when there is something to save ──
+    _mobSheetIsEdit   = editing;
+    _mobSheetBaseline = _mobSheetSnapshot();
+    sheet.addEventListener('input',  BA._mobSheetSyncSave);
+    sheet.addEventListener('change', BA._mobSheetSyncSave);
+    BA._mobSheetSyncSave();
+
     if (!editing) setTimeout(() => { document.getElementById('mob-at-payee')?.focus(); }, 120);
+  },
+
+  // Explicit Cancel. Confirms only when there is something to lose, so the
+  // common "opened it by accident, backing out" case stays a single tap.
+  mobileCancelTxnSheet() {
+    if (!document.getElementById('mob-add-txn-overlay')) return;
+    if (_mobSheetSnapshot() !== _mobSheetBaseline &&
+        !confirm('Discard your changes to this transaction?')) return;
+    BA.mobileCloseTxnSheet();
+  },
+
+  // Enable Save only when the form is genuinely submittable:
+  //  • edit mode → at least one field differs from what was loaded
+  //  • add mode  → the three required fields are filled
+  // Either way the button goes from grey to filled green, which is the
+  // "do I have unsaved edits?" signal inside the sheet.
+  _mobSheetSyncSave() {
+    const btn = document.getElementById('mob-at-save');
+    if (!btn) return;
+    const g = i => document.getElementById(i);
+    const amt = parseFloat(g('mob-at-amt')?.value);
+    const hasRequired = !!(g('mob-at-date')?.value) && !!(g('mob-at-acct')?.value) && !isNaN(amt) && amt > 0;
+    const changed = _mobSheetSnapshot() !== _mobSheetBaseline;
+    const enable  = hasRequired && (_mobSheetIsEdit ? changed : true);
+    btn.disabled  = !enable;
+    btn.title = enable
+      ? (_mobSheetIsEdit ? 'Save changes' : 'Save transaction')
+      : (_mobSheetIsEdit && !changed ? 'No changes yet' : 'Fill in date, amount and account');
   },
 
   // Read + validate the sheet's fields. Returns null (and shows the inline
@@ -11709,6 +11810,10 @@ const BA = {
 
   mobileCloseTxnSheet() {
     document.getElementById('mob-add-txn-overlay')?.remove();
+    // Clear the baseline, otherwise a later Cancel compares against a sheet
+    // that no longer exists and spuriously prompts to discard.
+    _mobSheetBaseline = '';
+    _mobSheetIsEdit   = false;
   },
 
   mobileAddTxnSubmit() {
