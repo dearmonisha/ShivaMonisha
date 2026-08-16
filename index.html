@@ -13093,10 +13093,43 @@ function oblAutoGenerateTxns() {
     (D.obligations.emis || []).filter(e => e.generateMonthly === false).map(e => e.id)
   );
   const beforeLen = (D.transactions || []).length;
-  D.transactions = (D.transactions || []).filter(t =>
-    !(t.status === 'pending' && t.oblType === 'emi' && autoDebitIds.has(t.obligationId))
-  );
+
+  // ── Drop pending rows that no longer represent a real upcoming charge ──────
+  // Generation already refuses to CREATE rows for non-Active obligations
+  // (`if (sub.status !== 'Active') return`), but nothing used to REMOVE a row
+  // that was generated while the obligation was still Active and then cancelled
+  // or paused. Worse, the fix-up pass below looks obligations up in `oblById`,
+  // which is built without a status filter — so it kept refreshing those
+  // orphans' date and amount, making a cancelled subscription look like a live
+  // upcoming charge indefinitely.
+  //
+  // Only `pending` rows are eligible. Anything already approved is a real
+  // recorded payment and must never be touched. Re-activating an obligation
+  // regenerates its row on the next pass, so this is reversible.
+  const _removedPending = [];
+  D.transactions = (D.transactions || []).filter(t => {
+    if (t.status !== 'pending' || !t.obligationId) return true;
+    // Auto-debit loans: existing rule, kept as-is
+    if (t.oblType === 'emi' && autoDebitIds.has(t.obligationId)) return false;
+    const entry = oblById[t.obligationId];
+    // Obligation deleted outright — an unactioned row for it represents nothing
+    if (!entry) { _removedPending.push(t.payee || 'obligation'); return false; }
+    // Cancelled / Paused → not being billed, so an upcoming charge is a phantom.
+    // Missing status is treated as Active so older records are never culled.
+    if ((entry.obj.status || 'Active') !== 'Active') {
+      _removedPending.push(t.payee || entry.obj.name || entry.obj.itemName || 'obligation');
+      return false;
+    }
+    return true;
+  });
   let fixedCount = (D.transactions.length !== beforeLen) ? 1 : 0; // flag dirty if removed
+  if (_removedPending.length) {
+    console.info('[obligations] removed stale pending rows:', _removedPending.join(', '));
+    // Deleting financial rows silently would be the wrong default — say so.
+    try {
+      toast(`Removed ${_removedPending.length} pending charge${_removedPending.length !== 1 ? 's' : ''} for cancelled/paused obligations: ${_removedPending.slice(0, 3).join(', ')}${_removedPending.length > 3 ? '…' : ''}`, 'ok');
+    } catch (e) { /* toast container not mounted yet during early load — non-fatal */ }
+  }
 
   // Back-fill oblMonth on any obligation txn that's missing it (prevents duplicates on due-date changes)
   (D.transactions || []).forEach(t => {
