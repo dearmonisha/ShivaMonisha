@@ -752,9 +752,13 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-icon-btn.save{width:66px;height:66px;background:var(--ok);border-color:var(--ok);color:#fff;
   box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 20%,transparent)}
 .mob-icon-btn.save svg{width:30px;height:30px;stroke-width:2.6}
-.mob-icon-btn.save:disabled{background:var(--surface3);border-color:var(--border);color:var(--text3);
-  box-shadow:none;cursor:default;transform:none}
-.mob-icon-btn.save:disabled:active{transform:none}
+/* "Not ready yet" look. Deliberately a CLASS, not the disabled attribute: a
+   disabled button fires no click event, so tapping it explained nothing about
+   what was missing. On an icon-only button — where `title` never surfaces on a
+   touch device — that meant total silence. It stays clickable and tells you. */
+.mob-icon-btn.save.is-off{background:var(--surface3);border-color:var(--border);color:var(--text3);box-shadow:none}
+.mob-icon-btn.save:disabled{background:var(--surface3);border-color:var(--border);color:var(--text3);box-shadow:none;cursor:default}
+.mob-sheet-hint{display:none;text-align:center;font-size:.8rem;color:var(--text3);font-weight:600;margin-top:16px;line-height:1.4}
 /* Mobile transaction rows are tappable → give them affordance + a chevron */
 .mob-txn-row.tappable{cursor:pointer;-webkit-tap-highlight-color:transparent}
 .mob-txn-row.tappable:active{background:var(--hover)}
@@ -11680,6 +11684,7 @@ const BA = {
           style="${fldStyle};resize:none;line-height:1.4;min-height:60px"${ro}>${editing ? esc(txn.notes || '') : ''}</textarea>
       </div>
       <div id="mob-at-err" style="display:none;background:color-mix(in srgb,var(--danger) 10%,transparent);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:7px;padding:8px 12px;font-size:.82rem;color:var(--danger);margin-bottom:12px;font-weight:600"></div>
+      <div id="mob-at-hint" class="mob-sheet-hint"></div>
       <div class="mob-sheet-actions">
         <button class="mob-icon-btn cancel" onclick="BA.mobileCancelTxnSheet()" title="Cancel — close without saving" aria-label="Cancel, close without saving">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -11687,7 +11692,7 @@ const BA = {
         ${editing ? `<button class="mob-icon-btn delete" onclick="BA.mobileDeleteTxn('${txnId}')" title="Delete this transaction" aria-label="Delete this transaction">
           <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         </button>` : ''}
-        ${isComplex ? '' : `<button id="mob-at-save" class="mob-icon-btn save" disabled
+        ${isComplex ? '' : `<button id="mob-at-save" class="mob-icon-btn save is-off"
           onclick="${editing ? `BA.mobileEditTxnSubmit('${txnId}')` : 'BA.mobileAddTxnSubmit()'}"
           title="${editing ? 'No changes yet' : 'Fill in date, amount and account'}"
           aria-label="${editing ? 'Save changes' : 'Save transaction'}">
@@ -11725,15 +11730,38 @@ const BA = {
   _mobSheetSyncSave() {
     const btn = document.getElementById('mob-at-save');
     if (!btn) return;
+    const hintEl = document.getElementById('mob-at-hint');
     const g = i => document.getElementById(i);
     const amt = parseFloat(g('mob-at-amt')?.value);
-    const hasRequired = !!(g('mob-at-date')?.value) && !!(g('mob-at-acct')?.value) && !isNaN(amt) && amt > 0;
+
+    // Name each missing field so the hint can say exactly what is blocking the
+    // save, rather than leaving a grey icon to be interpreted.
+    const missing = [];
+    if (!g('mob-at-date')?.value)            missing.push('a date');
+    if (isNaN(amt) || amt <= 0)              missing.push('an amount');
+    if (!g('mob-at-acct')?.value)            missing.push('an account');
+
     const changed = _mobSheetSnapshot() !== _mobSheetBaseline;
-    const enable  = hasRequired && (_mobSheetIsEdit ? changed : true);
-    btn.disabled  = !enable;
-    btn.title = enable
-      ? (_mobSheetIsEdit ? 'Save changes' : 'Save transaction')
-      : (_mobSheetIsEdit && !changed ? 'No changes yet' : 'Fill in date, amount and account');
+    const ready   = missing.length === 0 && (_mobSheetIsEdit ? changed : true);
+
+    // Class, not `disabled` — the button must stay clickable so a tap can
+    // explain itself. See the .is-off rule for why.
+    btn.classList.toggle('is-off', !ready);
+
+    let msg = '';
+    if (missing.length) {
+      const list = missing.length === 1
+        ? missing[0]
+        : missing.slice(0, -1).join(', ') + ' and ' + missing[missing.length - 1];
+      msg = 'Add ' + list + ' to save';
+    } else if (_mobSheetIsEdit && !changed) {
+      msg = 'No changes yet';
+    }
+    btn.title = msg || (_mobSheetIsEdit ? 'Save changes' : 'Save transaction');
+    if (hintEl) {
+      hintEl.textContent   = msg;
+      hintEl.style.display = msg ? 'block' : 'none';
+    }
   },
 
   // Read + validate the sheet's fields. Returns null (and shows the inline
@@ -11741,7 +11769,14 @@ const BA = {
   _mobileReadTxnSheet() {
     const g       = i => document.getElementById(i);
     const errEl   = g('mob-at-err');
-    const showErr = msg => { if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; } };
+    // Scrolled into view because on a phone the sheet is often scrolled down to
+    // the buttons, which would leave the error off-screen above the fold.
+    const showErr = msg => {
+      if (!errEl) return;
+      errEl.textContent   = msg;
+      errEl.style.display = 'block';
+      try { errEl.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { /* older WebKit */ }
+    };
 
     const date   = (g('mob-at-date')?.value   || '').trim();
     const payee  = (g('mob-at-payee')?.value  || '').trim();
@@ -11765,6 +11800,8 @@ const BA = {
     if (!txn) { toast('Transaction not found', 'err'); return; }
     const f = BA._mobileReadTxnSheet();
     if (!f) return;
+    // Tapping the greyed Save with nothing changed used to do nothing at all.
+    if (_mobSheetSnapshot() === _mobSheetBaseline) { toast('No changes to save', 'err'); return; }
 
     txn.date       = f.date;
     txn.payee      = f.payee || '(no payee)';
