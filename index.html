@@ -53,18 +53,38 @@ body{font-family:'Aptos','Calibri',-apple-system,BlinkMacSystemFont,'Segoe UI',s
 .hdr-space{flex:1}
 .save-info{font-size:12px;color:var(--text3);white-space:nowrap}
 .save-btn{display:flex;align-items:center;gap:5px;padding:5px 14px;background:var(--primary);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-size:14.67px;font-weight:700;transition:all .15s}
-.save-btn:hover:not(:disabled){background:var(--primary-d)}
 /* ── Save state must be readable at a glance ────────────────────────────────
    The old pair was background #D97757 (clean) vs #d97706 (dirty) — two nearly
    identical oranges. On mobile that WAS the only signal, because .save-info
-   ("Unsaved changes" / "All saved") is display:none below 767px. So a phone
-   gave you no reliable way to tell whether anything was pending.
-   Now: disabled + grey when there is nothing to save, saturated amber with a
-   halo when there is. Grey vs amber reads instantly; the cursor and the
-   disabled state confirm it. ─────────────────────────────────────────────── */
+   ("Unsaved changes" / "All saved" / "Saving…" / "Save failed") is
+   display:none below 767px. So a phone could not show pending, in-flight or
+   failed at all. Each state now owns a distinct colour AND a distinct label. */
 .save-btn:disabled{background:var(--surface3);color:var(--text3);cursor:default;box-shadow:none}
 .save-btn.dirty{background:#B45309;color:#fff;box-shadow:0 0 0 3px rgba(180,83,9,.22)}
-.save-btn.dirty:hover{background:#92400E}
+.save-btn.saving{background:#6B7280;color:#fff;box-shadow:none;cursor:progress}
+.save-btn.failed,
+.save-btn.failed:disabled{background:var(--danger);color:#fff;box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 25%,transparent);cursor:pointer}
+/* Hover is gated behind a real pointer. On a touch screen :hover LATCHES after
+   a tap and never clears, so the button kept whatever hover colour it picked up
+   and stopped reflecting its actual state — a big part of why tapping Save
+   looked like it did nothing. The state classes are also excluded from the
+   base hover rule because `:hover:not(:disabled)` (0,3,0) would otherwise
+   out-specify `.save-btn.failed` (0,2,0) and repaint a failed save terracotta. */
+@media (hover:hover) and (pointer:fine){
+  .save-btn:hover:not(:disabled):not(.dirty):not(.saving):not(.failed){background:var(--primary-d)}
+  .save-btn.dirty:hover:not(:disabled){background:#92400E}
+  .save-btn.failed:hover:not(:disabled){background:#A93226}
+}
+/* Persistent, dismissible save-failure banner. A toast auto-dismisses after
+   2.8s in the bottom-right corner, behind the FAB on a phone — far too easy to
+   miss for something as consequential as "your data did not reach GitHub". */
+#save-err-bar{display:none;position:sticky;top:50px;z-index:199;background:var(--danger);color:#fff;
+  padding:9px 14px;font-size:.82rem;font-weight:600;align-items:center;gap:10px;line-height:1.35;
+  box-shadow:0 2px 8px rgba(0,0,0,.18)}
+#save-err-bar.show{display:flex}
+#save-err-bar button{background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.5);
+  border-radius:6px;padding:6px 12px;font-size:.78rem;font-weight:800;cursor:pointer;flex-shrink:0;min-height:34px}
+#save-err-text{flex:1;min-width:0;word-break:break-word}
 .exit-btn{display:flex;align-items:center;gap:5px;padding:5px 14px;background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:var(--r);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s;margin-left:8px}
 .exit-btn:hover{background:var(--hover);color:var(--text1);border-color:var(--text3)}
 
@@ -795,6 +815,10 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
      header is 40px — that 10px gap let list rows show through underneath.
      JS re-measures both after each render; this is the pre-paint fallback. */
   .mob-hdr{top:calc(40px + env(safe-area-inset-top));padding:6px calc(14px + env(safe-area-inset-right)) 6px calc(14px + env(safe-area-inset-left))}
+  /* Clear of the FAB (bottom:24px, 54px tall) so toasts are actually readable */
+  .toasts{bottom:calc(92px + env(safe-area-inset-bottom));left:12px;right:12px}
+  .toast{max-width:none}
+  #save-err-bar{top:calc(40px + env(safe-area-inset-top))}
   .mob-month{font-size:.9rem;font-weight:800}
   .arrow-btn{width:44px;height:44px;font-size:20px;-webkit-tap-highlight-color:transparent}
   .mob-section{padding:10px calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left))}
@@ -897,6 +921,13 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
     Exit
   </button>
 </header>
+
+<!-- Save failure banner — stays until the save succeeds or you dismiss it -->
+<div id="save-err-bar">
+  <span id="save-err-text"></span>
+  <button onclick="doSave()">Retry</button>
+  <button onclick="BA.dismissSaveError()" aria-label="Dismiss">✕</button>
+</div>
 
 <!-- File Storage Overlay -->
 <div id="file-overlay">
@@ -1924,7 +1955,11 @@ async function _ghWrite(cfg, data) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || `GitHub API error ${res.status}`);
+    // Carry the HTTP status so doSave() can tell a stale-SHA conflict (409/422)
+    // apart from auth or network failures — they need different remedies.
+    const e = new Error(err.message || `GitHub API error ${res.status}`);
+    e.status = res.status;
+    throw e;
   }
   const json = await res.json();
   const newSha = json.content?.sha;
@@ -1938,23 +1973,74 @@ async function _ghWrite(cfg, data) {
 async function doSave() {
   const cfg = ghGetConfig();
   if (!cfg) { _showOverlay('setup'); return; }
-  const si = id('save-info'), sb = id('save-btn');
-  if (si) { si.textContent = 'Saving…'; si.style.color = 'var(--text3)'; }
-  if (sb) sb.disabled = true;
+  if (_saveState === 'saving') return;   // ignore repeat taps mid-upload
+  clearSaveError();
+  _saveState = 'saving';
+  refreshSaveUI();
   try {
     await _ghWrite(cfg, D);
-    UI.dirty = false;
+    UI.dirty   = false;
+    _saveState = '';
+    clearSaveError();
     refreshSaveUI();
     toast('Saved to GitHub ✓', 'ok');
   } catch(e) {
-    console.error(e);
-    toast('Save failed — ' + (e.message || e), 'err');
-    if (si) { si.textContent = 'Save failed'; si.style.color = 'var(--danger)'; }
-  } finally {
-    // Not a blanket re-enable: on success UI.dirty is false and the button must
-    // stay disabled, otherwise it would go grey-but-clickable and undo the
-    // whole point of the disabled state.
-    if (sb) sb.disabled = !UI.dirty;
+    console.error('Save failed', e);
+    _saveState = '';
+    // 409/422 from the contents API means the stored SHA no longer matches the
+    // file on GitHub — i.e. it changed since this tab loaded it (a manual
+    // upload, or a save from another device). Retrying can never succeed, so
+    // silently looping on it is the worst outcome. Ask instead.
+    if (e && (e.status === 409 || e.status === 422)) {
+      showSaveError('the file on GitHub changed since this tab loaded it.');
+      saveConflictModal();
+    } else {
+      showSaveError(e.message || String(e));
+      toast('Save failed — ' + (e.message || e), 'err');
+    }
+  }
+}
+
+// Stale-SHA conflict. Both ways out lose something, so neither can be silent.
+function saveConflictModal() {
+  showModal(`
+    <div class="modal-title" style="color:var(--danger)">Couldn't save — GitHub has a newer copy</div>
+    <p style="color:var(--text2);font-size:14px;margin:0 0 12px;line-height:1.55">
+      This tab loaded the data file before it was last changed on GitHub, so GitHub rejected the save
+      to avoid overwriting that newer version.
+    </p>
+    <p style="color:var(--text2);font-size:13px;margin:0 0 18px;line-height:1.55">
+      <strong>Reload</strong> pulls the newer copy and discards the changes you made in this tab.<br>
+      <strong>Overwrite</strong> keeps your changes and replaces what is on GitHub.
+    </p>
+    <div class="mfoot" style="justify-content:flex-end;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="closeModal()">Not now</button>
+      <button class="btn" onclick="closeModal();location.reload()">Reload from GitHub</button>
+      <button class="btn" style="background:var(--danger);color:#fff;border-color:var(--danger)"
+        onclick="closeModal();doForceSave()">Overwrite GitHub</button>
+    </div>`);
+}
+
+// Re-read the current SHA, then write on top of it.
+async function doForceSave() {
+  const cfg = ghGetConfig();
+  if (!cfg) return;
+  clearSaveError();
+  _saveState = 'saving';
+  refreshSaveUI();
+  try {
+    const url = `https://api.github.com/repos/${cfg.repo}/contents/${cfg.path}`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfg.token}`, 'Accept': 'application/vnd.github.v3+json' } });
+    if (!res.ok) throw new Error(`Could not read current file (${res.status})`);
+    const meta = await res.json();
+    ghSetSha(meta.sha);
+    await _ghWrite(cfg, D);
+    UI.dirty = false; _saveState = ''; clearSaveError(); refreshSaveUI();
+    toast('Overwrote GitHub with this version ✓', 'ok');
+  } catch(e) {
+    console.error('Force save failed', e);
+    _saveState = '';
+    showSaveError(e.message || String(e));
   }
 }
 
@@ -2026,28 +2112,51 @@ function showClosePrompt(msg) {
   `);
 }
 
+// Save lifecycle, surfaced ON THE BUTTON so it is legible on a phone.
+// '' = idle (clean/dirty decided by UI.dirty) | 'saving' | 'failed'
+let _saveState = '';
+let _saveError = '';
+
+function showSaveError(msg) {
+  _saveState = 'failed';
+  _saveError = msg || 'Unknown error';
+  const bar = id('save-err-bar'), txt = id('save-err-text');
+  if (txt) txt.textContent = 'Not saved to GitHub — ' + _saveError;
+  if (bar) bar.classList.add('show');
+  refreshSaveUI();
+}
+function clearSaveError() {
+  _saveState = _saveState === 'failed' ? '' : _saveState;
+  _saveError = '';
+  const bar = id('save-err-bar');
+  if (bar) bar.classList.remove('show');
+}
+
 function refreshSaveUI() {
   const si = id('save-info'), sb = id('save-btn');
-  if (UI.dirty) {
-    if (si) { si.textContent = 'Unsaved changes'; si.style.color = 'var(--warn)'; }
-    if (sb) {
-      sb.classList.add('dirty');
-      sb.disabled = false;
-      sb.title = 'Save your changes to GitHub';
-      const lbl = sb.querySelector('.save-btn-label');
-      if (lbl) lbl.textContent = 'Save';
-    }
+  const lbl = sb ? sb.querySelector('.save-btn-label') : null;
+  const set = (text, cls, disabled, tip, infoText, infoColor) => {
+    if (si) { si.textContent = infoText; si.style.color = infoColor; }
+    if (!sb) return;
+    sb.classList.remove('dirty', 'saving', 'failed');
+    if (cls) sb.classList.add(cls);
+    sb.disabled = disabled;
+    sb.title = tip;
+    if (lbl) lbl.textContent = text;
+  };
+
+  if (_saveState === 'saving') {
+    // Was invisible on mobile before: the only "Saving…" indicator lived in
+    // #save-info, which is display:none under 767px.
+    set('Saving…', 'saving', true, 'Uploading to GitHub…', 'Saving…', 'var(--text3)');
+  } else if (_saveState === 'failed') {
+    set('Retry', 'failed', false, 'Save failed — ' + _saveError, 'Save failed', 'var(--danger)');
+  } else if (UI.dirty) {
+    set('Save', 'dirty', false, 'Save your changes to GitHub', 'Unsaved changes', 'var(--warn)');
   } else {
-    if (si) { si.textContent = 'All saved'; si.style.color = 'var(--text3)'; }
-    if (sb) {
-      sb.classList.remove('dirty');
-      // Nothing to save → the button is inert. This is the whole signal on
-      // mobile, where the "All saved" text label is hidden.
-      sb.disabled = true;
-      sb.title = 'Everything is saved';
-      const lbl = sb.querySelector('.save-btn-label');
-      if (lbl) lbl.textContent = 'Saved';
-    }
+    // Nothing to save → the button is inert. This is the whole signal on
+    // mobile, where the "All saved" text label is hidden.
+    set('Saved', '', true, 'Everything is saved', 'All saved', 'var(--text3)');
   }
 }
 
@@ -11567,6 +11676,8 @@ const BA = {
     UI.treemapLevel = level;
     renderTreemap();
   },
+  dismissSaveError() { clearSaveError(); refreshSaveUI(); },
+
   setMobileTab(tab) { UI.mobileTab = tab; UI.mobileDrillCat = ''; mobRender('top'); },
   setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; UI.mobileTxnSearch = ''; mobRender('top'); },
   // Searching filters the list in place — snapping to the top each keystroke
