@@ -1507,6 +1507,9 @@ function _applyData(raw) {
   if (!D.budget.adjustments)    D.budget.adjustments    = [];
   if (!D.savingsPots)  D.savingsPots  = { growthAccountId: '', trackedGroupId: '' };
   if (!D.reservePots)  D.reservePots  = { reserveAccountId: '' };
+  // Former accounts a pot has lived in — keeps pot history intact across moves
+  if (!Array.isArray(D.savingsPots.priorAccountIds)) D.savingsPots.priorAccountIds = [];
+  if (!Array.isArray(D.reservePots.priorAccountIds)) D.reservePots.priorAccountIds = [];
   // Assumed annual yield per risk tier for the "investment goal for full income independence"
   // panel on the Balance Sheet — editable in the UI, persisted here so they stick across sessions.
   if (!D.fiGoals) D.fiGoals = { low: 4.2, medium: 5.0, high: 8.0 };
@@ -6264,6 +6267,46 @@ function budgetGetEffectivePlan(catId, month, _depth) {
   if (surplus <= 0) return base; // nothing to carry forward — stop recursion
   return base + surplus;
 }
+// ── Pot account identity ──────────────────────────────────────────────────
+// A pot is a LOGICAL bucket, not an account. When the account holding a pot
+// changes (e.g. moving to a better-rate savings account), every past flow still
+// references the OLD account — so the set used to classify pot flows has to
+// include former accounts as well as the current one.
+//
+// Building this from the current config alone caused two bugs at once when the
+// Savings/Reserve pots were repointed in Aug 2026:
+//   1. The whole year's pot history vanished from the Budget and Actuals grids,
+//      because every historical flow named the old account. Pot Withdrawal read
+//      $0 for a year in which ~$36.8k was actually withdrawn.
+//   2. The migration transfer between the old and new pot accounts registered
+//      as a fresh $6,200 deposit — it passed the "came from a non-pot account"
+//      guard, even though the money was already inside the pot system.
+// Because the same set drives both the "is this a pot flow" test and the "is
+// this internal" test, movements between any two pot accounts now cancel out.
+function potAccountIdSet() {
+  const sp = D.savingsPots || {}, rp = D.reservePots || {};
+  return new Set([
+    sp.growthAccountId,
+    rp.reserveAccountId,
+    ...(sp.priorAccountIds  || []),
+    ...(rp.priorAccountIds  || [])
+  ].filter(Boolean));
+}
+
+// Called whenever a pot's account is reassigned, so history survives the change
+// without anyone having to remember to record it.
+function potRecordPriorAccount(cfgObj, key, newAcctId) {
+  if (!cfgObj) return;
+  const old = cfgObj[key];
+  if (!Array.isArray(cfgObj.priorAccountIds)) cfgObj.priorAccountIds = [];
+  if (old && old !== newAcctId && !cfgObj.priorAccountIds.includes(old)) {
+    cfgObj.priorAccountIds.push(old);
+  }
+  // Moving a pot BACK to an account it used before makes that account current
+  // again, so it must not also be listed as prior.
+  cfgObj.priorAccountIds = cfgObj.priorAccountIds.filter(x => x && x !== newAcctId);
+}
+
 function budgetGetCatActuals(catId, month) {
   const t = (D.budget.txnActuals || []).find(a => a.categoryId===catId && a.month===month);
   // Transaction-sourced actuals take precedence: they ARE the real spending.
@@ -9729,11 +9772,8 @@ function renderAnnual() {
     if (famDR > 0) { mReimbTotals[i] += famDR; grandReimbTotal += famDR; }
   });
 
-  // Pot account detection (same as Actuals Grid)
-  const potAcctIds = new Set([
-    (D.savingsPots||{}).growthAccountId,
-    (D.reservePots||{}).reserveAccountId
-  ].filter(Boolean));
+  // Pot account detection (same as Actuals Grid) — see potAccountIdSet()
+  const potAcctIds = potAccountIdSet();
   const getPotW = m => (D.transactions||[])
     .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
                  t.status !== 'rejected' &&
@@ -10032,10 +10072,7 @@ function renderActualsGrid() {
   });
 
   // Pot account IDs (growth + reserve) — used for both deposit and withdrawal detection
-  const potAcctIds = new Set([
-    (D.savingsPots||{}).growthAccountId,
-    (D.reservePots||{}).reserveAccountId
-  ].filter(Boolean));
+  const potAcctIds = potAccountIdSet();
 
   // Pot withdrawals: isTransfer credit transactions coming FROM a pot account into a non-pot account
   // No manual category needed — identified purely by transferFromAcctId
@@ -19457,6 +19494,7 @@ Object.assign(BA, {
     if (!groupId) { toast('Please select a budget group', 'err'); return; }
     if (!acctId)  { toast('Please select a savings account', 'err'); return; }
     if (!D.savingsPots) D.savingsPots = {};
+    potRecordPriorAccount(D.savingsPots, 'growthAccountId', acctId);
     D.savingsPots.growthAccountId = acctId;
     D.savingsPots.trackedGroupId  = groupId;
     dirty();
@@ -19493,6 +19531,7 @@ Object.assign(BA, {
     if (!groupId) { toast('Please select a budget group', 'err'); return; }
     if (!acctId)  { toast('Please select a savings account', 'err'); return; }
     if (!D.savingsPots) D.savingsPots = {};
+    potRecordPriorAccount(D.savingsPots, 'growthAccountId', acctId);
     D.savingsPots.growthAccountId = acctId;
     D.savingsPots.trackedGroupId  = groupId;
     dirty(); closeModal(); renderSavingsPots();
@@ -19503,6 +19542,7 @@ Object.assign(BA, {
     const acctId = id('rp-acct-sel')?.value;
     if (!acctId) { toast('Please select a Reserve account', 'err'); return; }
     if (!D.reservePots) D.reservePots = {};
+    potRecordPriorAccount(D.reservePots, 'reserveAccountId', acctId);
     D.reservePots.reserveAccountId = acctId;
     dirty();
     renderReservePots();
@@ -19536,6 +19576,7 @@ Object.assign(BA, {
     const acctId = id('rp-cfg-acct')?.value;
     if (!acctId) { toast('Please select a Reserve account', 'err'); return; }
     if (!D.reservePots) D.reservePots = {};
+    potRecordPriorAccount(D.reservePots, 'reserveAccountId', acctId);
     D.reservePots.reserveAccountId = acctId;
     dirty(); closeModal(); renderReservePots();
   },
