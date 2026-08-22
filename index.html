@@ -7796,6 +7796,39 @@ function payOutflowEvents(from, to, meta) {
     });
   });
 
+  // ── Pay-in-full statements are committed outflows, not discretionary ──────
+  // A card you clear every cycle owes its whole statement on its due date, the
+  // same way the mortgage does. Leaving it out let the allocator deploy cash
+  // that was already spoken for, so the money could be gone by the time the
+  // statement landed — and carrying a balance on one of these trips the go-to
+  // rate (Costco's is 24.74%). Putting it in the runway makes every later
+  // Safe to Deploy account for it automatically, with nothing to forecast.
+  //
+  // Where no statement has been issued yet the current balance is the estimate.
+  // The card's own minimum row is dropped for these cards, because the full
+  // statement supersedes it — counting both would double up.
+  const pifRows = [], pifNames = new Set();
+  payCardStates().forEach(s => {
+    if (s.role !== 'pay-in-full' || !s.dueDate) return;
+    if (s.dueDate < from || s.dueDate > to) return;
+    const owed = Math.max(0, (s.stmtBal != null ? s.stmtBal : s.balance) - (s.paid || 0));
+    if (owed <= 0.005) return;
+    pifNames.add((s.name || '').trim().toLowerCase());
+    pifRows.push({
+      date: s.dueDate, label: s.name + ' (statement)', amount: owed,
+      kind: 'cc-full', cat: 'Credit Cards',
+      auto: !!(s.tpl && s.tpl.isAutomatic), payInFull: true,
+      estimated: s.stmtBal == null
+    });
+  });
+  // Cycle rows carry no card id, so the card's own minimum is matched by name.
+  if (pifNames.size) {
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (out[i].kind === 'cc-min' && pifNames.has((out[i].label || '').trim().toLowerCase())) out.splice(i, 1);
+    }
+  }
+  pifRows.forEach(r => out.push(r));
+
   // Pending bank debits that the cycle list doesn't already represent.
   // Obligations and templates are separate systems and DO overlap (All State
   // Home 975.82 pending on the 20th vs Home Insurance 975.82 due on the 27th),
@@ -7901,10 +7934,17 @@ function payAllocate(pot, strategy, states) {
      x.pay += p; left -= p;
    });
 
-  // Pay-in-full cards are settled to their statement regardless of strategy
+  // Pay-in-full cards are settled to their ISSUED statement, regardless of strategy.
+  // Deliberately no fallback to the running balance: with no statement nothing has
+  // been billed, and the old `stmtBal ?? balance` fallback swept every spare dollar
+  // into an unbilled 0% balance. On 2026-08-21 that put $2,284 into Costco at 0.00%
+  // — saving nothing — while Macys sat at 31.90%, costing about $60/mo.
+  // The future statement is not ignored: payOutflowEvents books it as a committed
+  // outflow on its due date, so the runway ring-fences the cash instead.
   m.forEach(x => {
     if (left < 1 || x.role !== 'pay-in-full') return;
-    const target = (x.stmtBal != null ? x.stmtBal : x.balance) - x.paid - x.pay;
+    if (x.stmtBal == null) return;              // nothing billed yet — nothing due
+    const target = x.stmtBal - x.paid - x.pay;
     const p = Math.min(Math.max(0, target), left);
     x.pay += p; left -= p;
   });
@@ -8470,7 +8510,8 @@ function renderPayments() {
        </table>
      </div>
      <div style="padding:8px 15px;border-top:1px solid var(--border);font-size:.68rem;color:var(--text3);background:var(--surface2);line-height:1.6">
-       Card payments are deliberately excluded from this projection — the allocator above decides those. Historically they run about ${payFmt(T.avgPmts)}/month.
+       Committed card payments are included — minimums, and the full statement on any card you clear every cycle (shown as “(statement)”, estimated from today's balance until the statement is issued).
+       Discretionary deployment on top of those is excluded — the allocator above decides that. Historically total card payments run about ${payFmt(T.avgPmts)}/month.
        ${R.skipped.length ? `<br><span style="color:var(--text2)">Also excluded: <b>${payFmt(R.skipped.reduce((s,x)=>s+x.amount,0))}</b> of bills charged to a card rather than ${esc(R.bank?R.bank.name:'the bank')} —
          ${R.skipped.slice(0,5).map(x=>esc(x.label)+' ('+esc(x.from)+')').join(', ')}${R.skipped.length>5?` +${R.skipped.length-5} more`:''}.</span>` : ''}
        ${R.unknownSource ? `<br><span style="color:var(--warn)">${R.unknownSource} upcoming item${R.unknownSource===1?' has':'s have'} no Pay From account set, so ${R.unknownSource===1?'it is':'they are'} counted against ${esc(R.bank?R.bank.name:'the bank')}. Set it in Setup → Payment Templates to sharpen this.</span>` : ''}
