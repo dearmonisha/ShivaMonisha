@@ -4880,6 +4880,133 @@ function ccTrajectorySeries(scope) {
   return out;
 }
 
+// ── What-if: four ways the same year could have been paid ─────────────────
+// Every scenario replays the ACTUAL charges month by month and generates
+// interest as balance × APR/12 on the balance carried in. That engine was
+// checked against the interest actually posted Jan–Aug 2026: modelled $19,234
+// vs posted $18,964, +1.4%. Only the PAYMENT RULE differs between scenarios,
+// so any gap between them is caused by the rule and nothing else.
+function ccWhatIfScenarios(year) {
+  const cards = (D.ccTracker?.cards || []).filter(c => c.active !== false);
+  const intCatIds = new Set();
+  cards.forEach(c => { if (c.interestCategoryId) intCatIds.add(c.interestCategoryId); });
+  if (!intCatIds.size) {
+    const f = (D.budget?.categories || []).find(c => /interest/i.test(c.name || ''));
+    if (f) intCatIds.add(f.id);
+  }
+  const months = [];
+  for (let m = 1; m <= 12; m++) months.push(`${year}-${String(m).padStart(2, '0')}`);
+
+  // Per card: balance entering the year, then charges / payments actually made
+  const rows = [];
+  cards.forEach(c => {
+    const acct = (D.txnAccounts || []).find(a => a.ccCardId === c.id && a.status !== 'closed');
+    if (!acct) return;
+    const ts = (D.transactions || [])
+      .filter(t => t.accountId === acct.id && t.status !== 'pending' && t.status !== 'rejected')
+      .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.id || '').localeCompare(b.id || ''));
+    let bal = +acct.openingBalance || 0, opening = null;
+    const m = {}; months.forEach(k => m[k] = { ch: 0, pay: 0 });
+    ts.forEach(t => {
+      const dt = t.date || '';
+      if (opening === null && dt >= `${year}-01-01`) opening = bal;
+      bal += (+t.debit || 0) - (+t.credit || 0);
+      const k = dt.slice(0, 7);
+      if (!m[k]) return;
+      if (t.isTransfer) m[k].pay += (+t.credit || 0) - (+t.debit || 0);
+      else if (!intCatIds.has(t.categoryId)) m[k].ch += (+t.debit || 0) - (+t.credit || 0);
+    });
+    if (opening === null) opening = bal;   // no activity yet this year
+    rows.push({ id: c.id, name: c.name, apr: +c.apr || 0, opening, m });
+  });
+  if (!rows.length) return null;
+
+  // Months with real activity — never project past what actually happened
+  const live = months.filter(k => rows.some(r => r.m[k].ch > 0.005 || r.m[k].pay > 0.005));
+  if (!live.length) return null;
+
+  const run = rule => {
+    const bal = {}; rows.forEach(r => bal[r.id] = r.opening);
+    let interest = 0, paid = 0;
+    const path = [];
+    live.forEach(k => {
+      rows.forEach(r => {                       // interest on the balance carried in
+        const i = bal[r.id] * (r.apr / 100 / 12);
+        interest += i; bal[r.id] += i + r.m[k].ch;
+      });
+      if (rule === 'actual') {
+        rows.forEach(r => { const p = Math.min(r.m[k].pay, bal[r.id]); bal[r.id] -= p; paid += p; });
+      } else if (rule === 'spend') {            // pay exactly what was charged
+        rows.forEach(r => { const p = Math.min(r.m[k].ch, bal[r.id]); bal[r.id] -= p; paid += p; });
+      } else if (rule === 'spendInt') {         // charges + that month's interest
+        rows.forEach(r => {
+          const p = Math.min(r.m[k].ch + bal[r.id] * (r.apr / 100 / 12), bal[r.id]);
+          bal[r.id] -= p; paid += p;
+        });
+      } else {                                  // planner: same cash, costliest first
+        let left = rows.reduce((s, r) => s + r.m[k].pay, 0);
+        const take = (r, amt) => { const p = Math.max(0, Math.min(amt, bal[r.id], left)); bal[r.id] -= p; left -= p; paid += p; };
+        // 0% cards keep what they actually got — Costco must clear to stay at 0%
+        rows.filter(r => r.apr === 0).forEach(r => take(r, r.m[k].pay));
+        // then minimums (2% of balance, $25 floor), then everything else by APR
+        rows.filter(r => r.apr > 0).forEach(r => take(r, Math.max(bal[r.id] * 0.02, 25)));
+        rows.filter(r => r.apr > 0).sort((a, b) => b.apr - a.apr).forEach(r => take(r, bal[r.id]));
+      }
+      path.push(rows.reduce((s, r) => s + bal[r.id], 0));
+    });
+    return { closing: rows.reduce((s, r) => s + bal[r.id], 0), interest, paid, path };
+  };
+
+  return {
+    year, months: live,
+    opening: rows.reduce((s, r) => s + r.opening, 0),
+    // Unclamped total of real payments — what left the bank, before any
+    // scenario logic caps a payment at the outstanding balance.
+    paidRaw: rows.reduce((s, r) => s + live.reduce((t, k) => t + Math.max(0, r.m[k].pay), 0), 0),
+    actual:   run('actual'),
+    planner:  run('planner'),
+    spend:    run('spend'),
+    spendInt: run('spendInt')
+  };
+}
+
+// ── Could the household actually have paid it? ────────────────────────────
+// The what-if scenarios move money to cards without asking where it comes
+// from. This closes that hole using an identity that cannot be broken by the
+// unlinked transfer legs in the ledger (a large share of transfers carry no
+// transferToAcctId, so counting card payments from the BANK side understates
+// them by ~$83k):
+//
+//   living costs  =  income  −  paid to cards  −  Δbank  −  Δpots
+//
+// Card payments are taken from the CARD side, where every payment lands as a
+// transfer credit and nothing can go missing.
+function ccCashReality(year, cardPaid) {
+  const am    = D.txnAccounts || [];
+  const BANK  = am.filter(a => a.type === 'Bank' && a.status !== 'closed').map(a => a.id);
+  const POTS  = am.filter(a => a.type === 'Tracking' && a.status !== 'closed').map(a => a.id);
+  const upto  = `${year}-12-31`, before = `${year - 1}-12-31`;
+  const balAt = (ids, when) => ids.reduce((tot, aid) => {
+    const a = am.find(x => x.id === aid); if (!a) return tot;
+    let b = +a.openingBalance || 0;
+    (D.transactions || [])
+      .filter(t => t.accountId === aid && t.status !== 'pending' && t.status !== 'rejected' && (t.date || '') <= when)
+      .forEach(t => { b += (+t.credit || 0) - (+t.debit || 0); });
+    return tot + b;
+  }, 0);
+  const income = (D.transactions || [])
+    .filter(t => BANK.includes(t.accountId) && t.categoryId === '__income__' &&
+                 (t.date || '').startsWith(String(year)) && t.status !== 'pending' && t.status !== 'rejected')
+    .reduce((s, t) => s + (+t.credit || 0), 0);
+  const b0 = balAt(BANK, before), b1 = balAt(BANK, upto);
+  const p0 = balAt(POTS, before), p1 = balAt(POTS, upto);
+  return {
+    income, bankStart: b0, bankEnd: b1, bankChange: b1 - b0,
+    potChange: p1 - p0, cardPaid,
+    living: income - cardPaid - (b1 - b0) - (p1 - p0)
+  };
+}
+
 // Years that actually have activity on this card, so the navigator can stop
 // at the edges instead of running off into empty years forever.
 function ccCardActiveYears(txnAcctId) {
@@ -5137,6 +5264,113 @@ function renderCCBalances() {
         </table></div>` : ''}
     </div>`;
 
+  // ── What-if panel ────────────────────────────────────────────────────────
+  const W = ccWhatIfScenarios(2026);
+  UI._ccWhatIf = W;
+  let whatIfPanel = '';
+  if (W) {
+    const g = v => (v < 0 ? '−' : '+') + fmtCurrency(Math.abs(v));
+    const best = Math.min(W.actual.interest, W.planner.interest, W.spend.interest, W.spendInt.interest);
+    const scen = [
+      { key:'actual',   c:'#2a78d6', n:'What actually happened',        d:'the payments you really made' },
+      { key:'planner',  c:'#eb6834', n:'Payment planner, same cash',    d:'minimums, then the costliest APR first' },
+      { key:'spend',    c:'#1baf7a', n:'Pay what you spend',            d:"clear each month's charges in full" },
+      { key:'spendInt', c:'#eda100', n:'Pay what you spend + interest', d:'the smallest payment that stops it growing' }
+    ];
+    const CR = ccCashReality(W.year, W.paidRaw);
+    const sRow = s => {
+      const r = W[s.key], grew = r.closing - W.opening;
+      const extra = r.paid - W.actual.paid;   // cash the rule needs beyond what was really sent
+      return `<tr style="border-bottom:1px solid var(--border-light)">
+        <td style="padding:8px 12px;font-size:.79rem;color:var(--text)">
+          <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${s.c};margin-right:7px"></span>
+          <span style="font-weight:600">${s.n}</span>
+          <span style="display:block;font-size:.67rem;color:var(--text3);margin-left:16px">${s.d}</span></td>
+        <td style="padding:8px 12px;text-align:right;font-size:.79rem;color:var(--text2)">${fmtCurrency(r.paid)}</td>
+        <td style="padding:8px 12px;text-align:right;font-size:.82rem;font-weight:700;color:${r.interest<=best+0.5?'#1baf7a':'var(--warn)'}">${fmtCurrency(r.interest)}</td>
+        <td style="padding:8px 12px;text-align:right;font-size:.79rem;color:var(--text)">${fmtCurrency(r.closing)}</td>
+        <td style="padding:8px 12px;text-align:right;font-size:.82rem;font-weight:700;color:${grew>0?'#e34948':'#2a78d6'}">${g(grew)}</td>
+        <td style="padding:8px 12px;text-align:right;font-size:.79rem;font-weight:${extra>1?'700':'400'};color:${extra>1?'#e34948':'var(--text3)'}">${extra>1?'+'+fmtCurrency(extra):'—'}</td>
+      </tr>`;
+    };
+    const plannerGain = W.actual.interest - W.planner.interest;
+    const spendGain   = (W.actual.closing - W.opening) - (W.spend.closing - W.opening);
+
+    // ── Was the cash actually there? ──────────────────────────────────────
+    // The four rules above move money to cards without asking where it comes
+    // from. This grounds them in the household's real inflow. The line items
+    // are an identity, not an estimate: every dollar of income either went to
+    // a card, stayed in the bank, went to a pot, or was lived on.
+    const mos     = Math.max(1, W.months.length);
+    const need    = k => Math.max(0, W[k].paid - W.actual.paid);
+    const cashRow = (label, val, note, colour) => `<tr>
+      <td style="padding:4px 0;font-size:.74rem;color:var(--text2)">${label}${note?`<span style="display:block;font-size:.65rem;color:var(--text3)">${note}</span>`:''}</td>
+      <td style="padding:4px 0;text-align:right;font-size:.78rem;font-weight:600;color:${colour||'var(--text)'};white-space:nowrap">${val}</td></tr>`;
+    const cashPanel = `
+      <div style="margin-top:11px;padding:11px 13px;border:1px solid var(--border);border-radius:var(--r1);font-size:.74rem;color:var(--text2);line-height:1.6">
+        <div style="font-weight:700;color:var(--text);margin-bottom:2px">Was the cash actually there?</div>
+        <div style="font-size:.67rem;color:var(--text3);margin-bottom:8px">
+          Every dollar that came in ${W.year} went one of four ways — to a card, into the bank balance,
+          into a pot, or was spent living. So the rest of the line is what living cost, not a guess.
+        </div>
+        <table style="width:100%;border-collapse:collapse;max-width:430px">
+          ${cashRow('Money in', fmtCurrency(CR.income), `salary and other income, ${mos} months`)}
+          ${cashRow('− Paid to cards', fmtCurrency(CR.cardPaid), 'counted on the card side, so nothing is missed')}
+          ${cashRow('− Change in bank balance', g(CR.bankChange), `${fmtCurrency(CR.bankStart)} → ${fmtCurrency(CR.bankEnd)}`, CR.bankChange>=0?'var(--text)':'#e34948')}
+          ${cashRow('− Moved into pots', g(CR.potChange), 'savings and reserve')}
+          <tr><td colspan="2" style="border-top:1px solid var(--border);padding:0"></td></tr>
+          ${cashRow('= Everything else', fmtCurrency(CR.living), `what living cost — about ${fmtCurrency(CR.living/mos)}/month`, 'var(--text)')}
+        </table>
+        <div style="margin-top:9px;padding-top:8px;border-top:1px solid var(--border-light)">
+          The bank ended the period at <b>${fmtCurrency(CR.bankEnd)}</b>, so there was no pile of idle cash sitting
+          behind these scenarios. Paying every charge in full would have needed
+          <b style="color:#e34948">${fmtCurrency(need('spend'))} more</b> than actually went to the cards, and holding the
+          balance flat <b style="color:#e34948">${fmtCurrency(need('spendInt'))} more</b> — money that would have had to come
+          out of the ${fmtCurrency(CR.living)} of living costs, because there was nowhere else for it to come from.
+          <div style="margin-top:6px">
+            That is the honest shape of the disagreement: <b>the planner row is the only one that was affordable</b>
+            — it re-orders the same ${fmtCurrency(W.actual.paid)} rather than asking for more — and it still saves
+            ${fmtCurrency(plannerGain)}. "Pay what you spend" is the better rule, but it is a rule about
+            spending less, not about paying differently.
+          </div>
+        </div>
+      </div>`;
+    whatIfPanel = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:13px 15px;margin-bottom:14px">
+      <div style="font-size:.9rem;font-weight:700;color:var(--text)">Four ways ${W.year} could have been paid</div>
+      <div style="font-size:.68rem;color:var(--text3);margin-bottom:11px">
+        Same charges, same months — only the payment rule changes. Opening balance ${fmtCurrency(W.opening)} on 1 Jan.
+      </div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:700px">
+        <thead><tr style="background:var(--surface2)">
+          <th style="${thBase};text-align:left;color:var(--text3)">Payment rule</th>
+          <th style="${thBase};text-align:right;color:var(--text3)">Paid to cards</th>
+          <th style="${thBase};text-align:right;color:var(--text3)">Interest</th>
+          <th style="${thBase};text-align:right;color:var(--text3)">Closing balance</th>
+          <th style="${thBase};text-align:right;color:var(--text3)">Balance change</th>
+          <th style="${thBase};text-align:right;color:var(--text3)">Extra cash needed</th>
+        </tr></thead>
+        <tbody>${scen.map(sRow).join('')}</tbody>
+      </table></div>
+      <div style="height:170px;position:relative;margin-top:12px"><canvas id="cc-whatif"></canvas></div>
+      <div style="margin-top:11px;padding:10px 12px;background:var(--surface2);border-radius:var(--r1);font-size:.74rem;color:var(--text2);line-height:1.6">
+        <div style="font-weight:700;color:var(--text);margin-bottom:3px">What this actually says</div>
+        Paying every month's charges in full would have left the balance
+        <b>${fmtCurrency(Math.abs(spendGain))} lower</b> than what happened — much the biggest lever on this page.
+        Re-ordering the same cash to hit the costliest card first saves
+        <b>${fmtCurrency(plannerGain)}</b> over the same period, roughly
+        <b>${fmtCurrency(plannerGain / Math.max(1, W.months.length))}/month</b>: worth having, but small beside it.
+        <div style="margin-top:6px">
+          The catch is the third row. Even paying every charge in full, the balance still
+          <b style="color:#e34948">grows ${fmtCurrency(W.spend.closing - W.opening)}</b>, because interest is charged on the
+          ${fmtCurrency(W.opening)} carried in from last year — not on this month's spending. Holding it flat takes charges
+          <i>plus</i> interest (row four); clearing it takes more than that again.
+        </div>
+      </div>
+      ${cashPanel}
+    </div>`;
+  }
+
   wrap.innerHTML = `
     <div class="tab-sticky-top">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 6px">
@@ -5145,6 +5379,7 @@ function renderCCBalances() {
       </div>
     </div>
     ${trajPanel}
+    ${whatIfPanel}
     <div class="ccbal-split">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
         <table style="width:100%;border-collapse:collapse;table-layout:fixed">
@@ -5165,6 +5400,63 @@ function renderCCBalances() {
     </div>`;
 
   if (T.months.length) ccDrawTrajectory(T);
+  if (W) ccDrawWhatIf(W);
+}
+
+// Four scenario paths on one axis — same measure (balance), so one scale is honest.
+// Four series is the point where direct labels stop being optional, so each line
+// carries its endpoint label as well as the legend swatches in the table.
+let _ccWhatIfChart = null;
+function ccDrawWhatIf(W) {
+  if (typeof Chart === 'undefined') return;
+  if (_ccWhatIfChart) { try { _ccWhatIfChart.destroy(); } catch (e) {} _ccWhatIfChart = null; }
+  const cv = id('cc-whatif'); if (!cv) return;
+  const css  = getComputedStyle(document.documentElement);
+  const ink3 = css.getPropertyValue('--text3').trim() || '#9E8070';
+  const grid = css.getPropertyValue('--border-light').trim() || '#EDE5DC';
+  const surf = css.getPropertyValue('--surface').trim() || '#fff';
+  const mk = (label, path, colour) => ({
+    label, data: path, borderColor: colour, backgroundColor: colour,
+    borderWidth: 2, pointRadius: 0, pointHoverRadius: 5,
+    pointHoverBorderColor: surf, pointHoverBorderWidth: 2, tension: 0.25, fill: false
+  });
+  _ccWhatIfChart = new Chart(cv, {
+    type: 'line',
+    data: {
+      labels: W.months.map(m => new Date(+m.slice(0,4), +m.slice(5,7)-1, 1).toLocaleDateString('en-US',{month:'short'})),
+      datasets: [
+        mk('Actual',            W.actual.path,   '#2a78d6'),
+        mk('Planner',           W.planner.path,  '#eb6834'),
+        mk('Pay what you spend',W.spend.path,    '#1baf7a'),
+        mk('Spend + interest',  W.spendInt.path, '#eda100')
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      layout: { padding: { right: 8 } },
+      plugins: {
+        legend: { display: true, position: 'bottom',
+          labels: { boxWidth: 9, boxHeight: 9, usePointStyle: false, color: ink3, font: { size: 10 }, padding: 12 } },
+        tooltip: {
+          backgroundColor: css.getPropertyValue('--text').trim() || '#1C1410',
+          padding: 9, cornerRadius: 6, displayColors: true, boxWidth: 8, boxHeight: 8,
+          titleFont: { size: 11, weight: '700' }, bodyFont: { size: 11 },
+          callbacks: {
+            title: it => W.months[it[0].dataIndex],
+            label: it => it.dataset.label + ': $' + Math.round(it.parsed.y).toLocaleString('en-US')
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, border: { color: grid },
+             ticks: { color: ink3, font: { size: 10 }, maxRotation: 0 } },
+        y: { grid: { color: grid, drawTicks: false }, border: { display: false },
+             ticks: { color: ink3, font: { size: 10 }, maxTicksLimit: 5,
+                      callback: v => '$' + Math.round(v / 1000) + 'k' } }
+      }
+    }
+  });
 }
 
 // ── The two trajectory plots ──────────────────────────────────────────────
