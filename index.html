@@ -7388,6 +7388,33 @@ function renderBudgetTable(month) {
 const PAY_DEFAULT_FLOOR = 200;
 const PAY_HORIZON       = 45;
 
+// ── Early-debit allowance ─────────────────────────────────────────────────
+// Bills do not always wait for their due date. On 2026-08-18 the runway put
+// T-Mobile's $326.46 on its due date of the 21st and ordered it AFTER Mona's
+// same-day salary, so the projected balance never tested the floor and it
+// reported $1,121.34 as safe to deploy. The charge actually landed on the
+// 20th — a day early, and a day before the salary — which would have taken
+// PNC to -$126.46 had that recommendation been followed.
+//
+// For risk purposes a bill is therefore assumed to be able to debit up to
+// this many days before its stated due date. Only the trough maths uses the
+// shifted date; the Payments page still shows the real due date.
+const PAY_EARLY_DEBIT_DAYS   = 3;
+// Loans and credit cards are exempt: they are deliberately scheduled to land
+// after payday and have not come early here (14 Aug: the Wells Fargo salary
+// posted first, then the mortgage). Dragging them earlier would put the
+// mortgage in front of the paycheck that funds it and force safe-to-deploy to
+// $0 every cycle — useless rather than cautious.
+const PAY_EARLY_DEBIT_EXEMPT = new Set(['Loans', 'Credit Cards']);
+
+// The date a bill might realistically leave the account. Risk maths only.
+function payRiskDate(ev) {
+  if (!ev) return null;
+  if (ev.kind === 'income') return ev.date;
+  if (PAY_EARLY_DEBIT_EXEMPT.has(ev.cat)) return ev.date;
+  return payAddDays(ev.date, -PAY_EARLY_DEBIT_DAYS);
+}
+
 function payDefaults() {
   if (!D.payments) D.payments = {};
   const p = D.payments;
@@ -7795,19 +7822,23 @@ function payRunway() {
   const income = payIncomeEvents(today, to, P.bankAccountId);
   const srcMeta = {};
   const outs   = payOutflowEvents(today, to, srcMeta);
-  const events = [...income, ...outs].sort((a, b) => a.date.localeCompare(b.date));
+  // riskDate is when the money could actually leave (see PAY_EARLY_DEBIT_DAYS).
+  // The walk is ordered by it so a bill that debits ahead of its due date is
+  // tested against the balance BEFORE any same-day or later paycheck.
+  [...income, ...outs].forEach(e => { e.riskDate = payRiskDate(e); });
+  const events = [...income, ...outs].sort((a, b) => a.riskDate.localeCompare(b.riskDate));
 
   let bal = cash, trough = cash, troughDate = today;
   const series = [{ date: today, bal, e: null }];
   events.forEach(e => {
     bal += (e.kind === 'income' ? e.amount : -e.amount);
     series.push({ date: e.date, bal, e });
-    if (bal < trough) { trough = bal; troughDate = e.date; }
+    if (bal < trough) { trough = bal; troughDate = e.riskDate; }
   });
 
   const nextIncome = income[0] || null;
   const cut        = nextIncome ? nextIncome.date : to;
-  const lockedNow  = outs.filter(o => o.date < cut).reduce((s, o) => s + o.amount, 0);
+  const lockedNow  = outs.filter(o => o.riskDate < cut).reduce((s, o) => s + o.amount, 0);
 
   // Safe-to-deploy is bounded by the WORST day in the horizon, not by today's balance and
   // not by the next payday. Money paid out today lowers every subsequent day by the same
@@ -7817,15 +7848,15 @@ function payRunway() {
   // Floored to the cent so the figure is never above the true limit
   const safe     = Math.max(0, payDown(limiting - P.cashFloor));
   // What pushed the balance to its lowest point, for the explanation panel
-  const troughDriver = series.filter(s => s.e && s.date <= troughDate && s.e.kind !== 'income')
+  const troughDriver = series.filter(s => s.e && s.e.riskDate <= troughDate && s.e.kind !== 'income')
                              .slice(-4).map(s => s.e);
 
   return {
     today, to, bank, cash, income, outs, events, series,
     trough, troughDate, nextIncome, lockedNow, safe,
     limiting, troughDriver,
-    outflowsToTrough: outs.filter(o => o.date <= troughDate).reduce((s, o) => s + o.amount, 0),
-    incomeToTrough:   income.filter(o => o.date <= troughDate).reduce((s, o) => s + o.amount, 0),
+    outflowsToTrough: outs.filter(o => o.riskDate <= troughDate).reduce((s, o) => s + o.amount, 0),
+    incomeToTrough:   income.filter(o => o.riskDate <= troughDate).reduce((s, o) => s + o.amount, 0),
     floor: P.cashFloor,
     projectedEnd: bal,
     skipped: srcMeta.skipped || [],
@@ -8410,7 +8441,10 @@ function renderPayments() {
     const e = s.e, inc = e.kind === 'income';
     const low = s.bal < R.floor;
     return `<tr style="border-bottom:1px solid var(--border-light)">
-      <td style="padding:5px 10px;font-size:.73rem;color:var(--text3);white-space:nowrap">${fmtDate(e.date)}<span style="color:var(--border);margin:0 4px">·</span>${payDiffDays(R.today,e.date)}d</td>
+      <td style="padding:5px 10px;font-size:.73rem;color:var(--text3);white-space:nowrap">${fmtDate(e.date)}<span style="color:var(--border);margin:0 4px">·</span>${payDiffDays(R.today,e.date)}d${
+        e.riskDate && e.riskDate !== e.date
+          ? `<span title="Counted from ${fmtDate(e.riskDate)} — bills in this category have debited before their due date" style="display:block;font-size:.6rem;color:var(--warn);font-weight:600">from ${fmtDate(e.riskDate)}</span>`
+          : ''}</td>
       <td style="padding:5px 10px;font-size:.76rem;color:var(--text)">${esc(e.label)}${e.kind==='cc-min'?'<span style="font-size:.58rem;padding:1px 4px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">card minimum</span>':''}${e.auto?'<span style="font-size:.58rem;color:var(--text3);margin-left:5px">auto</span>':''}</td>
       <td style="padding:5px 10px;text-align:right;font-size:.76rem;font-variant-numeric:tabular-nums;color:${inc?'var(--ok)':'var(--text2)'}">${inc?'+':'−'}${payFmt(e.amount)}</td>
       <td style="padding:5px 10px;text-align:right;font-size:.76rem;font-weight:600;font-variant-numeric:tabular-nums;color:${low?'var(--danger)':'var(--text)'}">${payFmt(s.bal)}</td>
@@ -11767,7 +11801,16 @@ const BA = {
     let acctOptsHtml = '<option value="">Select account…</option>';
     accts.forEach(a => { acctOptsHtml += `<option value="${esc(a.id)}"${a.id === curAcct ? ' selected' : ''}>${esc(a.name)}</option>`; });
 
-    let catOptsHtml = `<option value=""${!curCat ? ' selected' : ''}>— Uncategorised —</option>`;
+    // ── 💰 Income must be selectable here ──────────────────────────────────
+    // The Type dropdown says "Income (money in +)", but that only sets `credit`
+    // — it never touched categoryId. With no __income__ option in this list, a
+    // salary added on a phone saved with categoryId:null, and everything that
+    // keys off __income__ silently ignored it. That included payIncomeEvents(),
+    // so the Payments runway believed the paycheck had NOT arrived and projected
+    // it again as future income while the cash was already in the balance —
+    // double-counting it and overstating Safe to Deploy.
+    let catOptsHtml = `<option value=""${!curCat ? ' selected' : ''}>— Uncategorised —</option>`
+      + `<option value="__income__"${curCat === '__income__' ? ' selected' : ''}>💰 Income</option>`;
     grps.forEach(g => {
       const gc = cats.filter(c => c.groupId === g.id);
       if (!gc.length) return;
@@ -11813,7 +11856,7 @@ const BA = {
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Transaction Type <span style="color:var(--danger)">*</span></label>
-        <select id="mob-at-type" style="${fldStyle}"${ro}>
+        <select id="mob-at-type" onchange="BA._mobSheetTypeChanged()" style="${fldStyle}"${ro}>
           <option value="debit"${curType==='debit'?' selected':''}>Expense (money out −)</option>
           <option value="credit"${curType==='credit'?' selected':''}>Income (money in +)</option>
         </select>
@@ -11912,6 +11955,18 @@ const BA = {
     }
   },
 
+  // Switching to Income pre-selects 💰 Income, so the common case needs no
+  // second thought. Switching back clears it, but only if Income was the
+  // selection — a deliberate budget category is never overwritten.
+  _mobSheetTypeChanged() {
+    const type = document.getElementById('mob-at-type')?.value;
+    const cat  = document.getElementById('mob-at-cat');
+    if (!cat) return;
+    if (type === 'credit' && !cat.value)                 cat.value = '__income__';
+    else if (type === 'debit' && cat.value === '__income__') cat.value = '';
+    BA._mobSheetSyncSave();
+  },
+
   // Read + validate the sheet's fields. Returns null (and shows the inline
   // error) when something is wrong, so add and edit share one validation path.
   _mobileReadTxnSheet() {
@@ -11956,7 +12011,7 @@ const BA = {
     txn.debit      = f.type === 'debit'  ? f.amt : 0;
     txn.credit     = f.type === 'credit' ? f.amt : 0;
     txn.accountId  = f.acctId;
-    txn.categoryId = f.catId || null;
+    txn.categoryId = f.catId || (f.type === 'credit' ? '__income__' : null);
     txn.notes      = f.notes;
 
     // Budget bars read from D.budget.txnActuals, which only this rebuilds.
@@ -12012,7 +12067,9 @@ const BA = {
       payee: f.payee || '(no payee)',
       debit:  f.type === 'debit'  ? f.amt : 0,
       credit: f.type === 'credit' ? f.amt : 0,
-      categoryId: f.catId || null,
+      // Safety net: a credit left uncategorised is income by definition here,
+      // since the Type dropdown already said "money in".
+      categoryId: f.catId || (f.type === 'credit' ? '__income__' : null),
       notes: f.notes,
       cleared: false,
       status: 'approved',
