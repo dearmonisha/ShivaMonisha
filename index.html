@@ -754,6 +754,11 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-acct-name{font-size:.88rem;font-weight:700;color:var(--text1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mob-acct-bal{font-size:.96rem;font-weight:800;white-space:nowrap}
 .mob-drill-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+/* Card Balances: grid on the left, monthly capitalisation on the right.
+   Stacks below 1100px so neither table gets squeezed — this view is hidden
+   under 767px anyway, but tablet and split-screen widths land in between. */
+.ccbal-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
+@media(max-width:1100px){.ccbal-split{grid-template-columns:minmax(0,1fr)}}
 /* ── Bottom-sheet icon actions (Cancel / Delete / Save) ────────────────────
    Icon-only, so every button carries title + aria-label for screen readers
    and long-press tooltips. All are ≥56px, comfortably over the 44px target. */
@@ -4795,6 +4800,99 @@ function renderSankey() {
     </div>`;
 }
 
+// ── Capitalisation, derived from transactions ─────────────────────────────
+// What a card capitalises in a month is exactly its balance movement:
+//   charges (incl. posted interest) − payments
+// Verified against month-end balances across every month on file — the two are
+// identical to the cent.
+//
+// Deliberately NOT read from D.budget.ccRepayments[].capitalized. That field is
+// frozen at the moment a payment is recorded, so it drifts as more charges post:
+// Macys 2026-05 stored $300.00 against a true $401.95, because totalCharged was
+// captured at $1,633.32 and today stands at $1,735.27. It also clamps with
+// Math.max(0,…) — hiding the months principal actually came DOWN (Jun −$57.54,
+// Jul −$89.00) — produces nothing at all for a month with no recorded payment,
+// and misses any payment made outside the app. Deriving it sidesteps all four,
+// and reaches back to 2022 rather than 2026-04 where the stored records begin.
+function ccCapitalisationRows(txnAcctId, year, card) {
+  const intCatId = (card && card.interestCategoryId) ||
+    ((D.budget?.categories || []).find(c => /interest/i.test(c.name || '')) || {}).id || null;
+  const rows = [];
+  for (let m = 1; m <= 12; m++) {
+    const ym = `${year}-${String(m).padStart(2, '0')}`;
+    const tx = (D.transactions || []).filter(t =>
+      t.accountId === txnAcctId && (t.date || '').slice(0, 7) === ym &&
+      (!t.status || t.status === 'approved'));
+    if (!tx.length) { rows.push({ ym, empty: true, charges: 0, payments: 0, capitalised: 0, interest: 0 }); continue; }
+    const nonX     = tx.filter(t => !t.isTransfer);
+    const charges  = nonX.reduce((s, t) => s + (+t.debit || 0) - (+t.credit || 0), 0);
+    const payments = tx.filter(t => t.isTransfer).reduce((s, t) => s + (+t.credit || 0) - (+t.debit || 0), 0);
+    const interest = intCatId
+      ? nonX.filter(t => t.categoryId === intCatId).reduce((s, t) => s + (+t.debit || 0) - (+t.credit || 0), 0)
+      : 0;
+    rows.push({ ym, empty: false, charges, payments, capitalised: charges - payments, interest });
+  }
+  return rows;
+}
+
+// ── Trajectory series: level (stock) and monthly movement (flow) ──────────
+// scope = 'all' for every card, or a single txnAccount id.
+function ccTrajectorySeries(scope) {
+  const accts = (D.txnAccounts || []).filter(a => a.ccCardId && (scope === 'all' || a.id === scope));
+  const ids   = new Set(accts.map(a => a.id));
+  const intCatIds = new Set();
+  (D.ccTracker?.cards || []).forEach(c => { if (c.interestCategoryId) intCatIds.add(c.interestCategoryId); });
+  if (!intCatIds.size) {
+    const f = (D.budget?.categories || []).find(c => /interest/i.test(c.name || ''));
+    if (f) intCatIds.add(f.id);
+  }
+  const byM = {};
+  (D.transactions || []).forEach(t => {
+    if (!ids.has(t.accountId)) return;
+    if (t.status === 'pending' || t.status === 'rejected') return;
+    const m = (t.date || '').slice(0, 7); if (!m) return;
+    const v = (+t.debit || 0) - (+t.credit || 0);   // CC: a debit raises what is owed
+    const r = byM[m] || (byM[m] = { charges: 0, payments: 0, interest: 0 });
+    if (t.isTransfer) r.payments += -v;
+    else {
+      r.charges += v;
+      if (intCatIds.has(t.categoryId)) r.interest += v;
+    }
+  });
+  const keys = Object.keys(byM).sort();
+  const out = { months: [], balance: [], cap: [], charges: [], payments: [], interest: [] };
+  if (!keys.length) return out;
+  // Walk every month in the span, not only those with rows, so a quiet month is
+  // a real zero on the axis rather than a gap the line silently jumps.
+  let cum = accts.reduce((s, a) => s + (+a.openingBalance || 0), 0);
+  let [y, m] = keys[0].split('-').map(Number);
+  const [ey, em] = keys[keys.length - 1].split('-').map(Number);
+  let guard = 0;
+  while ((y < ey || (y === ey && m <= em)) && guard++ < 600) {
+    const ym = `${y}-${String(m).padStart(2, '0')}`;
+    const r = byM[ym] || { charges: 0, payments: 0, interest: 0 };
+    const cap = r.charges - r.payments;
+    cum += cap;
+    out.months.push(ym); out.balance.push(cum); out.cap.push(cap);
+    out.charges.push(r.charges); out.payments.push(r.payments); out.interest.push(r.interest);
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+// Years that actually have activity on this card, so the navigator can stop
+// at the edges instead of running off into empty years forever.
+function ccCardActiveYears(txnAcctId) {
+  const ys = new Set();
+  (D.transactions || []).forEach(t => {
+    if (t.accountId !== txnAcctId) return;
+    if (t.status === 'pending' || t.status === 'rejected') return;
+    const y = (t.date || '').slice(0, 4);
+    if (y) ys.add(y);
+  });
+  return [...ys].sort();
+}
+
 function renderCCBalances() {
   const wrap = id('view-cc-balances');
   if (!wrap) return;
@@ -4846,11 +4944,18 @@ function renderCCBalances() {
     : util >= 40 ? 'background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)'
     :              'background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)';
 
+  // Selection drives the right-hand panel. Default to the card carrying the most.
+  if (!UI.ccBalCard || !enriched.some(e => e.card.id === UI.ccBalCard)) {
+    UI.ccBalCard = enriched.slice().sort((a, b) => b.osVal - a.osVal)[0]?.card.id || null;
+  }
+
   const rows = enriched.map(({ card, os, lim, osVal, avail, util }) => {
     if (lim > 0) totLim += lim;
     if (os !== null) totOS += osVal;
-    return `<tr style="border-bottom:1px solid var(--border-light)">
-      <td style="padding:9px 14px;font-size:.82rem;color:var(--text)">${esc(card.name)}</td>
+    const sel = card.id === UI.ccBalCard;
+    return `<tr style="border-bottom:1px solid var(--border-light);cursor:pointer;${sel?'background:color-mix(in srgb,var(--primary) 9%,transparent)':''}"
+        onclick="BA.ccBalSelectCard('${esc(card.id)}')" title="Show monthly capitalisation for ${esc(card.name)}">
+      <td style="padding:9px 14px;font-size:.82rem;color:var(--text);${sel?'font-weight:700':''}">${sel?'<span style="color:var(--primary);margin-right:5px">▸</span>':''}${esc(card.name)}</td>
       <td style="padding:9px 14px;text-align:right;font-size:.82rem;color:var(--text3)">${lim > 0 ? fmtCurrency(lim) : '—'}</td>
       <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--text)">${os !== null ? fmtCurrency(osVal) : '<span style="color:var(--text3)">—</span>'}</td>
       <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:500;color:var(--ok)">${avail !== null ? fmtCurrency(avail) : '<span style="color:var(--text3)">—</span>'}</td>
@@ -4861,28 +4966,296 @@ function renderCCBalances() {
   const totAvail = totLim > 0 ? Math.max(0, totLim - totOS) : null;
   const totUtil  = totLim > 0 ? Math.round(totOS / totLim * 100) : null;
 
+  // ── Right panel: monthly capitalisation for the selected card ────────────
+  const selCard  = cards.find(c => c.id === UI.ccBalCard) || null;
+  const selAcct  = selCard ? (D.txnAccounts || []).find(a => a.ccCardId === selCard.id) : null;
+  const yearsOn  = selAcct ? ccCardActiveYears(selAcct.id) : [];
+  if (!UI.ccCapYear) UI.ccCapYear = String(new Date().getFullYear());
+  const yr       = String(UI.ccCapYear);
+  const capRows  = selAcct ? ccCapitalisationRows(selAcct.id, yr, selCard) : [];
+  const anyData  = capRows.some(r => !r.empty);
+  const yTot     = capRows.reduce((a, r) => ({
+    charges: a.charges + r.charges, payments: a.payments + r.payments,
+    capitalised: a.capitalised + r.capitalised, interest: a.interest + r.interest
+  }), { charges: 0, payments: 0, capitalised: 0, interest: 0 });
+
+  const mName = ym => new Date(+ym.slice(0,4), +ym.slice(5,7) - 1, 1)
+    .toLocaleDateString('en-US', { month: 'short' });
+  const capClr = v => v > 0.005 ? 'var(--danger)' : v < -0.005 ? 'var(--ok)' : 'var(--text3)';
+  const money  = v => Math.abs(v) < 0.005 ? '—' : (v < 0 ? '−' : '') + fmtCurrency(Math.abs(v));
+
+  const capBody = capRows.map(r => r.empty
+    ? `<tr style="border-bottom:1px solid var(--border-light)">
+         <td style="padding:7px 12px;font-size:.78rem;color:var(--text3)">${mName(r.ym)}</td>
+         <td colspan="4" style="padding:7px 12px;text-align:center;font-size:.72rem;color:var(--border)">no activity</td>
+       </tr>`
+    : `<tr style="border-bottom:1px solid var(--border-light)">
+         <td style="padding:7px 12px;font-size:.78rem;color:var(--text)">${mName(r.ym)}</td>
+         <td style="padding:7px 12px;text-align:right;font-size:.78rem;color:var(--text2)">${money(r.charges)}</td>
+         <td style="padding:7px 12px;text-align:right;font-size:.78rem;color:var(--ok)">${money(r.payments)}</td>
+         <td style="padding:7px 12px;text-align:right;font-size:.82rem;font-weight:700;color:${capClr(r.capitalised)}">${money(r.capitalised)}</td>
+         <td style="padding:7px 12px;text-align:right;font-size:.75rem;color:${r.interest>0.005?'var(--warn)':'var(--text3)'}">${money(r.interest)}</td>
+       </tr>`).join('');
+
+  const prevY = String(+yr - 1), nextY = String(+yr + 1);
+  const canPrev = yearsOn.length ? prevY >= yearsOn[0] : true;
+  const canNext = yearsOn.length ? nextY <= String(new Date().getFullYear()) : true;
+  const navBtn = (label, to, on) => `<button ${on ? `onclick="BA.ccCapSetYear('${to}')"` : 'disabled'}
+    style="width:30px;height:30px;border:1px solid var(--border);background:${on?'var(--surface)':'var(--surface2)'};
+    border-radius:var(--r);cursor:${on?'pointer':'default'};color:${on?'var(--text2)':'var(--border)'};font-size:15px;line-height:1">${label}</button>`;
+
+  const rightPanel = !selCard
+    ? `<div style="padding:36px 20px;text-align:center;color:var(--text3);font-size:.85rem">Select a card on the left.</div>`
+    : `<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--surface2)">
+         <div style="min-width:0">
+           <div style="font-size:.85rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(selCard.name)}</div>
+           <div style="font-size:.68rem;color:var(--text3)">what rolled into the balance, month by month</div>
+         </div>
+         <div style="display:flex;align-items:center;gap:7px;flex-shrink:0">
+           ${navBtn('‹', prevY, canPrev)}
+           <span style="font-size:.92rem;font-weight:800;color:var(--text);min-width:46px;text-align:center">${yr}</span>
+           ${navBtn('›', nextY, canNext)}
+         </div>
+       </div>
+       ${!anyData
+         ? `<div style="padding:32px 20px;text-align:center;color:var(--text3);font-size:.82rem">
+              No activity on ${esc(selCard.name)} in ${yr}.
+              ${yearsOn.length ? `<div style="margin-top:6px;font-size:.72rem">Data on file: ${yearsOn[0]}–${yearsOn[yearsOn.length-1]}</div>` : ''}
+            </div>`
+         : `<table style="width:100%;border-collapse:collapse">
+              <thead><tr style="background:var(--surface2)">
+                <th style="${thBase};text-align:left;color:var(--text3)">Month</th>
+                <th style="${thBase};text-align:right;color:var(--text3)">Charges</th>
+                <th style="${thBase};text-align:right;color:var(--text3)">Payments</th>
+                <th style="${thBase};text-align:right;color:var(--text3)">Capitalised</th>
+                <th style="${thBase};text-align:right;color:var(--text3)">of which interest</th>
+              </tr></thead>
+              <tbody>${capBody}</tbody>
+              <tfoot><tr style="background:var(--surface2)">
+                <td style="padding:9px 12px;font-size:.78rem;font-weight:700;color:var(--text2);border-top:1px solid var(--border)">${yr}</td>
+                <td style="padding:9px 12px;text-align:right;font-size:.78rem;color:var(--text2);border-top:1px solid var(--border)">${money(yTot.charges)}</td>
+                <td style="padding:9px 12px;text-align:right;font-size:.78rem;color:var(--ok);border-top:1px solid var(--border)">${money(yTot.payments)}</td>
+                <td style="padding:9px 12px;text-align:right;font-size:.88rem;font-weight:800;color:${capClr(yTot.capitalised)};border-top:1px solid var(--border)">${money(yTot.capitalised)}</td>
+                <td style="padding:9px 12px;text-align:right;font-size:.78rem;color:${yTot.interest>0.005?'var(--warn)':'var(--text3)'};border-top:1px solid var(--border)">${money(yTot.interest)}</td>
+              </tr></tfoot>
+            </table>
+            <div style="padding:9px 12px;font-size:.7rem;color:var(--text3);line-height:1.5;border-top:1px solid var(--border-light)">
+              Capitalised = charges (including posted interest) − payments, i.e. how much the balance moved that month.
+              <span style="color:var(--ok)">Negative means you paid principal down.</span>
+              Derived from transactions, so it stays right even for payments recorded outside the app.
+            </div>`}`;
+
+  // ── Trajectory panel ─────────────────────────────────────────────────────
+  if (!UI.ccTrajScope) UI.ccTrajScope = 'all';
+  if (!UI.ccTrajRange) UI.ccTrajRange = '3y';
+  const trajAcct = UI.ccTrajScope === 'all' ? 'all' : UI.ccTrajScope;
+  const S = ccTrajectorySeries(trajAcct);
+  const keepN = UI.ccTrajRange === '1y' ? 12 : UI.ccTrajRange === '3y' ? 36 : S.months.length;
+  const from  = Math.max(0, S.months.length - keepN);
+  const T = {
+    months:  S.months.slice(from),  balance: S.balance.slice(from), cap: S.cap.slice(from),
+    charges: S.charges.slice(from), payments: S.payments.slice(from), interest: S.interest.slice(from)
+  };
+  UI._ccTraj = T;   // handed to the chart builder after innerHTML lands
+
+  const sumT      = arr => arr.reduce((s, v) => s + v, 0);
+  const netCap    = sumT(T.cap);
+  const totalInt  = sumT(T.interest);
+  const balNow    = T.balance.length ? T.balance[T.balance.length - 1] : 0;
+  const balThen   = T.balance.length ? T.balance[0] - T.cap[0] : 0;   // level entering the window
+  const rangeBtn  = (lbl, v) => `<button onclick="BA.ccTrajRange('${v}')" style="padding:4px 11px;border-radius:99px;
+    border:1px solid ${UI.ccTrajRange===v?'var(--primary)':'var(--border)'};
+    background:${UI.ccTrajRange===v?'color-mix(in srgb,var(--primary) 12%,transparent)':'var(--surface)'};
+    color:${UI.ccTrajRange===v?'var(--primary)':'var(--text3)'};font-size:.72rem;font-weight:700;cursor:pointer">${lbl}</button>`;
+  const scopeBtn  = (lbl, v) => `<button onclick="BA.ccTrajScope('${esc(v)}')" style="padding:4px 11px;border-radius:99px;
+    border:1px solid ${UI.ccTrajScope===v?'var(--primary)':'var(--border)'};
+    background:${UI.ccTrajScope===v?'color-mix(in srgb,var(--primary) 12%,transparent)':'var(--surface)'};
+    color:${UI.ccTrajScope===v?'var(--primary)':'var(--text3)'};font-size:.72rem;font-weight:700;cursor:pointer;max-width:150px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${lbl}</button>`;
+
+  // Stat tiles rather than a third plot: interest runs flat month to month, and a
+  // flat series is a number, not a chart (choosing-a-form: single value → stat tile).
+  const tile = (label, value, colour, sub) => `
+    <div style="flex:1;min-width:150px;padding:10px 13px;background:var(--surface2);border-radius:var(--r1)">
+      <div style="font-size:.63rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text3)">${label}</div>
+      <div style="font-size:1.15rem;font-weight:800;color:${colour};margin-top:2px;font-variant-numeric:tabular-nums">${value}</div>
+      ${sub ? `<div style="font-size:.66rem;color:var(--text3);margin-top:1px">${sub}</div>` : ''}
+    </div>`;
+  const sgn = v => (v < 0 ? '−' : '+') + fmtCurrency(Math.abs(v));
+
+  const trajPanel = !T.months.length ? '' : `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:13px 15px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:11px">
+        <div>
+          <div style="font-size:.9rem;font-weight:700;color:var(--text)">Balance trajectory</div>
+          <div style="font-size:.68rem;color:var(--text3)">${UI.ccTrajScope==='all'?'All cards':esc((cards.find(c=>{const a=(D.txnAccounts||[]).find(x=>x.id===UI.ccTrajScope);return a&&a.ccCardId===c.id;})||{}).name||'Card')} · ${esc(T.months[0])} → ${esc(T.months[T.months.length-1])}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          ${scopeBtn('All cards','all')}${selAcct ? scopeBtn(esc(selCard.name), selAcct.id) : ''}
+          <span style="width:1px;height:18px;background:var(--border);margin:0 3px"></span>
+          ${rangeBtn('1Y','1y')}${rangeBtn('3Y','3y')}${rangeBtn('All','all')}
+        </div>
+      </div>
+      <div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:13px">
+        ${tile('Balance now', fmtCurrency(balNow), 'var(--text)', `was ${fmtCurrency(balThen)} at the start`)}
+        ${tile('Net capitalised', sgn(netCap), netCap>0?'#e34948':'#2a78d6', netCap>0?'balance grew over this window':'balance fell over this window')}
+        ${tile('Interest charged', fmtCurrency(totalInt), 'var(--warn)', `${fmtCurrency(totalInt/Math.max(1,T.months.length))}/mo average`)}
+      </div>
+      <div style="font-size:.68rem;color:var(--text3);margin-bottom:3px">What you owe, month end</div>
+      <div style="height:150px;position:relative"><canvas id="cc-traj-bal"></canvas></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:11px 0 3px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:.68rem;color:var(--text3)">Monthly movement</span>
+        <span style="display:flex;gap:12px;font-size:.66rem;color:var(--text3)">
+          <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#e34948;margin-right:4px"></span>balance grew</span>
+          <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#2a78d6;margin-right:4px"></span>balance fell</span>
+        </span>
+      </div>
+      <div style="height:130px;position:relative"><canvas id="cc-traj-cap"></canvas></div>
+      <div style="font-size:.67rem;color:var(--text3);margin-top:8px;line-height:1.5">
+        Two plots, one shared timeline — deliberately not one chart with two scales, which would invent a
+        relationship between level and movement that isn't in the data.
+        <button onclick="BA.ccTrajTable()" style="background:none;border:none;color:var(--primary);font-size:.67rem;font-weight:700;cursor:pointer;padding:0 2px;text-decoration:underline">${UI.ccTrajShowTable?'hide':'show'} the numbers</button>
+      </div>
+      ${UI.ccTrajShowTable ? `<div style="max-height:210px;overflow:auto;margin-top:9px;border:1px solid var(--border);border-radius:var(--r1)">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);position:sticky;top:0">
+            <th style="${thBase};text-align:left;color:var(--text3)">Month</th>
+            <th style="${thBase};text-align:right;color:var(--text3)">Charges</th>
+            <th style="${thBase};text-align:right;color:var(--text3)">Payments</th>
+            <th style="${thBase};text-align:right;color:var(--text3)">Movement</th>
+            <th style="${thBase};text-align:right;color:var(--text3)">Interest</th>
+            <th style="${thBase};text-align:right;color:var(--text3)">Balance</th>
+          </tr></thead>
+          <tbody>${T.months.map((mm,i)=>`<tr style="border-bottom:1px solid var(--border-light)">
+            <td style="padding:5px 11px;font-size:.73rem;color:var(--text2)">${mm}</td>
+            <td style="padding:5px 11px;text-align:right;font-size:.73rem;color:var(--text2)">${fmtCurrency(T.charges[i])}</td>
+            <td style="padding:5px 11px;text-align:right;font-size:.73rem;color:var(--text2)">${fmtCurrency(T.payments[i])}</td>
+            <td style="padding:5px 11px;text-align:right;font-size:.73rem;font-weight:700;color:${T.cap[i]>0?'#e34948':T.cap[i]<0?'#2a78d6':'var(--text3)'}">${sgn(T.cap[i])}</td>
+            <td style="padding:5px 11px;text-align:right;font-size:.73rem;color:var(--warn)">${fmtCurrency(T.interest[i])}</td>
+            <td style="padding:5px 11px;text-align:right;font-size:.73rem;color:var(--text)">${fmtCurrency(T.balance[i])}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>` : ''}
+    </div>`;
+
   wrap.innerHTML = `
     <div class="tab-sticky-top">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 6px">
         <span style="font-size:1.05rem;font-weight:700;color:var(--text)">💳 Card Balances</span>
-        <span style="font-size:.75rem;color:var(--text3)">Live balance · click column header to sort</span>
+        <span style="font-size:.75rem;color:var(--text3)">Click a card for its capitalisation · click a column header to sort</span>
       </div>
     </div>
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-      <table style="width:100%;border-collapse:collapse;table-layout:fixed">
-        <thead><tr style="background:var(--surface2)">
-          ${th('Card','name','left')}${th('Limit','limit')}${th('Outstanding','outstanding')}${th('Available','available')}${th('Used %','util','center')}
-        </tr></thead>
-        <tbody>${rows}</tbody>
-        <tfoot><tr style="background:var(--surface2)">
-          <td style="padding:9px 14px;font-size:.78rem;font-weight:600;color:var(--text2);border-top:1px solid var(--border)">Total</td>
-          <td style="padding:9px 14px;text-align:right;font-size:.78rem;color:var(--text2);border-top:1px solid var(--border)">${totLim > 0 ? fmtCurrency(totLim) : '—'}</td>
-          <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--text);border-top:1px solid var(--border)">${fmtCurrency(totOS)}</td>
-          <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--ok);border-top:1px solid var(--border)">${totAvail !== null ? fmtCurrency(totAvail) : '—'}</td>
-          <td style="padding:9px 14px;text-align:center;border-top:1px solid var(--border)">${totUtil !== null ? `<span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:.72rem;font-weight:600;${chipStyle(totUtil)}">${totUtil}%</span>` : '—'}</td>
-        </tr></tfoot>
-      </table>
+    ${trajPanel}
+    <div class="ccbal-split">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+          <thead><tr style="background:var(--surface2)">
+            ${th('Card','name','left')}${th('Limit','limit')}${th('Outstanding','outstanding')}${th('Available','available')}${th('Used %','util','center')}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr style="background:var(--surface2)">
+            <td style="padding:9px 14px;font-size:.78rem;font-weight:600;color:var(--text2);border-top:1px solid var(--border)">Total</td>
+            <td style="padding:9px 14px;text-align:right;font-size:.78rem;color:var(--text2);border-top:1px solid var(--border)">${totLim > 0 ? fmtCurrency(totLim) : '—'}</td>
+            <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--text);border-top:1px solid var(--border)">${fmtCurrency(totOS)}</td>
+            <td style="padding:9px 14px;text-align:right;font-size:.82rem;font-weight:600;color:var(--ok);border-top:1px solid var(--border)">${totAvail !== null ? fmtCurrency(totAvail) : '—'}</td>
+            <td style="padding:9px 14px;text-align:center;border-top:1px solid var(--border)">${totUtil !== null ? `<span style="display:inline-block;padding:2px 7px;border-radius:99px;font-size:.72rem;font-weight:600;${chipStyle(totUtil)}">${totUtil}%</span>` : '—'}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">${rightPanel}</div>
     </div>`;
+
+  if (T.months.length) ccDrawTrajectory(T);
+}
+
+// ── The two trajectory plots ──────────────────────────────────────────────
+// Colours are the validated categorical/diverging steps, not the app theme:
+// the theme's own red↔green pair FAILS the CVD check (ΔE 5.7 deutan — a
+// deuteranope cannot separate them), which is exactly the pair a grew/fell
+// encoding would otherwise reach for. blue↔red clears every gate (ΔE 21.6),
+// and aqua for the level line stays distinct from both poles in the tests.
+let _ccTrajCharts = { bal: null, cap: null };
+function ccDrawTrajectory(T) {
+  if (typeof Chart === 'undefined') return;
+  Object.keys(_ccTrajCharts).forEach(k => {
+    if (_ccTrajCharts[k]) { try { _ccTrajCharts[k].destroy(); } catch (e) {} _ccTrajCharts[k] = null; }
+  });
+  const AQUA = '#1baf7a', RED = '#e34948', BLUE = '#2a78d6';
+  const css  = getComputedStyle(document.documentElement);
+  const ink3 = css.getPropertyValue('--text3').trim() || '#9E8070';
+  const grid = css.getPropertyValue('--border-light').trim() || '#EDE5DC';
+  const surf = css.getPropertyValue('--surface').trim() || '#fff';
+  const label = ym => {
+    const [y, m] = ym.split('-');
+    return new Date(+y, +m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+  };
+  const labels = T.months.map(label);
+  const money  = v => '$' + Math.round(Math.abs(v)).toLocaleString('en-US');
+  // Every other tick once the window is long, so labels never collide.
+  const step = T.months.length > 26 ? 3 : T.months.length > 14 ? 2 : 1;
+  const xAxis = {
+    grid: { display: false }, border: { color: grid },
+    ticks: { color: ink3, font: { size: 10 }, maxRotation: 0, autoSkip: false,
+             callback(v, i) { return i % step === 0 ? this.getLabelForValue(v) : ''; } }
+  };
+  const tipBase = {
+    backgroundColor: css.getPropertyValue('--text').trim() || '#1C1410',
+    padding: 9, cornerRadius: 6, displayColors: false,
+    titleFont: { size: 11, weight: '700' }, bodyFont: { size: 11 }
+  };
+
+  const balCv = id('cc-traj-bal');
+  if (balCv) _ccTrajCharts.bal = new Chart(balCv, {
+    type: 'line',
+    data: { labels, datasets: [{
+      data: T.balance, borderColor: AQUA, borderWidth: 2,
+      pointRadius: 0, pointHoverRadius: 5, pointHoverBackgroundColor: AQUA,
+      pointHoverBorderColor: surf, pointHoverBorderWidth: 2,   // 2px surface ring
+      tension: 0.25, fill: true,
+      backgroundColor: 'color-mix(in srgb, ' + AQUA + ' 10%, transparent)'
+    }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },   // one series — the heading names it
+        tooltip: { ...tipBase, callbacks: {
+          title: it => T.months[it[0].dataIndex],
+          label: it => 'Owed: ' + money(it.parsed.y) } } },
+      scales: { x: xAxis, y: {
+        grid: { color: grid, drawTicks: false }, border: { display: false },
+        ticks: { color: ink3, font: { size: 10 }, maxTicksLimit: 5,
+                 callback: v => '$' + Math.round(v / 1000) + 'k' } } }
+    }
+  });
+
+  const capCv = id('cc-traj-cap');
+  if (capCv) _ccTrajCharts.cap = new Chart(capCv, {
+    type: 'bar',
+    data: { labels, datasets: [{
+      data: T.cap,
+      backgroundColor: T.cap.map(v => v >= 0 ? RED : BLUE),
+      borderRadius: 4, borderSkipped: false,       // rounded data-end
+      maxBarThickness: 24,                          // never fill the slot
+      borderColor: surf, borderWidth: { top: 0, bottom: 0, left: 1, right: 1 }  // 2px gap between neighbours
+    }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },        // legend is rendered in HTML above
+        tooltip: { ...tipBase, callbacks: {
+          title: it => T.months[it[0].dataIndex],
+          label: it => {
+            const i = it.dataIndex, v = T.cap[i];
+            return [ (v >= 0 ? 'Balance grew ' : 'Balance fell ') + money(v),
+                     'Charges ' + money(T.charges[i]),
+                     'Payments ' + money(T.payments[i]),
+                     'of which interest ' + money(T.interest[i]) ];
+          } } } },
+      scales: { x: { ...xAxis, grid: { color: grid, drawOnChartArea: false } }, y: {
+        grid: { color: grid, drawTicks: false }, border: { display: false },
+        ticks: { color: ink3, font: { size: 10 }, maxTicksLimit: 5,
+                 callback: v => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v / 1000)) + 'k' } } }
+    }
+  });
 }
 
 function buildCardHealthPanel() {
@@ -8082,6 +8455,36 @@ function payRecord(cardAcctId, amount, purpose, opts) {
     statementDate: o.statementDate || null, dueDate: o.dueDate || null,
     txnId: debitId, strategy: o.strategy || P.strategy
   });
+
+  // ── Parity with Budget → CC Repayment Planner ────────────────────────────
+  // Recording here used to write only the transfer pair and the payments
+  // ledger, so the Monthly tab still showed the payment outstanding and the
+  // CC Repayment Planner had no record of it. Worse, payOutflowEvents skips a
+  // cycle row only when `isPaid` is set — so the cash left the bank AND the
+  // runway kept projecting the same payment as still to come, understating
+  // every balance from that due date onward (measured: $2,023.61 across one
+  // five-payment deployment).
+  //
+  // The month is the cycle month, which is the STATEMENT month, not the due
+  // month — Citi's row due 2026-09-07 lives in cycle 2026-08.
+  if (o.markMonthly !== false) {
+    const month = (o.statementDate || today).slice(0, 7);
+    if (!D.budget.ccRepayments) D.budget.ccRepayments = [];
+    const charged  = computeCCChargesForMonth(cardAcctId, month);
+    const prevPaid = D.budget.ccRepayments
+      .filter(r => r.month === month && r.cardAccountId === cardAcctId)
+      .reduce((s, r) => s + (parseFloat(r.amountPaid) || 0), 0);
+    D.budget.ccRepayments.push({
+      id: uid(), month, cardAccountId: cardAcctId, bankAccountId: bankId,
+      totalCharged: charged, amountPaid: amt,
+      capitalized: Math.max(0, charged - prevPaid - amt), txnId: debitId
+    });
+    // Reuses the planner's own routine rather than reimplementing it, so both
+    // entry points stay identical — including its guard that only marks a row
+    // once `amountDue > 0`, i.e. never before the statement has been issued.
+    try { BA.ccrAutoMarkMonthlyPaid(cardAcctId, month, bankId); }
+    catch (e) { console.error('Could not mark the Monthly entry paid', e); }
+  }
   return { debitId, creditId, amount: amt };
 }
 
@@ -8776,7 +9179,11 @@ const PAY = {
       id: uid(), date: centralToday(), description: `Reimbursement received`,
       dr: 0, cr: amt, notes: `Routed to ${card ? card.name : 'card'}`, isReimbursement: true
     });
-    payRecord(cardAcctId, amt, 'reimbursement-routed', { notes: `Reimbursement from ${p.name}` });
+    // markMonthly:false — routing a reimbursement to the card that carried the
+    // expense is not settling that card's statement, and the amount rarely
+    // matches it. Marking Monthly paid here would falsely clear a statement.
+    payRecord(cardAcctId, amt, 'reimbursement-routed',
+      { notes: `Reimbursement from ${p.name}`, markMonthly: false });
     payDefaults().earmarks.push({ id: uid(), date: centralToday(), personId, cardAcctId, amount: amt, status: 'settled' });
     dirty();
     renderPayments();
@@ -12128,6 +12535,12 @@ const BA = {
     mobRender('keep');
     toast(`Saved: ${txn.payee} ${f.type === 'debit' ? '−' : '+'}$${fmtC(f.amt)}`, 'ok');
   },
+  ccBalSelectCard(cardId) { UI.ccBalCard = cardId; renderCCBalances(); },
+  ccCapSetYear(y)         { UI.ccCapYear = String(y); renderCCBalances(); },
+  ccTrajScope(v)          { UI.ccTrajScope = v; renderCCBalances(); },
+  ccTrajRange(v)          { UI.ccTrajRange = v; renderCCBalances(); },
+  ccTrajTable()           { UI.ccTrajShowTable = !UI.ccTrajShowTable; renderCCBalances(); },
+
   ccBalSort(col) {
     const cur = UI.ccBalSort || { col: 'name', dir: 'asc' };
     UI.ccBalSort = { col, dir: cur.col === col && cur.dir === 'asc' ? 'desc' : 'asc' };
