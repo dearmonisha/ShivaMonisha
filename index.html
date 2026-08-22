@@ -1524,6 +1524,7 @@ function _applyData(raw) {
   if (!D.payments) D.payments = {};
   if (!Array.isArray(D.payments.ledger))   D.payments.ledger   = [];
   if (!Array.isArray(D.payments.earmarks)) D.payments.earmarks = [];
+  if (!Array.isArray(D.payments.recurringTransfers)) D.payments.recurringTransfers = [];
   if (D.payments.cashFloor == null)        D.payments.cashFloor = 200;
   if (!D.payments.strategy)                D.payments.strategy  = 'avalanche';
   if (!D.payments.bankAccountId) {
@@ -8070,7 +8071,10 @@ const PAY_EARLY_DEBIT_DAYS   = 3;
 // posted first, then the mortgage). Dragging them earlier would put the
 // mortgage in front of the paycheck that funds it and force safe-to-deploy to
 // $0 every cycle — useless rather than cautious.
-const PAY_EARLY_DEBIT_EXEMPT = new Set(['Loans', 'Credit Cards']);
+// 'Transfer' is exempt for the opposite reason: a standing transfer you set up
+// yourself debits on its scheduled day, and if that day is a weekend the bank
+// moves it LATER, never earlier. Pulling it forward would invent risk.
+const PAY_EARLY_DEBIT_EXEMPT = new Set(['Loans', 'Credit Cards', 'Transfer']);
 
 // The date a bill might realistically leave the account. Risk maths only.
 function payRiskDate(ev) {
@@ -8085,6 +8089,7 @@ function payDefaults() {
   const p = D.payments;
   if (!Array.isArray(p.ledger))   p.ledger   = [];
   if (!Array.isArray(p.earmarks)) p.earmarks = [];
+  if (!Array.isArray(p.recurringTransfers)) p.recurringTransfers = [];
   if (p.cashFloor == null)        p.cashFloor = PAY_DEFAULT_FLOOR;
   if (!p.strategy)                p.strategy  = 'balanced';
   // One-time move off the plain avalanche default. Pure rate-ordering drains the dearest
@@ -8414,6 +8419,171 @@ function payIncomeEvents(from, to, bankId) {
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// ── Recurring internal transfers ─────────────────────────────────────────────
+// Money you move between your own accounts on a schedule — $100 to Schwab on
+// the 15th and the 30th, say. It is NOT an expense and NOT a Monthly-tab bill:
+// nothing is owed to anyone, the net worth is unchanged, and it must never
+// appear in category spending or the obligations totals. What it IS is cash
+// that leaves the bank on a known date, so the runway has to see it or Safe to
+// Deploy hands you money that is already spoken for.
+//
+// Deliberately its own store rather than a Subscription: a subscription would
+// book it as spending, would only fire once a month, and would never credit
+// the destination account.
+
+// Clamp a day-of-month to the month's real length. A transfer set for the 30th
+// lands on the 28th (or 29th) in February — it does not roll into March.
+function payMonthDay(y, m, day) {
+  const last = new Date(y, m, 0).getDate();
+  return `${y}-${String(m).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+}
+
+function payTransferOccurrences(rt, from, to) {
+  const days = [...new Set((rt.days || []).map(Number).filter(d => d >= 1 && d <= 31))].sort((a, b) => a - b);
+  if (!days.length) return [];
+  const out = [];
+  let [y, m] = from.split('-').map(Number);
+  for (let i = 0; i < 26; i++) {
+    days.forEach(d => {
+      const iso = payMonthDay(y, m, d);
+      if (iso < from || iso > to) return;
+      if (rt.startDate && iso < rt.startDate) return;
+      if (rt.endDate   && iso > rt.endDate)   return;
+      out.push(iso);
+    });
+    m++; if (m > 12) { m = 1; y++; }
+    if (payMonthDay(y, m, 1) > to) break;
+  }
+  return [...new Set(out)].sort();
+}
+
+// An occurrence that already went out is in the balance (or already counted as
+// a pending debit), so projecting it again would double-count. Matched first on
+// the stamp the Record button writes, then loosely on account + amount + date
+// so a transfer typed in by hand or imported also suppresses it.
+function payTransferRecorded(rt, iso, amt) {
+  return (D.transactions || []).some(t => {
+    if (t.accountId !== rt.fromAccountId) return false;
+    if (t.status === 'rejected') return false;
+    if (t.rtId === rt.id && t.rtDate === iso) return true;
+    if (!t.isTransfer) return false;
+    if (rt.toAccountId && t.transferToAcctId && t.transferToAcctId !== rt.toAccountId) return false;
+    if (Math.abs((+t.debit || 0) - amt) > Math.max(2, amt * 0.03)) return false;
+    return Math.abs(payDiffDays(iso, t.date || '')) <= 4;
+  });
+}
+
+function payTransferEvents(from, to, bankId) {
+  const out = [];
+  (payDefaults().recurringTransfers || []).forEach(rt => {
+    if (rt.enabled === false) return;
+    if (rt.fromAccountId !== bankId) return;          // only what leaves the runway's bank
+    const amt = Math.round((+rt.amount || 0) * 100) / 100;
+    if (amt <= 0) return;
+    const dest = (D.txnAccounts || []).find(a => a.id === rt.toAccountId);
+    payTransferOccurrences(rt, from, to).forEach(d => {
+      if (payTransferRecorded(rt, d, amt)) return;
+      out.push({
+        date: d, label: rt.name || `Transfer to ${dest ? dest.name : 'account'}`,
+        amount: amt, kind: 'transfer', cat: 'Transfer', auto: true, rtId: rt.id
+      });
+    });
+  });
+  return out;
+}
+
+// Writes the real pair, so the bank falls AND the destination rises. No
+// categoryId — this is not spending and must not land in any category total.
+function payRecordTransfer(rtId, iso) {
+  const P  = payDefaults();
+  const rt = (P.recurringTransfers || []).find(x => x.id === rtId);
+  if (!rt) return null;
+  const amt  = Math.round((+rt.amount || 0) * 100) / 100;
+  const from = (D.txnAccounts || []).find(a => a.id === rt.fromAccountId);
+  const to   = (D.txnAccounts || []).find(a => a.id === rt.toAccountId);
+  if (!from || !to || amt <= 0) return null;
+  const date = iso || centralToday();
+  const transferId = uid(), debitId = uid(), creditId = uid();
+  const notes = `Recurring transfer — ${rt.name || (from.name + ' → ' + to.name)}`;
+  D.transactions.push({
+    id: debitId, accountId: from.id, date, payee: `Transfer to ${to.name}`,
+    debit: amt, credit: 0, categoryId: null, notes, cleared: false,
+    isTransfer: true, transferId, transferPairId: creditId, transferToAcctId: to.id,
+    rtId: rt.id, rtDate: date
+  });
+  D.transactions.push({
+    id: creditId, accountId: to.id, date, payee: `Transfer from ${from.name}`,
+    debit: 0, credit: amt, categoryId: null, notes, cleared: false,
+    isTransfer: true, transferId, transferPairId: debitId, transferFromAcctId: from.id,
+    rtId: rt.id, rtDate: date
+  });
+  return { debitId, creditId, amount: amt, date };
+}
+
+function payRTModal(rtId) {
+  const P    = payDefaults();
+  const rt   = rtId ? (P.recurringTransfers || []).find(x => x.id === rtId) : null;
+  const opts = sel => (D.txnAccounts || []).filter(a => a.status !== 'closed')
+    .map(a => `<option value="${a.id}"${a.id === sel ? ' selected' : ''}>${esc(a.name)} — ${esc(a.type)}</option>`).join('');
+  const days = rt ? [...new Set((rt.days || []).map(Number))].sort((a, b) => a - b).join(', ') : '';
+  showModal(`
+    <div class="modal-title">${rt ? 'Edit' : 'Add'} standing transfer</div>
+    <div class="form-grid">
+      <div class="fg" style="grid-column:1/-1"><label class="flbl">Name *</label>
+        <input id="rt-name" class="finput" value="${rt ? esc(rt.name || '') : ''}" placeholder="e.g. Schwab investing"></div>
+      <div class="fg"><label class="flbl">From *</label><select id="rt-from" class="finput">${opts(rt ? rt.fromAccountId : P.bankAccountId)}</select></div>
+      <div class="fg"><label class="flbl">To *</label><select id="rt-to" class="finput">${opts(rt ? rt.toAccountId : null)}</select></div>
+      <div class="fg"><label class="flbl">Amount each time *</label>
+        <input id="rt-amt" class="finput" type="number" step="0.01" min="0" value="${rt ? rt.amount : ''}" placeholder="100.00"></div>
+      <div class="fg"><label class="flbl">Days of the month *</label>
+        <input id="rt-days" class="finput" value="${esc(days)}" placeholder="15, 30">
+        <div style="font-size:.65rem;color:var(--text3);margin-top:3px;line-height:1.5">Comma separated. A day past the end of a short month lands on its last day — the 30th becomes the 28th in February.</div></div>
+      <div class="fg"><label class="flbl">Starts</label><input id="rt-start" class="finput" type="date" value="${rt ? esc(rt.startDate || '') : ''}"></div>
+      <div class="fg"><label class="flbl">Ends <span style="font-weight:400;color:var(--text3)">(optional)</span></label>
+        <input id="rt-end" class="finput" type="date" value="${rt ? esc(rt.endDate || '') : ''}"></div>
+    </div>
+    <div style="font-size:.7rem;color:var(--text2);line-height:1.65;margin-top:11px;padding:9px 11px;background:var(--surface2);border-radius:6px">
+      This lowers the cash the Payments page treats as available, on the dates the money actually leaves.
+      It never creates a Monthly-tab row and never counts as an expense — recording it moves both balances instead.
+    </div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="paySaveRT('${rtId || ''}')">Save</button>
+    </div>`);
+  setTimeout(() => id('rt-name')?.focus(), 50);
+}
+
+function paySaveRT(editId) {
+  const P     = payDefaults();
+  const name  = id('rt-name').value.trim();
+  const fromA = id('rt-from').value, toA = id('rt-to').value;
+  const amt   = parseFloat(id('rt-amt').value);
+  const days  = [...new Set(id('rt-days').value.split(/[^0-9]+/).filter(Boolean)
+                  .map(Number).filter(d => d >= 1 && d <= 31))].sort((a, b) => a - b);
+  if (!name)                  { toast('Give it a name', 'err'); return; }
+  if (!fromA || !toA)         { toast('Pick both accounts', 'err'); return; }
+  if (fromA === toA)          { toast('From and To must be different accounts', 'err'); return; }
+  if (isNaN(amt) || amt <= 0) { toast('Enter an amount greater than zero', 'err'); return; }
+  if (!days.length)           { toast('Enter at least one day of the month (1–31)', 'err'); return; }
+  const start = id('rt-start').value || centralToday();
+  const end   = id('rt-end').value || '';
+  if (end && end < start)     { toast('The end date is before the start date', 'err'); return; }
+  const obj = {
+    name, fromAccountId: fromA, toAccountId: toA,
+    amount: Math.round(amt * 100) / 100, days, startDate: start, endDate: end
+  };
+  if (editId) {
+    // Deliberately does not touch `enabled` — editing a paused transfer must
+    // not silently resume it.
+    const i = P.recurringTransfers.findIndex(x => x.id === editId);
+    if (i >= 0) P.recurringTransfers[i] = { ...P.recurringTransfers[i], ...obj };
+  } else {
+    P.recurringTransfers.push({ id: uid(), ...obj, enabled: true });
+  }
+  dirty(); closeModal(); renderPayments();
+  toast(`Standing transfer ${editId ? 'updated' : 'added'} ✓`, 'ok');
+}
+
 function payOutflowEvents(from, to, meta) {
   const P = payDefaults();
   const out = [];
@@ -8493,6 +8663,10 @@ function payOutflowEvents(from, to, meta) {
     }
   }
   pifRows.forEach(r => out.push(r));
+
+  // Standing transfers to your own accounts. Pushed BEFORE the pending-debit
+  // block below so its dedupe suppresses a pending row for the same money.
+  payTransferEvents(from, to, P.bankAccountId).forEach(e => out.push(e));
 
   // Pending bank debits that the cycle list doesn't already represent.
   // Obligations and templates are separate systems and DO overlap (All State
@@ -9180,7 +9354,7 @@ function renderPayments() {
         e.riskDate && e.riskDate !== e.date
           ? `<span title="Counted from ${fmtDate(e.riskDate)} — bills in this category have debited before their due date" style="display:block;font-size:.6rem;color:var(--warn);font-weight:600">from ${fmtDate(e.riskDate)}</span>`
           : ''}</td>
-      <td style="padding:5px 10px;font-size:.76rem;color:var(--text)">${esc(e.label)}${e.kind==='cc-min'?'<span style="font-size:.58rem;padding:1px 4px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">card minimum</span>':''}${e.auto?'<span style="font-size:.58rem;color:var(--text3);margin-left:5px">auto</span>':''}</td>
+      <td style="padding:5px 10px;font-size:.76rem;color:var(--text)">${esc(e.label)}${e.kind==='cc-min'?'<span style="font-size:.58rem;padding:1px 4px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">card minimum</span>':''}${e.kind==='transfer'?'<span style="font-size:.58rem;padding:1px 4px;border-radius:3px;background:var(--surface2);color:var(--text3);margin-left:5px">standing transfer</span>':''}${e.auto?'<span style="font-size:.58rem;color:var(--text3);margin-left:5px">auto</span>':''}</td>
       <td style="padding:5px 10px;text-align:right;font-size:.76rem;font-variant-numeric:tabular-nums;color:${inc?'var(--ok)':'var(--text2)'}">${inc?'+':'−'}${payFmt(e.amount)}</td>
       <td style="padding:5px 10px;text-align:right;font-size:.76rem;font-weight:600;font-variant-numeric:tabular-nums;color:${low?'var(--danger)':'var(--text)'}">${payFmt(s.bal)}</td>
     </tr>`;
@@ -9211,6 +9385,78 @@ function renderPayments() {
          ${R.skipped.slice(0,5).map(x=>esc(x.label)+' ('+esc(x.from)+')').join(', ')}${R.skipped.length>5?` +${R.skipped.length-5} more`:''}.</span>` : ''}
        ${R.unknownSource ? `<br><span style="color:var(--warn)">${R.unknownSource} upcoming item${R.unknownSource===1?' has':'s have'} no Pay From account set, so ${R.unknownSource===1?'it is':'they are'} counted against ${esc(R.bank?R.bank.name:'the bank')}. Set it in Setup → Payment Templates to sharpen this.</span>` : ''}
      </div>
+   </div>`;
+
+  // ── recurring transfers ──
+  // Deliberately sits under the runway, because that is where its effect shows
+  // up. It is not a bill and does not belong in the Monthly tab or the queue.
+  const rtAcctName = aid => (D.txnAccounts || []).find(a => a.id === aid)?.name || '—';
+  const rtOrd = n => { const s = ['th','st','nd','rd'], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); };
+  const rtInfo = rt => {
+    const amt = Math.round((+rt.amount || 0) * 100) / 100;
+    const occ = payTransferOccurrences(rt, payAddDays(R.today, -45), payAddDays(R.today, 120));
+    const open = occ.filter(d => !payTransferRecorded(rt, d, amt));
+    return {
+      amt,
+      due:      open.filter(d => d <= R.today),
+      next:     open.find(d => d > R.today) || null,
+      inWindow: open.filter(d => d >= R.today && d <= R.to).length
+    };
+  };
+  const rtList = (P.recurringTransfers || []);
+  const rtRows = rtList.map(rt => {
+    const i    = rtInfo(rt);
+    const off  = rt.enabled === false;
+    const days = [...new Set((rt.days || []).map(Number))].sort((a, b) => a - b);
+    return `<tr style="border-bottom:1px solid var(--border-light);${off ? 'opacity:.5' : ''}">
+      <td style="padding:7px 10px;font-size:.78rem;color:var(--text)">
+        ${esc(rt.name || 'Transfer')}${off ? '<span style="font-size:.58rem;padding:1px 5px;border-radius:3px;background:var(--surface2);color:var(--text3);margin-left:6px">paused</span>' : ''}
+        <div style="font-size:.63rem;color:var(--text3);margin-top:2px">${esc(rtAcctName(rt.fromAccountId))} → ${esc(rtAcctName(rt.toAccountId))}</div>
+      </td>
+      <td style="padding:7px 10px;font-size:.76rem;color:var(--text2)">${days.length ? days.map(rtOrd).join(' and ') + ' of each month' : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums;color:var(--text)">${payFmt2(i.amt)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:.74rem;color:var(--text2);white-space:nowrap">
+        ${off ? '<span style="color:var(--text3)">not counted</span>'
+              : i.next ? `${fmtDate(i.next)}<span style="color:var(--text3)"> · ${payDiffDays(R.today, i.next)}d</span>` : '<span style="color:var(--text3)">—</span>'}
+        ${!off && i.inWindow ? `<div style="font-size:.6rem;color:var(--text3)">${payFmt(i.amt * i.inWindow)} in the ${PAY_HORIZON}-day window</div>` : ''}
+      </td>
+      <td style="padding:7px 10px;text-align:right;white-space:nowrap">
+        ${off
+          ? `<span style="font-size:.62rem;color:var(--text3)">paused</span>`
+          : i.due.length
+          ? `<button onclick="PAY.rtRecord('${rt.id}','${i.due[0]}')" title="Record the ${fmtDate(i.due[0])} transfer"
+               style="font-size:.66rem;padding:3px 8px;border:1px solid var(--primary);border-radius:5px;background:var(--surface);color:var(--primary);font-weight:600;cursor:pointer">Record ${fmtDate(i.due[0])}${i.due.length > 1 ? ` (+${i.due.length - 1})` : ''}</button>`
+          : `<span style="font-size:.62rem;color:var(--text3)">nothing due</span>`}
+        <button onclick="PAY.rtToggle('${rt.id}')" style="font-size:.66rem;padding:3px 8px;margin-left:4px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">${off ? 'Resume' : 'Pause'}</button>
+        <button onclick="PAY.rtEdit('${rt.id}')" style="font-size:.66rem;padding:3px 8px;margin-left:4px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">Edit</button>
+        <button onclick="PAY.rtDelete('${rt.id}')" style="font-size:.66rem;padding:3px 8px;margin-left:4px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text3);cursor:pointer">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  const rtWindowTotal = rtList.filter(rt => rt.enabled !== false && rt.fromAccountId === P.bankAccountId)
+    .reduce((s, rt) => { const i = rtInfo(rt); return s + i.amt * i.inWindow; }, 0);
+
+  const recurring = `
+   <div style="${card};overflow:hidden;margin-bottom:14px">
+     <div style="padding:11px 15px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+       <div>
+         <div style="font-size:.85rem;font-weight:700;color:var(--text)">Standing transfers</div>
+         <div style="font-size:.66rem;color:var(--text3);margin-top:1px">Money you move between your own accounts on a schedule — counted as cash out, never as spending</div>
+       </div>
+       <div style="display:flex;align-items:center;gap:9px">
+         ${rtWindowTotal > 0 ? `<span style="font-size:.68rem;color:var(--text3)"><b style="color:var(--text2)">${payFmt(rtWindowTotal)}</b> in the next ${PAY_HORIZON} days</span>` : ''}
+         <button onclick="PAY.rtAdd()" style="font-size:.7rem;padding:4px 10px;border:1px solid var(--primary);border-radius:6px;background:var(--surface);color:var(--primary);font-weight:600;cursor:pointer">＋ Add</button>
+       </div>
+     </div>
+     ${rtList.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:720px">
+       <thead><tr>
+         <th style="${th}">Transfer</th><th style="${th}">Schedule</th>
+         <th style="${th};text-align:right">Amount</th><th style="${th};text-align:right">Next</th><th style="${th}"></th>
+       </tr></thead>
+       <tbody>${rtRows}</tbody>
+     </table></div>` : `<div style="padding:16px;text-align:center;font-size:.76rem;color:var(--text3)">
+       Nothing set up. Add one for an automatic transfer — to a brokerage, a savings account, a family account — and the runway will stop treating that money as available.
+     </div>`}
    </div>`;
 
   // ── earmarks ──
@@ -9253,7 +9499,7 @@ function renderPayments() {
           style="width:82px;font-size:.76rem;padding:4px 7px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right">
       </div>
     </div>
-    ${tiles}${safeMath}${trajectory}${allocator}${queue}${runway}${earmarks}`;
+    ${tiles}${safeMath}${trajectory}${allocator}${queue}${runway}${recurring}${earmarks}`;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -9303,6 +9549,50 @@ const PAY = {
   toggleSafeMath() { UI.paySafeMathOpen = !UI.paySafeMathOpen; renderPayments(); },
   setAmount(v)   { UI.payAmount = Math.max(0, parseFloat(String(v).replace(/[^0-9.]/g,'')) || 0); renderPayments(); },
   setFloor(v)    { payDefaults().cashFloor = Math.max(0, parseFloat(String(v).replace(/[^0-9.]/g,'')) || 0); dirty(); renderPayments(); },
+
+  // ── standing transfers ──
+  rtAdd()  { payRTModal(null); },
+  rtEdit(rtId) { payRTModal(rtId); },
+  rtToggle(rtId) {
+    const rt = (payDefaults().recurringTransfers || []).find(x => x.id === rtId);
+    if (!rt) return;
+    rt.enabled = rt.enabled === false;
+    dirty(); renderPayments();
+    toast(rt.enabled ? 'Transfer resumed' : 'Transfer paused — the runway will stop counting it', 'ok');
+  },
+  async rtDelete(rtId) {
+    const P  = payDefaults();
+    const rt = (P.recurringTransfers || []).find(x => x.id === rtId);
+    if (!rt) return;
+    const go = await budgetConfirm('Remove', `Remove “${rt.name || 'this transfer'}”? Transfers you already recorded stay in the ledger.`);
+    if (!go) return;
+    P.recurringTransfers = P.recurringTransfers.filter(x => x.id !== rtId);
+    dirty(); renderPayments();
+    toast('Standing transfer removed', 'ok');
+  },
+  async rtRecord(rtId, iso) {
+    const rt = (payDefaults().recurringTransfers || []).find(x => x.id === rtId);
+    if (!rt) return;
+    const from = (D.txnAccounts || []).find(a => a.id === rt.fromAccountId);
+    const to   = (D.txnAccounts || []).find(a => a.id === rt.toAccountId);
+    if (!from || !to) { toast('That transfer is missing an account — edit it first', 'err'); return; }
+    const amt = Math.round((+rt.amount || 0) * 100) / 100;
+    const R2  = payRunway();
+    const go  = await payConfirm('Record this transfer?',
+      `<div style="line-height:1.75">
+         <b>${payFmt2(amt)}</b> from ${esc(from.name)} to ${esc(to.name)}, dated ${fmtDate(iso)}.<br>
+         <span style="color:var(--text3)">Written as a transfer pair with no category, so it never counts as spending.</span>
+         <div style="margin-top:8px;display:flex;justify-content:space-between;gap:14px">
+           <span>${esc(from.name)} after</span>
+           <b style="font-variant-numeric:tabular-nums;color:${R2.cash - amt < 0 ? 'var(--danger)' : 'var(--text)'}">${payFmt2(R2.cash - amt)}</b>
+         </div>
+       </div>`, 'Record it');
+    if (!go) return;
+    const r = payRecordTransfer(rtId, iso);
+    if (!r) { toast('Could not record that transfer', 'err'); return; }
+    dirty(); renderPayments();
+    toast(`${payFmt2(r.amount)} to ${to.name} recorded`, 'ok');
+  },
 
   async payOne(acctId, cardId) {
     const el = id('payq-' + cardId);
