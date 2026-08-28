@@ -8412,15 +8412,46 @@ function payUtilTarget() {
   return isNaN(t) ? 0.30 : Math.min(0.95, Math.max(0, t));
 }
 
-function payAllocate(pot, strategy, states) {
+// ── Does a pay-in-full statement actually need cash from TODAY'S deployment? ──
+// Its statement is already booked as a committed outflow on its due date (see
+// payOutflowEvents), so the projected balances from that date onward are the
+// balances AFTER it has been paid. Deploying `pot` lowers every one of those
+// days by `pot`. Whatever still clears the cash floor needs no early cash —
+// pre-paying it buys nothing at 0% while an interest-bearing card waits.
+//
+// Measured on 2026-08-28: Costco's $4,777.43 statement, due 09/19, sat on a
+// projected low of $7,253.74 with $896 being deployed. The old unconditional
+// pass still pushed $555.34 into it at 0.00% APR, leaving Macys at 31.90% —
+// $14.76/mo of avoidable interest, and it recurs every cycle. The whole $896
+// was consumed before the strategy ran, which is why all four strategies
+// returned an identical $7.78/mo.
+//
+// Two cases still take the money early, both deliberate:
+//   • no runway projection available — never guess in the risky direction
+//   • the due date falls beyond the runway horizon, so nothing has modelled it
+function payPifEarlyNeed(x, pot, R) {
+  if (!x || x.role !== 'pay-in-full' || x.stmtBal == null || !x.dueDate) return 0;
+  const owed = Math.max(0, x.stmtBal - (x.paid || 0) - (x.pay || 0));
+  if (owed <= 0.005) return 0;
+  if (!R || !Array.isArray(R.series) || !R.series.length) return owed;
+  if (x.dueDate > R.to) return owed;
+  const i = R.series.findIndex(s => s.e && s.e.riskDate >= x.dueDate);
+  if (i < 0) return owed;
+  const low = Math.min(...R.series.slice(i).map(s => s.bal));
+  return Math.max(0, Math.min(owed, (R.floor + Math.max(0, +pot || 0)) - low));
+}
+
+function payAllocate(pot, strategy, states, runway) {
   const m = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
   let left = Math.max(0, +pot || 0);
+  const R = runway || null;
+  const parts = { minimums: 0, promo: 0, pifEarly: 0, discretionary: 0 };
 
   m.filter(x => x.minUnfunded > 0.005)
    .sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'))
    .forEach(x => {
      const p = Math.min(x.minUnfunded, left, Math.max(0, x.balance));
-     x.pay += p; left -= p;
+     x.pay += p; left -= p; parts.minimums += p;
    });
 
   // Promo catch-up ranks with the minimums, not with the optimisation. A 0% card behind
@@ -8432,23 +8463,25 @@ function payAllocate(pot, strategy, states) {
    .forEach(x => {
      if (left < 1) return;   // sub-dollar crumbs are noise, not an allocation
      const p = Math.min(x.promoShortfall, left, Math.max(0, x.balance - x.pay));
-     x.pay += p; left -= p;
+     x.pay += p; left -= p; parts.promo += p;
    });
 
-  // Pay-in-full cards are settled to their ISSUED statement, regardless of strategy.
-  // Deliberately no fallback to the running balance: with no statement nothing has
-  // been billed, and the old `stmtBal ?? balance` fallback swept every spare dollar
-  // into an unbilled 0% balance. On 2026-08-21 that put $2,284 into Costco at 0.00%
-  // — saving nothing — while Macys sat at 31.90%, costing about $60/mo.
-  // The future statement is not ignored: payOutflowEvents books it as a committed
-  // outflow on its due date, so the runway ring-fences the cash instead.
+  // Pay-in-full cards: settle only the part of the ISSUED statement the runway
+  // cannot cover on its due date — see payPifEarlyNeed. Two guards, both earned:
+  //   • no fallback to the running balance. With no statement nothing has been
+  //     billed, and the old `stmtBal ?? balance` fallback swept every spare
+  //     dollar into an unbilled 0% balance. On 2026-08-21 that put $2,284 into
+  //     Costco at 0.00% while Macys sat at 31.90%, costing about $60/mo.
+  //   • no unconditional early settlement either. That reserved the same cash
+  //     twice — once by lowering Safe to Deploy, again by eating the deployment.
   m.forEach(x => {
     if (left < 1 || x.role !== 'pay-in-full') return;
     if (x.stmtBal == null) return;              // nothing billed yet — nothing due
-    const target = x.stmtBal - x.paid - x.pay;
-    const p = Math.min(Math.max(0, target), left);
-    x.pay += p; left -= p;
+    const p = Math.min(payPifEarlyNeed(x, pot, R), left);
+    if (p <= 0.005) return;
+    x.pay += p; left -= p; parts.pifEarly += p;
   });
+  parts.discretionary = left;
 
   const eligible = x => x.role !== 'minimum-only' && x.role !== 'pay-in-full';
 
@@ -8493,7 +8526,7 @@ function payAllocate(pot, strategy, states) {
   return {
     all: m,
     alloc: m.filter(x => x.pay >= 0.5).sort((a, b) => b.pay - a.pay),
-    left, saved, deployed: (+pot || 0) - left
+    left, saved, deployed: (+pot || 0) - left, parts
   };
 }
 
@@ -8673,7 +8706,7 @@ function renderPayments() {
   const R  = payRunway();
   const st = payCardStates();
   if (UI.payAmount == null) UI.payAmount = Math.floor(R.safe);
-  const A  = payAllocate(UI.payAmount, UI.payStrategy, st);
+  const A  = payAllocate(UI.payAmount, UI.payStrategy, st, R);
   const T  = payTrajectory(6);
 
   const totalOwed = st.reduce((s, x) => s + x.balance, 0);
@@ -8863,7 +8896,7 @@ function renderPayments() {
 
   const STRAT_NAMES = { balanced:'Balanced', avalanche:'Lowest interest', util:'Repair utilisation', snowball:'Smallest first' };
   const cmp = ['balanced','avalanche','util','snowball'].map(s => {
-    const A2 = payAllocate(UI.payAmount, s, st);
+    const A2 = payAllocate(UI.payAmount, s, st, R);
     const worstUtil = Math.max(0, ...A2.all.filter(x => x.limit).map(x => (x.balance - x.pay) / x.limit));
     return { s, saved: A2.saved, worstUtil };
   });
@@ -8872,6 +8905,27 @@ function renderPayments() {
     const d = c.saved - best;
     return `${STRAT_NAMES[c.s]} ${payFmt2(c.saved)}/mo<span style="color:var(--text3)"> · worst card ${Math.round(c.worstUtil * 100)}%</span>${d < -0.005 ? ` <span style="color:var(--danger)">(${payFmt2(d)})</span>` : ' <span style="color:var(--ok)">◀ cheapest</span>'}`;
   }).join('<br>');
+
+  // When obligations eat the whole pot, all four strategies return the same
+  // number and the buttons look broken. Say so, and say what took the money —
+  // otherwise the only way to find out is to read the allocator.
+  const PA = A.parts || {};
+  const committedTotal = (PA.minimums || 0) + (PA.promo || 0) + (PA.pifEarly || 0);
+  const bits = [];
+  if (PA.minimums > 0.005) bits.push(`${payFmt2(PA.minimums)} of unfunded minimums`);
+  if (PA.promo    > 0.005) bits.push(`${payFmt2(PA.promo)} of 0% promo catch-up`);
+  if (PA.pifEarly > 0.005) bits.push(`${payFmt2(PA.pifEarly)} the runway can't cover on a pay-in-full statement`);
+  const inertNote = (A.deployed > 0.5 && (PA.discretionary || 0) < 1 && bits.length) ? `
+     <div style="font-size:.68rem;color:var(--text2);line-height:1.6;background:var(--surface2);border-radius:6px;padding:8px 11px;margin-bottom:10px">
+       <b style="color:var(--text)">Every strategy gives the same answer here.</b>
+       All ${payFmt(committedTotal)} is spoken for before any strategy runs — ${bits.join(' and ')} —
+       so there is nothing discretionary left to order by rate or utilisation.
+       Deploy more than ${payFmt(UI.payAmount)} and the buttons start to matter.
+     </div>` : (PA.discretionary > 1 && committedTotal > 0.005) ? `
+     <div style="font-size:.66rem;color:var(--text3);line-height:1.6;margin-bottom:10px">
+       ${payFmt(committedTotal)} of this goes to obligations first (${bits.join(', ')});
+       the strategy orders the remaining <b style="color:var(--text2)">${payFmt(PA.discretionary)}</b>.
+     </div>` : '';
 
   const allocator = `
    <div style="${card};padding:13px 15px;margin-bottom:14px">
@@ -8903,6 +8957,7 @@ function renderPayments() {
        </div>
        <div style="font-size:.66rem;color:var(--text3);line-height:1.65;min-width:210px">${cmpTxt}</div>
      </div>
+     ${inertNote}
      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px">
        <div style="font-size:.82rem;color:var(--text2)">
          Deploying <b style="color:var(--text)">${payFmt(A.deployed)}</b> across <b>${A.alloc.length}</b> card${A.alloc.length===1?'':'s'}
@@ -9179,7 +9234,7 @@ const PAY = {
   },
 
   async applyAll() {
-    const A = payAllocate(UI.payAmount, UI.payStrategy, payCardStates());
+    const A = payAllocate(UI.payAmount, UI.payStrategy, payCardStates(), payRunway());
     if (!A.alloc.length) { toast('Nothing to allocate', 'err'); return; }
     const lines = A.alloc.map(x =>
       `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0"><span>${esc(x.name)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(x.pay)}</b></div>`).join('');
