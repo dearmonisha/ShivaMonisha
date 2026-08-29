@@ -8445,14 +8445,34 @@ function payAllocate(pot, strategy, states, runway) {
   const m = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
   let left = Math.max(0, +pot || 0);
   const R = runway || null;
-  const parts = { minimums: 0, promo: 0, pifEarly: 0, discretionary: 0 };
+  const parts = { minimums: 0, promo: 0, pifEarly: 0, discretionary: 0, minSkipped: [] };
 
-  m.filter(x => x.minUnfunded > 0.005)
+  // A pay-in-full card's minimum is subsumed by its own statement payment: both
+  // fall on the same due date and the statement is the larger of the two. Where
+  // the runway already covers that statement (payPifEarlyNeed === 0), funding
+  // the minimum today buys nothing the statement payment won't deliver on the
+  // very same day — it just parks cash at 0% while an interest-bearing card
+  // waits. Costco, 2026-08-29: $48 held back from Macys at 31.90% = $1.28/mo.
+  //
+  // Never skipped when the runway CANNOT cover the statement: the minimum is
+  // funded as normal and pass 3 tops up the shortfall. A late payment on one of
+  // these forfeits the 0% rate, so the guard has to fail closed — no runway, or
+  // a due date past the horizon, both mean payPifEarlyNeed returns the full
+  // amount owed and the minimum is funded.
+  const pifSelfCovering = x =>
+    x.role === 'pay-in-full' && x.stmtBal != null &&
+    (x.stmtBal - (x.paid || 0)) >= x.minUnfunded - 0.005 &&
+    payPifEarlyNeed(x, pot, R) <= 0.005;
+
+  m.filter(x => x.minUnfunded > 0.005 && !pifSelfCovering(x))
    .sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'))
    .forEach(x => {
      const p = Math.min(x.minUnfunded, left, Math.max(0, x.balance));
      x.pay += p; left -= p; parts.minimums += p;
    });
+  // Recorded for the UI, so the page can say why a minimum shows no allocation.
+  parts.minSkipped = m.filter(x => x.minUnfunded > 0.005 && pifSelfCovering(x))
+                      .map(x => ({ name: x.name, amount: x.minUnfunded, dueDate: x.dueDate }));
 
   // Promo catch-up ranks with the minimums, not with the optimisation. A 0% card behind
   // pace is the highest-value dollar in the book: the downside is not the shortfall, it is
@@ -8707,6 +8727,12 @@ function renderPayments() {
   const st = payCardStates();
   if (UI.payAmount == null) UI.payAmount = Math.floor(R.safe);
   const A  = payAllocate(UI.payAmount, UI.payStrategy, st, R);
+  // Minimums the allocator skipped because the card's own statement payment,
+  // already scheduled on the same due date, covers them. Not at risk, so they
+  // must not be presented as cash that has to leave today.
+  const minSkip      = (A.parts && A.parts.minSkipped) || [];
+  const minSkipNames = new Set(minSkip.map(s => s.name));
+  const minSkipTotal = minSkip.reduce((s, x) => s + x.amount, 0);
   const T  = payTrajectory(6);
 
   const totalOwed = st.reduce((s, x) => s + x.balance, 0);
@@ -8714,6 +8740,7 @@ function renderPayments() {
   const totalMin  = st.reduce((s, x) => s + x.minUnfunded, 0);
   const totalLim  = st.reduce((s, x) => s + x.limit, 0);
   const blended   = totalOwed ? totalInt * 1200 / totalOwed : 0;
+  const minDueNow = Math.max(0, totalMin - minSkipTotal);   // minimums needing cash today
 
   const card = 'background:var(--surface);border:1px solid var(--border);border-radius:10px';
   const lbl  = 'font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)';
@@ -8834,7 +8861,10 @@ function renderPayments() {
    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
     ${tile('Cash today', payFmt(R.cash), 'var(--text)', esc(R.bank ? R.bank.name : ''))}
     ${tile('Locked before next pay', payFmt(R.lockedNow), R.lockedNow>0?'var(--warn)':'var(--text3)', R.nextIncome ? `next in ${payDiffDays(R.today,R.nextIncome.date)}d · ${esc(R.nextIncome.label)} ${payFmt(R.nextIncome.amount)}` : 'no scheduled pay')}
-    ${tile('Unfunded minimums', payFmtUp(totalMin), totalMin>0?'var(--danger)':'var(--ok)', totalMin>0?'must clear first':'all covered ✓')}
+    ${tile('Unfunded minimums', payFmtUp(minDueNow), minDueNow>0?'var(--danger)':'var(--ok)',
+           minSkipTotal>0.005
+             ? `must clear first · ${payFmtUp(minSkipTotal)} more met by ${minSkip.map(s=>esc(s.name)).join(', ')}'s statement`
+             : minDueNow>0?'must clear first':'all covered ✓')}
     ${tile('Safe to deploy', payFmtDown(R.safe), 'var(--primary)',
            R.trough < R.cash - 0.5 ? `limited by ${fmtDate(R.troughDate)} · after ${payFmt(R.floor)} floor` : `after ${payFmt(R.floor)} floor`, true)}
     ${tile('Interest burning', payFmt(totalInt)+'/mo', 'var(--danger)', `${payFmt(totalOwed)} at ${blended.toFixed(1)}% blended`)}
@@ -8937,7 +8967,7 @@ function renderPayments() {
        <input type="range" min="0" max="${Math.max(8000, Math.round(R.safe*1.5))}" step="25" value="${UI.payAmount}"
          oninput="PAY.setAmount(this.value)" style="flex:1;min-width:150px;accent-color:var(--primary)">
        <button onclick="PAY.setAmount(${Math.floor(R.safe)})" title="Rounded down — never above the safe limit" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Safe max</button>
-       <button onclick="PAY.setAmount(${payUp(totalMin)})" title="Rounded up — never short of a minimum" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Minimums only</button>
+       <button onclick="PAY.setAmount(${payUp(minDueNow)})" title="Rounded up — never short of a minimum that needs cash today" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Minimums only</button>
      </div>
      <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
@@ -9002,7 +9032,14 @@ function renderPayments() {
       : '';
     // On a pay-in-full card the balance above the statement is unbilled spending, not debt
     const unbilled = (x.role === 'pay-in-full' && x.stmtBal != null) ? Math.max(0, x.balance - Math.max(0, x.stmtBal - x.paid)) : 0;
-    const minTag = x.minUnfunded > 0.005 ? `<span style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--danger-bg);color:var(--danger);margin-left:5px">min ${payFmtUp(x.minUnfunded)} due ${fmtDate(x.dueDate)}</span>` : '';
+    // A minimum the allocator skipped is met by this card's own statement on the
+    // same day, so it is amber-informational, not red-outstanding.
+    const minCovered = minSkipNames.has(x.name);
+    const minTag = x.minUnfunded > 0.005
+      ? `<span title="${minCovered
+            ? 'Met by this card\'s statement payment on the same due date — no cash needed today'
+            : 'Outstanding minimum for this statement'}" style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:${minCovered?'var(--surface2)':'var(--danger-bg)'};color:${minCovered?'var(--text3)':'var(--danger)'};margin-left:5px">min ${payFmtUp(x.minUnfunded)} due ${fmtDate(x.dueDate)}${minCovered?' · in the statement':''}</span>`
+      : '';
     const projTag = x.projected ? `<span title="statement not yet issued — dates projected from template" style="font-size:.6rem;padding:1px 5px;border-radius:3px;background:var(--warn-bg);color:var(--warn);margin-left:5px">projected</span>` : '';
     return `<tr style="border-bottom:1px solid var(--border-light)">
       <td style="padding:8px 10px">
@@ -9030,6 +9067,7 @@ function renderPayments() {
         <input type="text" id="payq-${x.id}" value="${x.pay>0.005?payFmt2(x.pay):''}" placeholder="0.00"
           style="width:88px;font-size:.8rem;padding:4px 6px;border:1px solid ${x.pay>0.005?'var(--primary)':'var(--border)'};border-radius:5px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
         ${x.pay>0.005?`<div style="font-size:.6rem;color:var(--ok);margin-top:2px">−${payFmt2(x.pay*x.apr/1200)}/mo</div>`:''}
+        ${x.pay<=0.005&&minCovered?`<div style="font-size:.58rem;color:var(--text3);margin-top:2px">covered on ${fmtDate(x.dueDate)}</div>`:''}
       </td>
       <td style="padding:8px 6px;text-align:right">
         <button onclick="PAY.payOne('${x.acct.id}','${x.id}')" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">Pay</button>
