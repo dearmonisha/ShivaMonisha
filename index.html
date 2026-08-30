@@ -806,6 +806,9 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   #view-mobile{display:block!important}
   #file-overlay .fo-card{width:92vw;max-width:420px}
   .mob-fab{display:flex;bottom:calc(24px + env(safe-area-inset-bottom));right:calc(20px + env(safe-area-inset-right))}
+  /* The remote-change bar is fixed to the bottom and would otherwise sit on top
+     of the + button, which is exactly the control you need to keep reaching. */
+  body:has(#remote-bar) .mob-fab{bottom:calc(96px + env(safe-area-inset-bottom))}
   /* Tighter cards on mobile */
   .mob-cat-card{padding:11px 12px;margin-bottom:5px}
   .mob-cat-name{font-size:.83rem}
@@ -1212,6 +1215,19 @@ function ghGetConfig() {
 }
 function ghSetConfig(cfg) { localStorage.setItem(GH_CONFIG_KEY, JSON.stringify(cfg)); }
 function ghGetSha()     { return localStorage.getItem(GH_SHA_KEY) || null; }
+
+// ── Who is using this device? ───────────────────────────────────────────────
+// Two people now share one ledger through one GitHub account, so the commit
+// author cannot tell them apart — it is the same token either way. The only
+// place that knowledge exists is the device, so it lives in localStorage and is
+// stamped onto rows at entry time. Deliberately NOT stored in D: it describes
+// the phone, not the household, and syncing it would overwrite the other one.
+const GH_OWNER_KEY = 'acct_mgr_device_owner';
+function ghGetOwner()      { return (localStorage.getItem(GH_OWNER_KEY) || '').trim(); }
+function ghSetOwner(name)  {
+  const v = (name || '').trim().slice(0, 24);
+  if (v) localStorage.setItem(GH_OWNER_KEY, v); else localStorage.removeItem(GH_OWNER_KEY);
+}
 function ghSetSha(sha)  { if (sha) localStorage.setItem(GH_SHA_KEY, sha); }
 
 // ════════════════════════════════════════════════════════════
@@ -1948,6 +1964,106 @@ async function _ghWrite(cfg, data) {
   if (newSha) _cachePut(newSha, JSON.parse(jsonStr));
 }
 
+// ── Someone else saved: detect it BEFORE it becomes a conflict ─────────────
+// Two people on two phones share one file. Until now the app read the SHA once
+// at load and only discovered a clash inside doSave() — by which point the only
+// choices are Reload (throw away everything just typed) or Force (overwrite the
+// other person). Both lose work.
+//
+// So probe the SHA whenever the app comes back to the foreground. The contents
+// endpoint returns metadata only for a file this size (GitHub omits bodies over
+// 1 MB), so the probe is cheap — no 5.5 MB download.
+//
+//   clean  → refresh silently and say what arrived
+//   dirty  → say so immediately, and let them save first. Never auto-merge.
+let _remoteCheckAt = 0;
+let _remoteBusy    = false;
+const REMOTE_CHECK_MIN_MS = 20000;   // don't re-probe on every tab flick
+
+async function _ghPeekSha(cfg) {
+  const url = `https://api.github.com/repos/${cfg.repo}/contents/${cfg.path}`;
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${cfg.token}`, 'Accept': 'application/vnd.github.v3+json' }
+  });
+  if (!res.ok) return null;                 // offline or throttled — stay quiet
+  const json = await res.json();
+  return json.sha || null;
+}
+
+async function checkRemoteChanges(force) {
+  const cfg = ghGetConfig();
+  if (!cfg || !cfg.token || !cfg.repo) return;
+  if (_remoteBusy || _saveState === 'saving') return;
+  if (!force && Date.now() - _remoteCheckAt < REMOTE_CHECK_MIN_MS) return;
+  _remoteBusy = true;
+  try {
+    const mine = ghGetSha();
+    const theirs = await _ghPeekSha(cfg);
+    _remoteCheckAt = Date.now();
+    if (!theirs || !mine || theirs === mine) { showRemoteBar(''); return; }
+
+    if (UI.dirty) {
+      // Do NOT touch their work. Tell them, and make saving the obvious next tap.
+      showRemoteBar('dirty');
+      return;
+    }
+    // Nothing local to lose — take the newer file.
+    const beforeTxns = (D.transactions || []).length;
+    const data = await _ghFetch(cfg);
+    _applyData(data);
+    applyTheme(D.settings?.theme);
+    applyIconStyle(D.settings?.iconStyle);
+    const added = (D.transactions || []).length - beforeTxns;
+    if (_mobIsMobile()) mobRender('keep'); else { renderMonthly(); _desktopRendered = true; }
+    refreshSaveUI();
+    // Name the person only when rows actually arrived — otherwise the "last N"
+    // slice would pick up an unrelated row and credit the wrong person.
+    const who = added > 0
+      ? [...new Set((D.transactions || []).slice(-added).map(t => t.enteredBy).filter(Boolean))].join(' & ')
+      : '';
+    showRemoteBar('refreshed', { added, who });
+  } catch (e) {
+    console.warn('remote check failed', e);   // never block the app on this
+  } finally {
+    _remoteBusy = false;
+  }
+}
+
+// A persistent bar, not a toast: on a phone #save-info is display:none and a
+// toast is gone in 2.8s — see the mobile "invisible feedback" rule.
+function showRemoteBar(kind, info) {
+  let bar = id('remote-bar');
+  if (!kind) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'remote-bar';
+    document.body.appendChild(bar);
+  }
+  const dirtyKind = kind === 'dirty';
+  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:6000;padding:11px 14px;' +
+    'display:flex;align-items:center;gap:10px;font-size:.82rem;line-height:1.45;' +
+    'box-shadow:0 -2px 12px rgba(0,0,0,.14);padding-bottom:calc(11px + env(safe-area-inset-bottom));' +
+    (dirtyKind ? 'background:var(--warn-bg);color:var(--text);border-top:2px solid var(--warn)'
+               : 'background:var(--ok-bg);color:var(--text);border-top:2px solid var(--ok)');
+  const n = info && info.added;
+  const who = info && info.who ? esc(info.who) : '';
+  bar.innerHTML = dirtyKind
+    ? `<span style="flex:1"><b>Someone else saved on another device.</b> Save yours now — if you keep editing, one of you will have to lose work.</span>
+       <button onclick="doSave()" style="padding:8px 13px;min-height:40px;border:none;border-radius:6px;background:var(--warn);color:#fff;font-weight:700;font-size:.8rem;cursor:pointer">Save now</button>
+       <button onclick="showRemoteBar('')" aria-label="Dismiss" style="padding:8px 10px;min-height:40px;border:none;background:none;color:var(--text3);font-size:1rem;cursor:pointer">✕</button>`
+    : `<span style="flex:1">${n > 0
+         ? `Refreshed${who ? ` — <b>${who}</b> added` : ' —'} ${n} transaction${n === 1 ? '' : 's'}.`
+         : 'Refreshed with the latest saved from another device.'}</span>
+       <button onclick="showRemoteBar('')" aria-label="Dismiss" style="padding:8px 10px;min-height:40px;border:none;background:none;color:var(--text3);font-size:1rem;cursor:pointer">✕</button>`;
+  if (!dirtyKind) setTimeout(() => { const b = id('remote-bar'); if (b && b.dataset.k !== 'dirty') b.remove(); }, 9000);
+  bar.dataset.k = kind;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkRemoteChanges();
+});
+window.addEventListener('focus', () => checkRemoteChanges());
+
 // ── Save ──────────────────────────────────────────────────────
 async function doSave() {
   const cfg = ghGetConfig();
@@ -1961,6 +2077,8 @@ async function doSave() {
     UI.dirty   = false;
     _saveState = '';
     clearSaveError();
+    showRemoteBar('');           // our SHA is the newest now — the warning is stale
+    _remoteCheckAt = Date.now(); // and don't immediately re-probe our own commit
     refreshSaveUI();
     toast('Saved to GitHub ✓', 'ok');
   } catch(e) {
@@ -6798,6 +6916,41 @@ function potAccountIdSet() {
     ...(sp.priorAccountIds  || []),
     ...(rp.priorAccountIds  || [])
   ].filter(Boolean));
+}
+
+// ── Pot movement classification — shared by every pot view ──────────────────
+// A pot's ACCOUNT can be repointed (2026-08: PNC Growth → New Growth, chasing a
+// better rate), so pot membership is a SET, never a single id. Comparing against
+// only the current account broke two ways at once: every deposit and draw made
+// against the OLD account vanished, and the migration transfer itself was read as
+// a brand-new deposit. Shiva saw the result on mobile — the $4,400 migration
+// showing up under all eight Planned Expense categories on 2026-08-15, each pot's
+// balance reduced to nothing but its slice of that one transfer, with zero draws.
+//
+// Families are compared SEPARATELY, not against all pot accounts at once: the
+// 2026-05-18 Reserve → Growth transfer of $1,000 is a real draw for Reserve and a
+// real deposit for Growth, and a combined set would silently drop it from both.
+// A move WITHIN one family is internal and counts as neither.
+//
+// Verified against the ledger: with this rule the Growth pots total $4,435.15,
+// matching PNC Growth $35.15 + New Growth $4,400.00 left by the migration.
+function potFamilyIds(which) {
+  const sp = D.savingsPots || {}, rp = D.reservePots || {};
+  return which === 'reserve'
+    ? new Set([rp.reserveAccountId, ...(rp.priorAccountIds || [])].filter(Boolean))
+    : new Set([sp.growthAccountId,  ...(sp.priorAccountIds || [])].filter(Boolean));
+}
+
+// 'deposit' | 'draw' | null. Only the DEBIT leg is classified, so a transfer pair
+// is never counted twice.
+function potMoveKind(t, ids) {
+  if (!t || !t.isTransfer || !(t.splits && t.splits.length)) return null;
+  if (!((parseFloat(t.debit) || 0) > 0)) return null;
+  const into  = ids.has(t.transferToAcctId);
+  const outOf = ids.has(t.accountId);
+  if (into && !outOf) return 'deposit';
+  if (outOf && !into) return 'draw';
+  return null;
 }
 
 // Called whenever a pot's account is reassigned, so history survives the change
@@ -11925,6 +12078,27 @@ let _mobSheetIsEdit   = false;
 function _mobSheetSnapshot() {
   return JSON.stringify(_MOB_SHEET_FIELDS.map(f => document.getElementById(f)?.value ?? ''));
 }
+// Asked once per device, then reduced to a single line. Two people share this
+// ledger through one GitHub token, so the commit author is identical either way
+// — the device is the only thing that knows whose hands these are.
+function mobWhoRowHTML() {
+  const who = ghGetOwner();
+  if (who) {
+    return `<div style="font-size:.72rem;color:var(--text3)">Adding as <b style="color:var(--text2)">${esc(who)}</b>
+      <button onclick="BA.mobSetOwner(null)" style="background:none;border:none;color:var(--primary);font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 4px;min-height:32px">change</button></div>`;
+  }
+  const names = [...new Set((D.budget?.incomeSchedules || []).map(s => (s.name || '').trim()).filter(Boolean))].slice(0, 3);
+  const btn = n => `<button onclick="BA.mobSetOwner('${esc(n).replace(/'/g, "\\'")}')"
+    style="padding:7px 12px;min-height:40px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--text2);font-size:.8rem;font-weight:600;cursor:pointer">${esc(n)}</button>`;
+  return `<div style="background:var(--surface2);border-radius:8px;padding:10px 12px">
+    <div style="font-size:.75rem;color:var(--text2);font-weight:700;margin-bottom:7px">Who is using this phone?</div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap">${names.map(btn).join('')}
+      <button onclick="BA.mobSetOwner('__ask__')" style="padding:7px 12px;min-height:40px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--text3);font-size:.8rem;cursor:pointer">Someone else</button>
+    </div>
+    <div style="font-size:.68rem;color:var(--text3);margin-top:7px;line-height:1.45">Stamped on what you add from here, so you can both tell later. Stays on this phone.</div>
+  </div>`;
+}
+
 function mobRender(target) {
   _mobScrollTarget = (target === undefined) ? 'keep' : target;
   renderMobileView();
@@ -11988,25 +12162,43 @@ function renderMobileView() {
 
     if (drillCat) {
       // Show transactions for selected category this month
+      // This list has to agree with the "spent this month" figure above it, and
+      // that figure comes from recomputeTxnActuals(). Mirror its two rules exactly:
+      //   • transfers are never spending — the 2026-08-15 pot migration was a
+      //     split transfer, so it surfaced under all eight Planned Expense
+      //     categories at its full $4,400 while the total above ignored it
+      //   • on a split row, only THIS category's slice counts, not the parent
+      //     total (a $512.39 Costco run read as $512.39 under Groceries instead
+      //     of its $81.61 line)
+      const drillAmt = t => {
+        if (t.splits && t.splits.length) {
+          const sign = (parseFloat(t.credit) || 0) > 0 && !(parseFloat(t.debit) || 0) ? -1 : 1;
+          return sign * t.splits.filter(s => s.categoryId === drillCatId)
+                                .reduce((s2, s) => s2 + (parseFloat(s.amount) || 0), 0);
+        }
+        return (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+      };
       const drillTxns = (D.transactions || [])
         .filter(t => {
           if ((t.date || '').slice(0,7) !== month) return false;
           if (t.status && t.status !== 'approved') return false;
-          if (t.categoryId === drillCatId) return true;
-          if (t.splits && t.splits.some(s => s.categoryId === drillCatId)) return true;
-          return false;
+          if (t.isTransfer) return false;
+          if (t.splits && t.splits.length) return t.splits.some(s => s.categoryId === drillCatId);
+          return t.categoryId === drillCatId;
         })
         .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-      const drillTotal = drillTxns.reduce((s, t) => s + ((parseFloat(t.debit)||0) - (parseFloat(t.credit)||0)), 0);
+      const drillTotal = drillTxns.reduce((s, t) => s + drillAmt(t), 0);
       const drillBud   = budgetGetAdjustedPlan(drillCatId, month);
       const drillRows  = drillTxns.length ? drillTxns.map(t => {
         const acct = (D.txnAccounts || []).find(a => a.id === t.accountId);
-        const amt  = (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
+        const amt  = drillAmt(t);
         const clr  = amt < 0 ? 'var(--ok)' : 'var(--text)';
+        const part = (t.splits && t.splits.length)
+          ? ` · part of ${fmtC((parseFloat(t.debit)||0) - (parseFloat(t.credit)||0))}` : '';
         return `<div class="mob-txn-row tappable" onclick="BA.mobileEditTxn('${t.id}')">
           <div class="mob-txn-left">
             <div class="mob-txn-payee">${esc(t.payee || '(no payee)')}</div>
-            <div class="mob-txn-meta">${esc([fmtDate(t.date), acct?.name].filter(Boolean).join(' · '))}</div>
+            <div class="mob-txn-meta">${esc([fmtDate(t.date), acct?.name].filter(Boolean).join(' · '))}${part}</div>
           </div>
           <div class="mob-txn-amt" style="color:${clr}">${amt<0?'+':''}${fmtC(Math.abs(amt))}</div>
           <span class="mob-txn-chev">›</span>
@@ -12086,6 +12278,47 @@ function renderMobileView() {
     }
   }
 
+  // ── "Can I spend this?" ────────────────────────────────────────────────
+  // The question you actually have standing in a shop, and the one thing the
+  // phone could never answer: cash, headroom, and what is about to leave.
+  // payRunway() already computes all of it for the desktop Payments page — it
+  // was simply never rendered here. Wrapped in try/catch on purpose: a phone
+  // must never lose its whole budget screen because one panel threw.
+  let spendHTML = '';
+  if (tab === 'budget' && !UI.mobileDrillCat) {
+    try {
+      const R  = payRunway();
+      const up = (R.outs || []).slice()
+        .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+        .slice(0, 3);
+      const safeColor = R.safe > 250 ? 'var(--ok)' : R.safe > 0 ? '#d97706' : 'var(--danger)';
+      const rows = up.map(e => `
+        <div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--border-light)">
+          <span style="font-size:.8rem;color:var(--text2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.label)}</span>
+          <span style="font-size:.78rem;color:var(--text3);white-space:nowrap">${fmtDate(e.date)} · −${fmtC(e.amount)}</span>
+        </div>`).join('');
+      spendHTML = `
+        <div class="mob-summary-card" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font-size:.75rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Safe to spend</span>
+            <span style="font-size:1.35rem;font-weight:800;color:${safeColor}">${fmtCurrency(R.safe)}</span>
+          </div>
+          <div style="font-size:.75rem;color:var(--text3);margin-top:2px">
+            ${fmtC(R.cash)} in ${esc(R.bank ? R.bank.name : 'the bank')} · lowest point ${fmtC(R.trough)} on ${fmtDate(R.troughDate)}
+          </div>
+          ${rows ? `<div style="margin-top:8px">
+            <div style="font-size:.68rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">Next out</div>
+            ${rows}
+          </div>` : ''}
+          <div style="font-size:.68rem;color:var(--text3);margin-top:8px;line-height:1.5">
+            After every bill and card minimum due in the next ${PAY_HORIZON} days, and your ${fmtC(R.floor)} floor.
+          </div>
+        </div>`;
+    } catch (e) {
+      console.warn('mobile runway card failed', e);
+    }
+  }
+
   // ── Savings Pots section ───────────────────────────────────
   const sp = D.savingsPots || {};
   let potsHTML = '';
@@ -12095,11 +12328,11 @@ function renderMobileView() {
     const trackedCatIds = new Set(trackedCats.map(c => c.id));
     const pots = {};
     trackedCats.forEach(c => { pots[c.id] = { deposited: 0, drawn: 0 }; });
+    const _mobSavIds = potFamilyIds('savings');
     (D.transactions || []).forEach(t => {
-      if (!t.isTransfer || !(t.splits && t.splits.length)) return;
-      const isDeposit = t.debit > 0 && t.transferToAcctId === growthAcctId;
-      const isDraw    = t.debit > 0 && t.accountId === growthAcctId;
-      if (!isDeposit && !isDraw) return;
+      const kind = potMoveKind(t, _mobSavIds);
+      if (!kind) return;
+      const isDeposit = kind === 'deposit';
       t.splits.forEach(s => {
         if (!trackedCatIds.has(s.categoryId)) return;
         const amt = parseFloat(s.amount) || 0;
@@ -12390,7 +12623,7 @@ function renderMobileView() {
     ${monthNav}
     ${tabBar}
     <div class="mob-section">
-      ${tab === 'budget'       ? budgetHTML : ''}
+      ${tab === 'budget'       ? spendHTML + budgetHTML : ''}
       ${tab === 'transactions' ? txnHTML : ''}
       ${tab === 'cards'        ? `<div class="mob-section-title" style="margin-top:4px">💳 Card Balances</div>${cardsHTML}` : ''}
       ${tab === 'accounts'     ? accountsHTML : ''}
@@ -12470,6 +12703,15 @@ const BA = {
   dismissSaveError() { clearSaveError(); refreshSaveUI(); },
 
   setMobileTab(tab) { UI.mobileTab = tab; UI.mobileDrillCat = ''; mobRender('top'); },
+
+  mobSetOwner(name) {
+    let v = name;
+    if (v === '__ask__') { v = prompt('Name for this phone'); if (v === null) return; }
+    ghSetOwner(v || '');                       // null / empty clears it back to the chooser
+    const box = id('mob-at-who');
+    if (box) box.innerHTML = mobWhoRowHTML();  // swap in place — never re-render the sheet
+    else mobRender('keep');
+  },
   setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; UI.mobileTxnSearch = ''; mobRender('top'); },
   // Searching filters the list in place — snapping to the top each keystroke
   // was disorienting, so hold position.
@@ -12594,6 +12836,8 @@ const BA = {
         <textarea id="mob-at-notes" rows="2" placeholder="e.g. needs splitting, receipt info…"
           style="${fldStyle};resize:none;line-height:1.4;min-height:60px"${ro}>${editing ? esc(txn.notes || '') : ''}</textarea>
       </div>
+      ${editing ? (txn.enteredBy ? `<div style="font-size:.72rem;color:var(--text3);margin-bottom:10px">Added by <b style="color:var(--text2)">${esc(txn.enteredBy)}</b></div>` : '')
+                : `<div id="mob-at-who" style="margin-bottom:12px">${mobWhoRowHTML()}</div>`}
       <div id="mob-at-err" style="display:none;background:color-mix(in srgb,var(--danger) 10%,transparent);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:7px;padding:8px 12px;font-size:.82rem;color:var(--danger);margin-bottom:12px;font-weight:600"></div>
       <div id="mob-at-hint" class="mob-sheet-hint"></div>
       <div class="mob-sheet-actions">
@@ -12793,7 +13037,9 @@ const BA = {
       notes: f.notes,
       cleared: false,
       status: 'approved',
-      source: 'mobile'
+      source: 'mobile',
+      // Only new rows are stamped — history stays blank rather than guessing.
+      enteredBy: ghGetOwner() || undefined
     };
 
     if (!D.transactions) D.transactions = [];
@@ -16852,13 +17098,11 @@ function renderSavingsPots() {
   const pots = {};
   trackedCats.forEach(c => { pots[c.id] = { deposited: 0, drawn: 0, history: [] }; });
 
+  const _savIds = potFamilyIds('savings');
   (D.transactions || []).forEach(t => {
-    if (!t.isTransfer || !(t.splits && t.splits.length)) return;
-    // Deposit: debit leg FROM a non-Growth account TO Growth
-    const isDeposit = t.debit > 0 && t.transferToAcctId === growthAcctId;
-    // Draw: debit leg FROM Growth TO anywhere
-    const isDraw    = t.debit > 0 && t.accountId === growthAcctId;
-    if (!isDeposit && !isDraw) return;
+    const kind = potMoveKind(t, _savIds);       // see potMoveKind — set, not one id
+    if (!kind) return;
+    const isDeposit = kind === 'deposit';
 
     t.splits.forEach(s => {
       if (!trackedCatIds.has(s.categoryId)) return;
@@ -17105,11 +17349,11 @@ function renderReservePots() {
   const pots = {};
   trackedCats.forEach(c => { pots[c.id] = { deposited: 0, drawn: 0, history: [] }; });
 
+  const _resIds = potFamilyIds('reserve');
   (D.transactions || []).forEach(t => {
-    if (!t.isTransfer || !(t.splits && t.splits.length)) return;
-    const isDeposit = t.debit > 0 && t.transferToAcctId === reserveAcctId;
-    const isDraw    = t.debit > 0 && t.accountId === reserveAcctId;
-    if (!isDeposit && !isDraw) return;
+    const kind = potMoveKind(t, _resIds);
+    if (!kind) return;
+    const isDeposit = kind === 'deposit';
     t.splits.forEach(s => {
       if (!trackedCatIds.has(s.categoryId)) return;
       const amt = parseFloat(s.amount) || 0;
