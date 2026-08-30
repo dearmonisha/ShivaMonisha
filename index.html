@@ -12243,6 +12243,10 @@ let _desktopRendered = false;
 const _MOB_SHEET_FIELDS = ['mob-at-date','mob-at-payee','mob-at-amt','mob-at-type','mob-at-acct','mob-at-cat','mob-at-notes'];
 let _mobSheetBaseline = '';
 let _mobFast = { raw:'', payee:'', acctId:'', catId:'', alts:[], custom:false, taps:0 };
+// Set when the owner is changed from inside a sheet. The Home greeting shows
+// the owner's name, so closing the sheet has to repaint the view — but only
+// then, since a full mobile re-render walks every transaction.
+let _mobOwnerTouched = false;
 let _mobSheetIsEdit   = false;
 function _mobSheetSnapshot() {
   return JSON.stringify(_MOB_SHEET_FIELDS.map(f => document.getElementById(f)?.value ?? ''));
@@ -12992,8 +12996,14 @@ const BA = {
     let v = name;
     if (v === '__ask__') { v = prompt('Name for this phone'); if (v === null) return; }
     ghSetOwner(v || '');                       // null / empty clears it back to the chooser
-    const box = id('mob-at-who');
-    if (box) box.innerHTML = mobWhoRowHTML();  // swap in place — never re-render the sheet
+    // Repaint whichever owner row is actually on screen. There are two: the
+    // fast-capture sheet renders #mf-who, the full sheet renders #mob-at-who.
+    // This only ever looked for the second, so in the fast sheet every tap
+    // stored the name and then repainted nothing — the chooser sat there
+    // unchanged and the control read as dead. Swap in place; re-rendering the
+    // whole mobile view while a sheet is open scrolls the page underneath it.
+    const boxes = ['mf-who', 'mob-at-who'].map(x => id(x)).filter(Boolean);
+    if (boxes.length) { _mobOwnerTouched = true; boxes.forEach(b => { b.innerHTML = mobWhoRowHTML(); }); }
     else mobRender('keep');
   },
   setMobileTxnAcct(id) { UI.mobileTxnAcct = id || ''; UI.mobileTxnSearch = ''; mobRender('top'); },
@@ -13343,7 +13353,10 @@ const BA = {
         .map(k => `<button onclick="BA.mobFastKey('${k}')">${k}</button>`).join('');
     BA._mobFastPaint();
   },
-  mobFastClose() { document.getElementById('mob-fast')?.remove(); },
+  mobFastClose() {
+    document.getElementById('mob-fast')?.remove();
+    if (_mobOwnerTouched) { _mobOwnerTouched = false; mobRender('keep'); }
+  },
   // Escape hatch: anything the fast path cannot express (a credit, a past date,
   // a note) hands straight over to the full sheet rather than growing this one.
   mobFastMore() {
