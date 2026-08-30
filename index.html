@@ -737,9 +737,30 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-pot-name{font-size:.9rem;font-weight:700;color:var(--text1)}
 .mob-pot-bal{font-size:1rem;font-weight:800}
 .mob-total-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
-.mob-tabs{display:flex;border-bottom:2px solid var(--border);background:var(--bg);position:sticky;top:87px;z-index:49}
-.mob-tab{flex:1;padding:9px 4px;font-size:.78rem;font-weight:700;color:var(--text3);background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;transition:color .15s}
-.mob-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+/* Bottom tab bar — thumb-reachable, the way the approved mock drew it.
+   Fixed, not sticky: it must never scroll away, and it owns the bottom inset
+   so the FAB, the toasts and the remote-change bar all stack above it. */
+.mob-tabs{position:fixed;left:0;right:0;bottom:0;z-index:200;display:flex;
+  background:var(--surface);border-top:1px solid var(--border);
+  padding:5px 0 calc(4px + env(safe-area-inset-bottom));
+  box-shadow:0 -1px 14px rgba(0,0,0,.07)}
+.mob-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  min-height:46px;padding:2px;font-size:.66rem;font-weight:700;letter-spacing:.01em;
+  color:var(--text3);background:none;border:none;cursor:pointer;position:relative;
+  transition:color .15s;-webkit-tap-highlight-color:transparent}
+.mob-tab-ico{font-size:1.02rem;line-height:1;position:relative;display:inline-block}
+.mob-tab-badge{position:absolute;top:-5px;left:11px;display:inline-flex;align-items:center;justify-content:center;
+  min-width:15px;height:15px;padding:0 4px;border-radius:99px;font-size:.55rem;font-weight:800;
+  background:var(--danger);color:#fff;line-height:1}
+.mob-tab.active{color:var(--primary)}
+/* One-line list row: label left, "Tue 1 Sep  −$300" right. The two-line
+   stack this replaces made every card ~40% taller than the approved mock. */
+.mob-row1{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+  padding:9px 0;border-bottom:1px solid var(--border-light)}
+.mob-row1:last-child{border-bottom:none}
+.mob-row1-l{font-size:.87rem;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mob-row1-r{font-size:.85rem;white-space:nowrap;flex-shrink:0}
+.mob-row1-d{font-size:.78rem;color:var(--text3);margin-right:7px}
 .mob-txn-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-light)}
 .mob-txn-row:last-child{border-bottom:none}
 .mob-txn-left{flex:1;min-width:0;padding-right:10px}
@@ -821,10 +842,11 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   main>div:not(#view-mobile){display:none!important}
   #view-mobile{display:block!important}
   #file-overlay .fo-card{width:92vw;max-width:420px}
-  .mob-fab{display:flex;bottom:calc(24px + env(safe-area-inset-bottom));right:calc(20px + env(safe-area-inset-right))}
-  /* The remote-change bar is fixed to the bottom and would otherwise sit on top
-     of the + button, which is exactly the control you need to keep reaching. */
-  body:has(#remote-bar) .mob-fab{bottom:calc(96px + env(safe-area-inset-bottom))}
+  /* Everything fixed to the bottom now stacks above the 55px tab bar:
+     tab bar → remote-change bar → FAB → toasts. */
+  .mob-fab{display:flex;bottom:calc(70px + env(safe-area-inset-bottom));right:calc(20px + env(safe-area-inset-right))}
+  body:has(#remote-bar) .mob-fab{bottom:calc(140px + env(safe-area-inset-bottom))}
+  #remote-bar{bottom:calc(55px + env(safe-area-inset-bottom))!important;padding-bottom:11px!important}
   /* Tighter cards on mobile */
   .mob-cat-card{padding:11px 12px;margin-bottom:5px}
   .mob-cat-name{font-size:.83rem}
@@ -833,14 +855,14 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   .mob-pot-card{padding:11px 12px;margin-bottom:5px}
   .mob-total-card{padding:11px 12px;margin-bottom:5px}
   .mob-group-hdr{font-size:.66rem;margin:12px 0 5px}
-  /* 44px minimum touch target (was 7px/3px padding at .72rem ≈ 27px tall) */
-  .mob-tab{padding:0 3px;font-size:.74rem;min-height:44px;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent}
+  /* 46px minimum touch target; the base rule already stacks icon over label */
+  .mob-tab{padding:2px 3px;min-height:46px}
   /* Base CSS sticks this at 50px (the DESKTOP header height) but the mobile
      header is 40px — that 10px gap let list rows show through underneath.
      JS re-measures both after each render; this is the pre-paint fallback. */
   .mob-hdr{top:calc(40px + env(safe-area-inset-top));padding:6px calc(14px + env(safe-area-inset-right)) 6px calc(14px + env(safe-area-inset-left))}
   /* Clear of the FAB (bottom:24px, 54px tall) so toasts are actually readable */
-  .toasts{bottom:calc(92px + env(safe-area-inset-bottom));left:12px;right:12px}
+  .toasts{bottom:calc(138px + env(safe-area-inset-bottom));left:12px;right:12px}
   .toast{max-width:none}
   #save-err-bar{top:calc(40px + env(safe-area-inset-top))}
   .mob-month{font-size:.9rem;font-weight:800}
@@ -12145,6 +12167,32 @@ function mobSince() {
 }
 function mobMarkSeen() { try { localStorage.setItem(MOB_SEEN_KEY, new Date().toISOString()); } catch (e) {} }
 
+// ── Phone-scale formatting ─────────────────────────────────────────────────
+// A 390px row has no space for "09/01/26" AND "$1,341.96" AND a payee, so the
+// old layout stacked date under amount and every card grew ~40% taller than
+// the approved design. "Tue 1 Sep" reads faster than a slash date anyway, and
+// cents are noise in a list you are scanning — they stay everywhere a figure
+// is exact (Safe to spend, balances, the transaction ledger).
+function mobShortDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return iso;
+  const wd = d.toLocaleDateString('en-US', { weekday: 'short' });
+  const mo = d.toLocaleDateString('en-US', { month: 'short' });
+  return `${wd} ${d.getDate()} ${mo}`;
+}
+function mobWhole(n) {
+  const v = Math.round(Math.abs(+n || 0));
+  return '$' + v.toLocaleString('en-US');
+}
+// "Sunday morning" — the mock's greeting. Cut-offs match how people speak,
+// not clock quarters: morning until noon, afternoon until 5, then evening.
+function mobGreeting() {
+  const h = new Date().getHours();
+  const wd = new Date(centralToday() + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+  return `${wd} ${h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening'}`;
+}
+
 // Ranked by how soon it can hurt, not by size. A card due tomorrow outranks a
 // category that went over three weeks ago, however large the overage — the
 // first is still actionable and the second is already spent.
@@ -12252,20 +12300,31 @@ function renderMobileView() {
     if (!isTracking && spnt > bud + 0.005) overBudgetCount++;
   });
   const overBadge = overBudgetCount > 0
-    ? `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:99px;font-size:.58rem;font-weight:800;background:var(--danger);color:#fff;margin-left:3px;vertical-align:middle">${overBudgetCount}</span>` : '';
+    ? `<span class="mob-tab-badge">${overBudgetCount}</span>` : '';
 
-  // ── Tab bar ─────────────────────────────────────────────────
-  const hasMonthNav  = tab !== 'cards' && tab !== 'accounts';
-  const tabStickyTop = hasMonthNav ? '87px' : '40px'; // header(40) + optional monthNav(47)
+  // ── Tab bar — fixed to the BOTTOM, icon over label ──────────
+  // Where the approved mock put it, and where a thumb actually reaches on a
+  // 6.1" phone. It is position:fixed, so it takes no part in the sticky
+  // header stack any more — only .mob-hdr does.
   // Home first: the question, then the filing cabinets. Accounts folded into
   // "All" — it is reference data, not a moment you open the app for.
+  // Four icons from ONE family. The old bar mixed monochrome glyphs (◎, ≡)
+  // with colour emoji (📊, 💳) and read as a mistake; pick the set that
+  // matches the icon style already chosen in Setup.
+  const _tabIco = (D.settings?.iconStyle || 'emoji') === 'emoji'
+    ? { home:'🏠', budget:'📊', cards:'💳', transactions:'📋' }
+    : { home:'◎',  budget:'▤',  cards:'▭',  transactions:'≡'  };
+  const _tb = (t, label, badge) => `
+      <button class="mob-tab${tab===t?' active':''}" onclick="BA.setMobileTab('${t}')" aria-label="${label}"${tab===t?' aria-current="page"':''}>
+        <span class="mob-tab-ico">${_tabIco[t]}${badge||''}</span><span>${label}</span>
+      </button>`;
   const tabBar = `
-    <div class="mob-tabs" style="top:${tabStickyTop}">
-      <button class="mob-tab${tab==='home'?' active':''}"         onclick="BA.setMobileTab('home')">◎ Home</button>
-      <button class="mob-tab${tab==='budget'?' active':''}"       onclick="BA.setMobileTab('budget')">📊 Budget${overBadge}</button>
-      <button class="mob-tab${tab==='cards'?' active':''}"        onclick="BA.setMobileTab('cards')">💳 Cards</button>
-      <button class="mob-tab${tab==='transactions'?' active':''}" onclick="BA.setMobileTab('transactions')">≡ All</button>
-    </div>`;
+    <nav class="mob-tabs" role="tablist">
+      ${_tb('home','Home')}
+      ${_tb('budget','Budget',overBadge)}
+      ${_tb('cards','Cards')}
+      ${_tb('transactions','All')}
+    </nav>`;
 
   // ── Month nav — only where a month means something ────────
   // Home and Cards are read in the present tense; a stepper there invites you
@@ -12406,8 +12465,9 @@ function renderMobileView() {
   // ── HOME: the briefing ──────────────────────────────────────────────────
   let homeHTML = '';
   if (tab === 'home') {
-    const nice = new Date(centralToday() + 'T00:00:00')
-      .toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
+    const greet = mobGreeting();
+    const dateSub = new Date(centralToday() + 'T00:00:00')
+      .toLocaleDateString('en-US', { day: 'numeric', month: 'long' });
     let R = null; try { R = payRunway(); } catch (e) { console.warn('runway', e); }
     let perDay = 0;
     try { perDay = payCardStates().reduce((s, x) => s + x.moInterest, 0) * 12 / 365; } catch (e) {}
@@ -12429,12 +12489,9 @@ function renderMobileView() {
         <div class="mob-summary-card">
           <div style="font-size:.75rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Next 7 days</div>
           ${ev.length ? ev.map(e => `
-            <div class="mob-bill-row" style="padding:7px 0">
-              <div style="font-size:.85rem;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.label)}</div>
-              <div style="text-align:right;white-space:nowrap">
-                <span style="font-size:.85rem;font-weight:700;color:${e.inflow ? 'var(--ok)' : 'var(--text2)'}">${e.inflow ? '+' : '−'}${fmtC(e.amount)}</span>
-                <div style="font-size:.7rem;color:var(--text3)">${fmtDate(e.date)}</div>
-              </div>
+            <div class="mob-row1">
+              <div class="mob-row1-l"${e.inflow ? ' style="color:var(--ok)"' : ''}>${esc(e.label)}</div>
+              <div class="mob-row1-r"><span class="mob-row1-d">${mobShortDate(e.date)}</span><span style="font-weight:700;color:${e.inflow ? 'var(--ok)' : 'var(--text2)'}">${e.inflow ? '+' : '−'}${mobWhole(e.amount)}</span></div>
             </div>`).join('')
           : '<div style="font-size:.82rem;color:var(--text3);padding:6px 0">Nothing scheduled this week</div>'}
         </div>`;
@@ -12442,16 +12499,16 @@ function renderMobileView() {
 
     const needs = mobNeedsYou(month);
     const needRow = x => {
-      if (x.kind === 'card') return `<div class="mob-bill-row" style="padding:7px 0">
-        <div style="font-size:.85rem;color:var(--text)"><b>${esc(x.name)}</b> <span style="color:${x.bad ? 'var(--danger)' : 'var(--text3)'};font-size:.78rem">${x.when}</span></div>
-        <span class="mob-chip" style="font-size:.66rem;font-weight:700;padding:2px 8px;border-radius:99px;background:${x.ok ? 'var(--ok-bg)' : 'var(--danger-bg)'};color:${x.ok ? 'var(--ok)' : 'var(--danger)'}">${x.ok ? 'min met' : 'min due'}</span>
+      if (x.kind === 'card') return `<div class="mob-row1">
+        <div class="mob-row1-l"><b>${esc(x.name)}</b> <span style="color:${x.bad ? 'var(--danger)' : 'var(--text3)'}">${x.when}</span></div>
+        <span class="mob-row1-r" style="font-size:.66rem;font-weight:700;padding:3px 9px;border-radius:99px;background:${x.ok ? 'var(--ok-bg)' : 'var(--danger-bg)'};color:${x.ok ? 'var(--ok)' : 'var(--danger)'}">${x.ok ? 'min met' : 'min due'}</span>
       </div>`;
-      if (x.kind === 'over') return `<div class="mob-bill-row" style="padding:7px 0">
-        <div style="font-size:.85rem;color:var(--text)">${esc(x.name)} over budget</div>
-        <span style="font-size:.85rem;font-weight:700;color:var(--danger)">+${fmtC(x.by)}</span></div>`;
-      return `<div class="mob-bill-row" style="padding:7px 0">
-        <div style="font-size:.85rem;color:var(--text)">${esc(x.name)} at ${x.pct}% of limit</div>
-        <span style="font-size:.8rem;color:var(--text3)">${fmtC(x.bal)}</span></div>`;
+      if (x.kind === 'over') return `<div class="mob-row1">
+        <div class="mob-row1-l">${esc(x.name)} over budget</div>
+        <span class="mob-row1-r" style="font-weight:700;color:var(--danger)">+${mobWhole(x.by)}</span></div>`;
+      return `<div class="mob-row1">
+        <div class="mob-row1-l">${esc(x.name)} at ${x.pct}% of limit</div>
+        <span class="mob-row1-r" style="color:var(--text3)">${mobWhole(x.bal)}</span></div>`;
     };
     const shown = needs.slice(0, UI.mobHomeAll ? 99 : 4);
     const needsHTML = needs.length ? `
@@ -12466,24 +12523,21 @@ function renderMobileView() {
 
     const safeColor = !R ? 'var(--text3)' : R.safe > 250 ? 'var(--ok)' : R.safe > 0 ? '#d97706' : 'var(--danger)';
     homeHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0 10px">
-        <div><div style="font-size:1.02rem;font-weight:800;color:var(--text)">${esc(nice)}</div>
-          <div style="font-size:.72rem;color:var(--text3)">${esc(ghGetOwner() || 'Accounts Manager')}</div></div>
-        ${perDay > 0 ? `<span style="font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:99px;background:var(--danger-bg);color:var(--danger);white-space:nowrap">${fmtC(perDay)}/day interest</span>` : ''}
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0 12px">
+        <div><div style="font-size:1.15rem;font-weight:800;color:var(--text);letter-spacing:-.01em">${esc(greet)}</div>
+          <div style="font-size:.76rem;color:var(--text3);margin-top:1px">${esc(dateSub)}${ghGetOwner() ? ' · ' + esc(ghGetOwner()) : ''}</div></div>
+        ${perDay > 0 ? `<span style="font-size:.68rem;font-weight:700;padding:4px 10px;border-radius:99px;background:var(--danger-bg);color:var(--danger);white-space:nowrap">${mobWhole(perDay)}/day interest</span>` : ''}
       </div>
       ${R ? `<div class="mob-summary-card" style="border-color:color-mix(in srgb,var(--primary) 30%,transparent)">
         <div style="font-size:.75rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Safe to spend</div>
         <div style="font-size:2rem;font-weight:800;letter-spacing:-.03em;color:${safeColor};line-height:1.1">${fmtCurrency(R.safe)}</div>
-        <div style="font-size:.75rem;color:var(--text3);margin-top:2px">${fmtC(R.cash)} in ${esc(R.bank ? R.bank.name : 'the bank')} · dips to ${fmtC(R.trough)} on ${fmtDate(R.troughDate)}</div>
+        <div style="font-size:.75rem;color:var(--text3);margin-top:2px">${fmtC(R.cash)} in ${esc(R.bank ? R.bank.name : 'the bank')} · dips to ${fmtC(R.trough)} on ${mobShortDate(R.troughDate)}</div>
       </div>` : ''}
       ${sinceHTML}
       ${weekHTML}
-      ${needsHTML}
-      <div style="display:flex;gap:8px;margin-top:2px">
-        <button onclick="BA.setMobileTab('budget')" style="flex:1;padding:11px;min-height:44px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text2);font-size:.82rem;font-weight:700;cursor:pointer">Budget</button>
-        <button onclick="BA.setMobileTab('cards')" style="flex:1;padding:11px;min-height:44px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text2);font-size:.82rem;font-weight:700;cursor:pointer">Cards</button>
-        <button onclick="BA.setMobileTab('transactions')" style="flex:1;padding:11px;min-height:44px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text2);font-size:.82rem;font-weight:700;cursor:pointer">All</button>
-      </div>`;
+      ${needsHTML}`;
+      // The Budget / Cards / All button row that used to sit here is gone: the
+      // bottom tab bar is those same three destinations, one thumb-length away.
     mobMarkSeen();
   }
 
@@ -12851,7 +12905,6 @@ function renderMobileView() {
 
   wrap.innerHTML = `
     ${monthNav}
-    ${tabBar}
     <div class="mob-section">
       ${tab === 'home'         ? homeHTML : ''}
       ${tab === 'budget'       ? budgetHTML : ''}
@@ -12860,19 +12913,18 @@ function renderMobileView() {
       ${tab === 'accounts'     ? accountsHTML : ''}
     </div>
     ${tab === 'budget' && !UI.mobileDrillCat ? potsHTML : ''}
-    <div style="height:calc(80px + env(safe-area-inset-bottom))"></div>
+    <div style="height:calc(96px + env(safe-area-inset-bottom))"></div>
     ${!UI.mobileDrillCat ? `<button class="mob-fab" onclick="BA.mobileAddTxn()" title="Add transaction" style="font-size:1.8rem;font-weight:300">+</button>` : ''}
+    ${tabBar}
   `;
 
   // ── Sticky offsets, measured rather than hardcoded ──────────────────────
-  // The tab bar has to sit exactly below the app header + month nav. Those
-  // heights shift with safe-area insets, larger touch targets and the user's
-  // text-size setting, so measure instead of trusting the old 87px constant.
+  // Only the month nav sticks now — the tab bar is fixed to the bottom. Header
+  // height shifts with safe-area insets and the user's text-size setting, so
+  // measure it instead of trusting the old 40px constant.
   const _hdrH  = document.querySelector('.hdr')?.offsetHeight || 40;
   const _mHdr  = wrap.querySelector('.mob-hdr');
-  const _tabs  = wrap.querySelector('.mob-tabs');
   if (_mHdr) _mHdr.style.top = _hdrH + 'px';
-  if (_tabs) _tabs.style.top = (_hdrH + (_mHdr ? _mHdr.offsetHeight : 0)) + 'px';
 
   // ── Restore scroll ──────────────────────────────────────────────────────
   const _t = _mobScrollTarget;
