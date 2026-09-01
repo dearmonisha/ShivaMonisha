@@ -4639,7 +4639,7 @@ function renderTreemap() {
     const grps = D.budget.groups || [];
     const cats = D.budget.categories || [];
     grps.forEach((g, gi) => {
-      const v = cats.filter(c => c.groupId === g.id).reduce((s, c) => s + budgetGetCatActuals(c.id, month), 0);
+      const v = cats.filter(c => c.groupId === g.id).reduce((s, c) => s + budgetGetCatSpend(c.id, month), 0);
       if (v > 0.01) nodes.push({ id: g.id, name: g.name, value: v, ci: gi % COLORS.length, nextLevel: 1 });
     });
     crumbs = [{ label: 'All spending' }];
@@ -4647,7 +4647,7 @@ function renderTreemap() {
     const grp = (D.budget.groups || []).find(g => g.id === selGroup);
     const gi  = (D.budget.groups || []).findIndex(g => g.id === selGroup);
     (D.budget.categories || []).filter(c => c.groupId === selGroup).forEach(c => {
-      const v = budgetGetCatActuals(c.id, month);
+      const v = budgetGetCatSpend(c.id, month);
       if (v > 0.01) nodes.push({ id: c.id, name: c.name, value: v, ci: gi % COLORS.length, nextLevel: 2 });
     });
     crumbs = [
@@ -7042,6 +7042,17 @@ function budgetGetCatActuals(catId, month) {
   const r = (D.budget.actualTotals || []).find(a => a.categoryId===catId && a.month===month);
   return r ? parseFloat(r.amount)||0 : 0;
 }
+// The REPORTING figure: everything spent on this category, pre-funded included.
+// Category Trends and Spending Breakdown use this so an HSA-paid bill still
+// shows up as the cost of care; budget comparisons use budgetGetCatActuals().
+function budgetGetCatSpend(catId, month) {
+  const v = _txnActualsFull[catId + '::' + month];
+  if (v !== undefined && Math.abs(v) > 0.001) return v;
+  return budgetGetCatActuals(catId, month);
+}
+function budgetGetCatPreFunded(catId, month) {
+  return +(budgetGetCatSpend(catId, month) - budgetGetCatActuals(catId, month)).toFixed(2);
+}
 function budgetGetCatActualsHasTxn(catId, month) {
   return !!(D.budget.txnActuals || []).find(a => a.categoryId===catId && a.month===month && (parseFloat(a.amount)||0) > 0);
 }
@@ -7645,6 +7656,11 @@ function renderBudgetTable(month) {
       // isOver: half-cent epsilon prevents -0.00 / Cover-button ghost after an exact Cover
       // Reimbursable and tracking-only cats never show as "over"
       const isOver  = !isReimbursable && !isTracking && spent - Math.max(0, budget) > 0.005;
+      // A refund can push a month's actual NEGATIVE — most often now that
+      // pre-funded spend is excluded, when the care was paid from an HSA but the
+      // refund landed in a cash account. `spent > 0` treated that as "no data"
+      // and offered "click to enter", hiding a real figure behind an edit box.
+      const _hasSpend = Math.abs(spent) > 0.005;
       const isFull  = !isOver && rawPct >= 99.5 && budget > 0;
       const bar     = isReimbursable ? 'var(--info)' : isTracking ? 'var(--text3)' : isOver ? 'var(--danger)' : isFull ? 'var(--info)' : rawPct >= 80 ? 'var(--warn)' : 'var(--ok)';
       // Progress bar fill: striped pattern when over budget, solid otherwise
@@ -7720,9 +7736,10 @@ function renderBudgetTable(month) {
             ${adjOut > 0 ? `<span style="font-size:.65rem;color:var(--danger);display:block;margin-top:1px" title="Budget moved out to other categories">↕ −${fmtC(adjOut)}</span>` : ''}
           </td>
           <td class="btable-num ${spent-budget>0.005?'btable-over':''}">
-            <span class="${spent>0?'btable-drilldown':'btable-edit'}" onclick="event.stopPropagation();${spent>0?`BA.showActualDrillDown('${cat.id}','${month}')`:`BA.startBudgetEdit(this,'actual','${cat.id}','${month}')`}" style="${spent===0?'color:var(--text3);cursor:text':'cursor:pointer'}" title="${budgetGetCatActualsHasTxn(cat.id,month)?'Click to see transactions':'Click to enter actual'}">
-              ${budgetGetCatActualsHasTxn(cat.id,month)?'<span style="font-size:.65rem;vertical-align:middle;margin-right:3px" title="Sourced from Transactions">💳</span>':''}${spent>0?fmtC(spent):'— click to enter'}
-            </span>
+            <span class="${_hasSpend?'btable-drilldown':'btable-edit'}" onclick="event.stopPropagation();${_hasSpend?`BA.showActualDrillDown('${cat.id}','${month}')`:`BA.startBudgetEdit(this,'actual','${cat.id}','${month}')`}" style="${_hasSpend?'cursor:pointer':'color:var(--text3);cursor:text'}" title="${budgetGetCatActualsHasTxn(cat.id,month)?'Click to see transactions':'Click to enter actual'}">
+              ${budgetGetCatActualsHasTxn(cat.id,month)?'<span style="font-size:.65rem;vertical-align:middle;margin-right:3px" title="Sourced from Transactions">💳</span>':''}${_hasSpend?(spent<0?'−'+fmtC(Math.abs(spent)):fmtC(spent)):'— click to enter'}
+            </span>${(()=>{const _pf=budgetGetCatPreFunded(cat.id,month);
+              return _pf>0.005?`<div style="font-size:.63rem;color:var(--info);margin-top:1px;white-space:nowrap" title="Paid from an account flagged pre-funded (e.g. an HSA). Counted in Category Trends and the statements, but never against this budget.">+${fmtC(_pf)} pre-funded</div>`:'';})()}
           </td>
           <td class="btable-num ${(!isTracking&&remain<0)?'btable-over':''}">${isTracking?'—':(budget>0||spent>0)?fmtC(remain):'—'}</td>
           <td class="btable-bar">${!isTracking&&(budget>0||spent>0)?`
@@ -12478,9 +12495,16 @@ function renderMobileView() {
             : isOver
             ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
             : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
-          const subLabel = isTracking
+          const _pfAmt  = budgetGetCatPreFunded(cat.id, month);
+          const _pfNote = _pfAmt > 0.005 ? ` · +${fmtC(_pfAmt)} pre-funded` : '';
+          // Out-of-pocket can go negative when a refund lands in a cash account
+          // for care originally paid from the pre-funded one — say it plainly
+          // rather than printing "$-15.96 spent".
+          const subLabel = (isTracking
             ? `${fmtC(spent)} tracked (no budget target)`
-            : `${fmtC(spent)} spent of ${fmtC(budget)} planned`;
+            : spent < -0.005
+              ? `${fmtC(Math.abs(spent))} net refund · ${fmtC(budget)} planned`
+              : `${fmtC(spent)} spent of ${fmtC(budget)} planned`) + _pfNote;
           budgetHTML += `
             <div class="mob-cat-card" style="border-color:${borderColor};cursor:pointer" onclick="BA.mobileDrillCat('${cat.id}')">
               <div class="mob-cat-row"><span class="mob-cat-name">${esc(cat.name)}</span>${remainLabel}</div>
@@ -15001,14 +15025,23 @@ function oblAutoGenerateTxns() {
 }
 
 // Recompute D.budget.txnActuals from all transactions
+// Two parallel totals per category+month:
+//   D.budget.txnActuals  — the BUDGETING number; pre-funded spend removed, so
+//                          every budget comparison, over-budget alert and pot
+//                          runway measures only money that leaves cash flow.
+//   _txnActualsFull      — the REPORTING number; everything, so Category
+//                          Trends and Spending Breakdown still show what care
+//                          actually cost. Derived, so it is never persisted.
+let _txnActualsFull = {};
 function recomputeTxnActuals() {
   if (!D.budget.txnActuals) D.budget.txnActuals = [];
   D.budget.txnActuals = [];
-  const groups = {};
+  const groups = {}, full = {};
   (D.transactions || []).forEach(t => {
     if (!t.date) return;
     if (!txnCounts(t)) return; // exclude non-approved
     if (t.isTransfer) return; // transfers are not expenses — skip
+    const _pf = txnIsPreFunded(t);
     const month = t.date.slice(0, 7);
     // ── Split transaction: distribute across each split line's category ──
     if (t.splits && t.splits.length > 0) {
@@ -15019,18 +15052,25 @@ function recomputeTxnActuals() {
       t.splits.forEach(sp => {
         if (!sp.categoryId || sp.categoryId === '__income__') return;
         const key = sp.categoryId + '::' + month;
+        const v = sign * (parseFloat(sp.amount) || 0);
+        full[key] = (full[key] || 0) + v;
+        if (_pf) return;                       // reported, but never budgeted
         if (!groups[key]) groups[key] = { categoryId: sp.categoryId, month, amount: 0 };
-        groups[key].amount += sign * (parseFloat(sp.amount) || 0);
+        groups[key].amount += v;
       });
       return; // don't also process the top-level categoryId
     }
     // ── Normal transaction ────────────────────────────────────────────────
     if (!t.categoryId || t.categoryId === '__income__' || t.categoryId === '__family_deposits__' || t.categoryId === '__pot_withdrawal__') return;
     const key = t.categoryId + '::' + month;
-    if (!groups[key]) groups[key] = { categoryId: t.categoryId, month, amount: 0 };
     // Net expense = debit (spending) minus credit (refund/return)
-    groups[key].amount += (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+    const v = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+    full[key] = (full[key] || 0) + v;
+    if (_pf) return;                           // reported, but never budgeted
+    if (!groups[key]) groups[key] = { categoryId: t.categoryId, month, amount: 0 };
+    groups[key].amount += v;
   });
+  _txnActualsFull = full;
   Object.values(groups).forEach(g => {
     if (Math.abs(g.amount) > 0.001) {
       D.budget.txnActuals.push({ id: uid(), month: g.month, categoryId: g.categoryId, amount: g.amount });
@@ -15498,6 +15538,22 @@ function txnIsFuture(t) {
 // must not touch a balance, a budget actual or Safe to Spend: payRunway()
 // already models scheduled outflows from templates and card cycles, so counting
 // a future row here would subtract the same payment twice.
+// ── Pre-funded accounts ────────────────────────────────────────────────────
+// An account whose money is already earmarked and replenished outside the
+// household cash flow — an HSA fed by payroll, an FSA, a 529. Spending from
+// one is real spending and stays in every report, but it must not compete
+// with a monthly cash budget: charging an HSA payment against a $125/mo
+// Medical line makes the budget read as permanently blown and the Medical
+// savings pot look unfundable, when neither is a real cash problem.
+let _preFundedIds = null, _preFundedVer = -1;
+function preFundedIdSet() {
+  if (_preFundedIds && _preFundedVer === _txnDataVersion) return _preFundedIds;
+  _preFundedIds = new Set((D.txnAccounts || []).filter(a => a.preFunded).map(a => a.id));
+  _preFundedVer = _txnDataVersion;
+  return _preFundedIds;
+}
+function txnIsPreFunded(t) { return !!t && preFundedIdSet().has(t.accountId); }
+
 function txnCounts(t) {
   if (!t) return false;
   if (t.status === 'pending' || t.status === 'rejected') return false;
@@ -16643,6 +16699,13 @@ function txnEditAccountModal(editId) {
       </div>
       <div class="fg" style="grid-column:1/-1">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
+          <input type="checkbox" id="tacct-prefunded" ${a?.preFunded ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
+          Pre-funded — spending here doesn't count against budgets
+        </label>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">For money that is already earmarked and replenished outside your household cash flow — an HSA fed by payroll, an FSA, a 529. Spending stays in Category Trends, Spending Breakdown and every statement, so you still see what it really cost; it simply stops competing with the monthly budget and the savings pot for that category, which are sized for out-of-pocket cash.</div>
+      </div>
+      <div class="fg" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
           <input type="checkbox" id="tacct-status-closed" ${a?.status==='closed' ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
           Closed account
         </label>
@@ -17354,7 +17417,7 @@ function renderCatTrends() {
   const selCat      = cats.find(c => c.id === UI.ctSelCat);
   const selGroup    = selCat ? groups.find(g => g.id === selCat.groupId) : null;
 
-  const trendActuals = trendMonths.map(m => budgetGetCatActuals(UI.ctSelCat, m));
+  const trendActuals = trendMonths.map(m => budgetGetCatSpend(UI.ctSelCat, m));
   const trendBudgets = trendMonths.map(m => budgetGetAdjustedPlan(UI.ctSelCat, m));
 
   // 3-month rolling average
@@ -17371,7 +17434,7 @@ function renderCatTrends() {
   const groupedRows = groups.map(g => {
     const gCats = cats.filter(c => c.groupId === g.id);
     const rows  = gCats.map(c => {
-      const actuals = tblMonths.map(m => budgetGetCatActuals(c.id, m));
+      const actuals = tblMonths.map(m => budgetGetCatSpend(c.id, m));
       const budgets = tblMonths.map(m => budgetGetAdjustedPlan(c.id, m));
       const ytdAct  = actuals.reduce((s,v) => s+v, 0);
       const ytdBud  = budgets.reduce((s,v) => s+v, 0);
@@ -19516,6 +19579,7 @@ Object.assign(BA, {
       ccCardId: existing?.ccCardId || null,  // preserve link if editing a CC-sourced account
       showInCCRepay: id('tacct-ccrepay')?.checked || false,
       excludeFromNetWorth: id('tacct-exclude-nw')?.checked || false,
+      preFunded: id('tacct-prefunded')?.checked || false,
       cashflowClass: existing?.cashflowClass || 'neutral',
       interestRate: id('tacct-rate')?.value !== '' ? parseFloat(id('tacct-rate').value) : null,
       status: id('tacct-status-closed')?.checked ? 'closed' : 'active',
@@ -19527,6 +19591,9 @@ Object.assign(BA, {
       D.txnAccounts.push(obj);
       if (!UI.txnAccount) UI.txnAccount = obj.id;
     }
+    // The pre-funded flag changes which spending counts against budgets, so the
+    // actuals have to be rebuilt before anything re-renders off them.
+    recomputeTxnActuals();
     dirty(); closeModal(); renderTransactions();
   },
   txnDeleteAccount(acctId) {
