@@ -173,6 +173,28 @@ body{font-family:'Aptos','Calibri',-apple-system,BlinkMacSystemFont,'Segoe UI',s
 .txn-pending-chev{font-size:9px;transition:transform .15s;display:inline-block;margin-left:2px}
 .txn-pending-chev.col{transform:rotate(-90deg)}
 .txn-pending-hdr .badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:9px;background:#f59e0b;color:#fff;font-size:.68rem;padding:0 5px}
+/* ── Dated-ahead rows ───────────────────────────────────────
+   A future date is neither good nor bad, so it must not borrow the red/green
+   already spoken for by over-budget and inflow. --info is the one free
+   semantic slot. Recede the chrome, never the amount: these are exactly the
+   rows you are looking for, so the figure stays full strength. */
+tr.txn-future{background:color-mix(in srgb,var(--info) 4%,transparent)}
+tr.txn-future:hover{background:color-mix(in srgb,var(--info) 8%,transparent)}
+tr.txn-future>td:first-child{box-shadow:inset 2px 0 0 0 var(--info)}
+tr.txn-future>td:nth-child(2){font-style:italic}
+.txn-future-pill{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:99px;
+  font-size:.62rem;font-weight:700;font-style:normal;white-space:nowrap;
+  background:color-mix(in srgb,var(--info) 13%,transparent);color:var(--info);
+  border:1px solid color-mix(in srgb,var(--info) 30%,transparent)}
+/* The Today line: the one row that answers "what is real right now?" */
+tr.txn-today-row>td{padding:0!important;border:none!important;background:none!important}
+.txn-today-line{display:flex;align-items:center;gap:10px;padding:3px 12px;margin:1px 0;
+  background:color-mix(in srgb,var(--primary) 8%,transparent);
+  border-top:1px solid color-mix(in srgb,var(--primary) 35%,transparent);
+  border-bottom:1px solid color-mix(in srgb,var(--primary) 35%,transparent)}
+.txn-today-lbl{font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--primary);white-space:nowrap}
+.txn-today-bal{margin-left:auto;font-family:monospace;font-weight:700;font-size:.8rem;color:var(--primary)}
 .txn-pending-row{display:grid;grid-template-columns:90px 1fr 130px 80px 80px 100px;align-items:center;gap:6px;padding:5px 14px;font-size:.78rem;border-top:1px solid color-mix(in srgb,#f59e0b 15%,transparent)}
 .txn-pending-row:hover{background:color-mix(in srgb,#f59e0b 6%,transparent)}
 .txn-pending-row .pamt{font-family:monospace;font-weight:600;color:var(--danger)}
@@ -761,6 +783,11 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-row1-l{font-size:.87rem;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mob-row1-r{font-size:.85rem;white-space:nowrap;flex-shrink:0}
 .mob-row1-d{font-size:.78rem;color:var(--text3);margin-right:7px}
+.mob-txn-row.mob-fut{box-shadow:inset 2px 0 0 0 var(--info);padding-left:9px;background:color-mix(in srgb,var(--info) 4%,transparent)}
+.mob-txn-row.mob-fut .mob-txn-meta{font-style:italic}
+.mob-fut-pill{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:99px;font-size:.6rem;
+  font-weight:700;vertical-align:1px;background:color-mix(in srgb,var(--info) 14%,transparent);
+  color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent)}
 .mob-txn-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-light)}
 .mob-txn-row:last-child{border-bottom:none}
 .mob-txn-left{flex:1;min-width:0;padding-right:10px}
@@ -4485,7 +4512,7 @@ function generateAIExport(year) {
   const payeeMap = {};
   (D.transactions || []).filter(t =>
     t.date && t.date.slice(0, 7) >= `${year}-01` && t.date.slice(0, 7) <= todayYM &&
-    !t.isTransfer && t.status !== 'pending' && t.status !== 'rejected' && t.categoryId !== '__income__'
+    !t.isTransfer && txnCounts(t) && t.categoryId !== '__income__'
   ).forEach(t => {
     const k = (t.payee || '(no payee)').trim();
     const a = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
@@ -4633,7 +4660,7 @@ function renderTreemap() {
     const gi  = (D.budget.groups || []).findIndex(g => g.id === cat?.groupId);
     const txns = (D.transactions || []).filter(t =>
       t.date && t.date.slice(0, 7) === month && !t.isTransfer &&
-      t.status !== 'pending' && t.status !== 'rejected' &&
+      txnCounts(t) &&
       t.categoryId === selCat
     );
     const pm = {};
@@ -4807,7 +4834,7 @@ function ccCapitalisationRows(txnAcctId, year, card) {
     const ym = `${year}-${String(m).padStart(2, '0')}`;
     const tx = (D.transactions || []).filter(t =>
       t.accountId === txnAcctId && (t.date || '').slice(0, 7) === ym &&
-      (!t.status || t.status === 'approved'));
+      txnCounts(t));
     if (!tx.length) { rows.push({ ym, empty: true, charges: 0, payments: 0, capitalised: 0, interest: 0 }); continue; }
     const nonX     = tx.filter(t => !t.isTransfer);
     const charges  = nonX.reduce((s, t) => s + (+t.debit || 0) - (+t.credit || 0), 0);
@@ -4834,7 +4861,7 @@ function ccTrajectorySeries(scope) {
   const byM = {};
   (D.transactions || []).forEach(t => {
     if (!ids.has(t.accountId)) return;
-    if (t.status === 'pending' || t.status === 'rejected') return;
+    if (!txnCounts(t)) return;
     const m = (t.date || '').slice(0, 7); if (!m) return;
     const v = (+t.debit || 0) - (+t.credit || 0);   // CC: a debit raises what is owed
     const r = byM[m] || (byM[m] = { charges: 0, payments: 0, interest: 0 });
@@ -4888,7 +4915,7 @@ function ccWhatIfScenarios(year) {
     const acct = (D.txnAccounts || []).find(a => a.ccCardId === c.id && a.status !== 'closed');
     if (!acct) return;
     const ts = (D.transactions || [])
-      .filter(t => t.accountId === acct.id && t.status !== 'pending' && t.status !== 'rejected')
+      .filter(t => t.accountId === acct.id && txnCounts(t))
       .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.id || '').localeCompare(b.id || ''));
     let bal = +acct.openingBalance || 0, opening = null;
     const m = {}; months.forEach(k => m[k] = { ch: 0, pay: 0 });
@@ -4975,13 +5002,13 @@ function ccCashReality(year, cardPaid) {
     const a = am.find(x => x.id === aid); if (!a) return tot;
     let b = +a.openingBalance || 0;
     (D.transactions || [])
-      .filter(t => t.accountId === aid && t.status !== 'pending' && t.status !== 'rejected' && (t.date || '') <= when)
+      .filter(t => t.accountId === aid && txnCounts(t) && (t.date || '') <= when)
       .forEach(t => { b += (+t.credit || 0) - (+t.debit || 0); });
     return tot + b;
   }, 0);
   const income = (D.transactions || [])
     .filter(t => BANK.includes(t.accountId) && t.categoryId === '__income__' &&
-                 (t.date || '').startsWith(String(year)) && t.status !== 'pending' && t.status !== 'rejected')
+                 (t.date || '').startsWith(String(year)) && txnCounts(t))
     .reduce((s, t) => s + (+t.credit || 0), 0);
   const b0 = balAt(BANK, before), b1 = balAt(BANK, upto);
   const p0 = balAt(POTS, before), p1 = balAt(POTS, upto);
@@ -4998,7 +5025,7 @@ function ccCardActiveYears(txnAcctId) {
   const ys = new Set();
   (D.transactions || []).forEach(t => {
     if (t.accountId !== txnAcctId) return;
-    if (t.status === 'pending' || t.status === 'rejected') return;
+    if (!txnCounts(t)) return;
     const y = (t.date || '').slice(0, 4);
     if (y) ys.add(y);
   });
@@ -6556,7 +6583,7 @@ function ccGetAutoData(cardId, month) {
       .filter(t =>
         t.accountId   === card.linkedTxnAccountId &&
         t.categoryId  === _resolvedIntCatId &&
-        (!t.status || t.status === 'approved') &&
+        txnCounts(t) &&
         (t.date||'').slice(0, 7) === month
       )
       .reduce((s, t) => s + (parseFloat(t.debit)||0), 0);
@@ -6853,7 +6880,7 @@ function txnGetIncomeForMonth(month) {
     .filter(t =>
       t.date && t.date.slice(0, 7) === month &&
       !t.isTransfer &&
-      t.status !== 'pending' && t.status !== 'rejected' &&
+      txnCounts(t) &&
       t.categoryId === '__income__'
     )
     .reduce((s, t) => s + (parseFloat(t.credit) || 0) - (parseFloat(t.debit) || 0), 0);
@@ -7110,14 +7137,14 @@ function renderBudgetKpis(month) {
   // Income transaction count for sub-label
   const incomeTxnCount = (D.transactions || []).filter(t =>
     t.date && t.date.slice(0,7) === month &&
-    !t.isTransfer && t.status !== 'pending' && t.status !== 'rejected' &&
+    !t.isTransfer && txnCounts(t) &&
     t.categoryId === '__income__'
   ).length;
 
   // Months that have any budget or transaction data (for cumulative)
   const txnMonths = [...new Set(
     (D.transactions || [])
-      .filter(t => t.date && !t.isTransfer && t.status !== 'pending' && t.status !== 'rejected' && t.categoryId === '__income__')
+      .filter(t => t.date && !t.isTransfer && txnCounts(t) && t.categoryId === '__income__')
       .map(t => t.date.slice(0,7))
   )];
   const monthSet = new Set([
@@ -8156,7 +8183,7 @@ function payCardStates() {
       if (stmtDate) {
         paid = (D.transactions || [])
           .filter(t => t.accountId === acct.id && t.isTransfer && (+t.credit || 0) > 0 &&
-                       (!t.status || t.status === 'approved') &&
+                       txnCounts(t) &&
                        t.date >= stmtDate && (!dueDate || t.date <= dueDate))
           .reduce((s, t) => s + (+t.credit || 0), 0);
       }
@@ -8240,7 +8267,7 @@ function payIncomeEvents(from, to, bankId) {
   const out = [];
   const deposits = (D.transactions || []).filter(t =>
     t.accountId === bankId && t.categoryId === '__income__' &&
-    (+t.credit || 0) > 100 && (!t.status || t.status === 'approved'));
+    (+t.credit || 0) > 100 && txnCounts(t));
 
   (D.budget?.incomeSchedules || []).filter(s => s.enabled !== false).forEach(s => {
     const hist = (s.payHistory || []).slice().sort((a, b) => (a.effectiveDate||'').localeCompare(b.effectiveDate||''));
@@ -8874,7 +8901,7 @@ function payTrajectory(months) {
   const rows = [];
   for (let i = n; i >= 1; i--) {
     const m = shiftYM(cur, -i);
-    const tx = (D.transactions || []).filter(t => ccIds.has(t.accountId) && (!t.status || t.status === 'approved') && (t.date || '').startsWith(m));
+    const tx = (D.transactions || []).filter(t => ccIds.has(t.accountId) && txnCounts(t) && (t.date || '').startsWith(m));
     // Interest posts as an ordinary non-transfer debit ON the card, so it is already
     // inside the raw charge total. Split it out rather than subtracting it twice.
     const nonXfer  = tx.filter(t => !t.isTransfer);
@@ -9700,7 +9727,7 @@ function hcCatByName(name) {
 function hcSpendByMonth(catId, months) {
   const out = {};
   months.forEach(m => { out[m] = 0; });
-  const ok = t => (!t.status || t.status === 'approved');
+  const ok = t => txnCounts(t);
   (D.transactions || []).forEach(t => {
     if (!ok(t) || t.isTransfer) return;
     const m = (t.date || '').slice(0, 7);
@@ -9729,7 +9756,7 @@ function hcPrincipalPaid(months) {
   if (!h.loanAccountId) return 0;
   const set = new Set(months);
   return (D.transactions || [])
-    .filter(t => t.accountId === h.loanAccountId && (!t.status || t.status === 'approved') &&
+    .filter(t => t.accountId === h.loanAccountId && txnCounts(t) &&
                  set.has((t.date || '').slice(0, 7)))
     .reduce((s, t) => s + (parseFloat(t.credit) || 0) - (parseFloat(t.debit) || 0), 0);
 }
@@ -9753,7 +9780,7 @@ function hcCompute() {
   const trueCost  = gross - principal;
 
   // income over the same window, for the share-of-income figure
-  const ok = t => (!t.status || t.status === 'approved');
+  const ok = t => txnCounts(t);
   const set = new Set(months);
   const income = (D.transactions || [])
     .filter(t => ok(t) && t.categoryId === '__income__' && set.has((t.date || '').slice(0, 7)))
@@ -10075,7 +10102,7 @@ function computeCCChargesForMonth(cardAccountId, month) {
   return (D.transactions || []).filter(t => {
     if (t.accountId !== cardAccountId) return false;
     if (!t.date || t.date.slice(0, 7) !== month) return false;
-    if (t.status === 'pending' || t.status === 'rejected') return false;
+    if (!txnCounts(t)) return false;
     if (t.isTransfer) return false;
     // Split: count if at least one split line has a categoryId
     if (t.splits && t.splits.length > 0) {
@@ -10099,7 +10126,7 @@ function computeCCReimbChargesForMonth(cardAccountId, month) {
   return (D.transactions || []).filter(t => {
     if (t.accountId !== cardAccountId) return false;
     if (!t.date || t.date.slice(0, 7) !== month) return false;
-    if (t.status === 'pending' || t.status === 'rejected') return false;
+    if (!txnCounts(t)) return false;
     if (t.isTransfer) return false;
     if (t.splits && t.splits.length > 0) return t.splits.some(s => reimbIds.has(s.categoryId));
     return reimbIds.has(t.categoryId);
@@ -10120,7 +10147,7 @@ function computeReimbChargesAllTime() {
   const reimbIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
   if (!reimbIds.size) return 0;
   return (D.transactions || []).filter(t => {
-    if (t.status === 'pending' || t.status === 'rejected') return false;
+    if (!txnCounts(t)) return false;
     if (t.isTransfer) return false;
     if (t.splits && t.splits.length > 0) return t.splits.some(s => reimbIds.has(s.categoryId));
     return reimbIds.has(t.categoryId);
@@ -10156,7 +10183,7 @@ function renderCCRepaySection(month) {
     const tbdTxns = (D.transactions || []).filter(t =>
       t.accountId === card.id &&
       t.date && t.date.slice(0, 7) === month &&
-      t.status !== 'pending' && t.status !== 'rejected' &&
+      txnCounts(t) &&
       !t.isTransfer &&
       (t.notes || '').toUpperCase().includes('TBD')
     );
@@ -10166,7 +10193,7 @@ function renderCCRepaySection(month) {
     const cardTxns = (D.transactions || []).filter(t =>
       t.accountId === card.id &&
       t.date && t.date.slice(0, 7) === month &&
-      t.status !== 'pending' && t.status !== 'rejected' &&
+      txnCounts(t) &&
       !t.isTransfer
     );
     const touchedCatIds = new Set();
@@ -12708,9 +12735,16 @@ function renderMobileView() {
           ? [fmtDate(t.date), cat].filter(Boolean)
           : [fmtDate(t.date), acct?.name, cat].filter(Boolean);
         const flag = t.isTransfer ? '⇄ ' : (t.splits && t.splits.length) ? '⑂ ' : '';
-        return `<div class="mob-txn-row tappable" onclick="BA.mobileEditTxn('${t.id}')">
+        // Dated ahead: same --info marker as the desktop register, shrunk to a
+        // pill on the meta line. The amount stays full strength.
+        const _fut  = txnIsFuture(t);
+        const _days = _fut ? Math.max(0, payDiffDays(todayISO(), t.date || '')) : 0;
+        const _pill = _fut
+          ? `<span class="mob-fut-pill">${_days === 1 ? 'tomorrow' : 'in ' + _days + 'd'}</span>`
+          : '';
+        return `<div class="mob-txn-row tappable${_fut ? ' mob-fut' : ''}" onclick="BA.mobileEditTxn('${t.id}')">
           <div class="mob-txn-left">
-            <div class="mob-txn-payee">${flag}${esc(t.payee || '(no payee)')}</div>
+            <div class="mob-txn-payee">${flag}${esc(t.payee || '(no payee)')}${_pill}</div>
             <div class="mob-txn-meta">${esc(metaParts.join(' · '))}</div>
           </div>
           <div class="mob-txn-amt" style="color:${color}">${isNeg ? '+' : ''}${fmtC(Math.abs(amt))}</div>
@@ -13727,7 +13761,7 @@ const BA = {
     // Gather all approved transactions that contribute to this category's actual
     const txns = (D.transactions||[]).filter(t => {
       if (!t.date || t.date.slice(0,7) !== month) return false;
-      if (t.status === 'pending' || t.status === 'rejected') return false;
+      if (!txnCounts(t)) return false;
       if (t.isTransfer) return false;
       // Split transactions: check if any split line matches
       if (t.splits && t.splits.length > 0) {
@@ -14745,15 +14779,19 @@ function txnRunningBalances(acct, txns) {
 // on every render — with 14k+ transactions across 50 accounts, that was re-sorting and
 // re-walking the full ledger 50x per render. Caching per account and invalidating only
 // when the data actually changes fixes the sluggishness without touching call sites.
-let _txnBalCache = { version: -1, data: new Map() };
+// The day is part of the key now: txnCounts() excludes dated-ahead rows, so a
+// balance cached before midnight would keep hiding a row that has since become
+// today's. An app left open overnight would otherwise show a stale balance.
+let _txnBalCache = { version: -1, day: '', data: new Map() };
 
 function txnCurrentBalance(acct) {
-  if (_txnBalCache.version !== _txnDataVersion) {
-    _txnBalCache = { version: _txnDataVersion, data: new Map() };
+  const _day = todayISO();
+  if (_txnBalCache.version !== _txnDataVersion || _txnBalCache.day !== _day) {
+    _txnBalCache = { version: _txnDataVersion, day: _day, data: new Map() };
   }
   if (_txnBalCache.data.has(acct.id)) return _txnBalCache.data.get(acct.id);
   // Exclude pending and rejected transactions from balance calculation
-  const txns = (D.transactions||[]).filter(t => t.accountId === acct.id && (!t.status || t.status === 'approved'));
+  const txns = (D.transactions||[]).filter(t => t.accountId === acct.id && txnCounts(t));
   const rows  = txnRunningBalances(acct, txns);
   const bal = rows.length ? rows[rows.length - 1]._bal : (parseFloat(acct.openingBalance) || 0);
   _txnBalCache.data.set(acct.id, bal);
@@ -14969,7 +15007,7 @@ function recomputeTxnActuals() {
   const groups = {};
   (D.transactions || []).forEach(t => {
     if (!t.date) return;
-    if (t.status === 'pending' || t.status === 'rejected') return; // exclude non-approved
+    if (!txnCounts(t)) return; // exclude non-approved
     if (t.isTransfer) return; // transfers are not expenses — skip
     const month = t.date.slice(0, 7);
     // ── Split transaction: distribute across each split line's category ──
@@ -15366,8 +15404,14 @@ function renderTxnKpis() {
     const bankBal  = accounts.filter(a => LIQUID_TYPES.includes(a.type)).reduce((s,a) => s + txnCurrentBalance(a), 0);
     const ccOwed   = accounts.filter(a => a.type === 'Credit Card').reduce((s,a) => s + txnCurrentBalance(a), 0);
     const loanBal  = accounts.filter(a => a.type === 'Loans').reduce((s,a) => s + txnCurrentBalance(a), 0);
-    const unclr    = allTxns.filter(t => (!t.status || t.status === 'approved') && !t.cleared).length;
-    const moDebits = allTxns.filter(t => (!t.status||t.status==='approved') && !t.isTransfer && (t.date||'').startsWith(curYM)).reduce((s,t)=>s+(parseFloat(t.debit)||0),0);
+    const unclr    = allTxns.filter(t => txnCounts(t) && !t.cleared).length;
+    const moDebits = allTxns.filter(t => txnCounts(t) && !t.isTransfer && (t.date||'').startsWith(curYM)).reduce((s,t)=>s+(parseFloat(t.debit)||0),0);
+    // Dated-ahead: entered by hand with a date still to come. Counted nowhere
+    // until the day arrives, so the tile says so out loud.
+    const _futList = allTxns.filter(txnIsFuture);
+    const _futN    = _futList.length;
+    const _futAmt  = _futList.reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
+    const futureTile = _futN > 0 ? `<div class="sum-card" style="border-color:var(--info);background:color-mix(in srgb,var(--info) 6%,transparent)"><div class="sum-lbl" style="color:var(--info)">\ud83d\udcc5 Dated Ahead</div><div class="sum-val" style="color:var(--info)">${_futN} item${_futN!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(_futAmt)} scheduled \u00b7 not counted yet</div></div>` : '';
     const pendingTile = totalPending > 0
       ? `<div class="sum-card" style="border-color:#f59e0b;background:color-mix(in srgb,#f59e0b 6%,transparent)"><div class="sum-lbl" style="color:#b45309">⏳ Pending Approval</div><div class="sum-val" style="color:#b45309">${totalPending} item${totalPending!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(pendingAmt)} to review</div></div>`
       : '';
@@ -15380,7 +15424,7 @@ function renderTxnKpis() {
       ${loanTile}
       <div class="sum-card"><div class="sum-lbl">Spent — ${bFmtMonth(curYM)}</div><div class="sum-val mono">${fmtCurrency(moDebits)}</div><div class="sum-sub">across all accounts</div></div>
       <div class="sum-card${unclr>0?' c-warn':''}"><div class="sum-lbl">Uncleared</div><div class="sum-val">${unclr}</div><div class="sum-sub">across all accounts</div></div>
-      ${pendingTile}`;
+      ${futureTile}${pendingTile}`;
     return;
   }
 
@@ -15396,7 +15440,14 @@ function renderTxnKpis() {
   const unclrAmt  = unclrTxns.reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
   const pendingAmt = pendingTxns.reduce((s,t) => s + (parseFloat(t.debit)||0) + (parseFloat(t.credit)||0), 0);
   const isCC   = acct.type === 'Credit Card';
-  const balColor = isCC ? (bal > 0 ? 'var(--danger)' : 'var(--ok)') : (bal >= 0 ? 'var(--ok)' : 'var(--danger)');
+  // NOTE: a `balColor` line sat here referencing an undefined `bal`, so this
+  // whole function threw the moment a single account was selected and the
+  // summary cards never rendered. The value was never used — the header uses
+  // clearedBalColor below — so the dead line is gone rather than repaired.
+  const _futList = committedTxns.filter(txnIsFuture);
+  const _futN    = _futList.length;
+  const _futAmt  = _futList.reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
+  const futureTile = _futN > 0 ? `<div class="sum-card" style="border-color:var(--info);background:color-mix(in srgb,var(--info) 6%,transparent)"><div class="sum-lbl" style="color:var(--info)">\ud83d\udcc5 Dated Ahead</div><div class="sum-val" style="color:var(--info)">${_futN} item${_futN!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(_futAmt)} scheduled \u00b7 not counted yet</div></div>` : '';
   const pendingTile = pendingTxns.length > 0
     ? `<div class="sum-card" style="border-color:#f59e0b;background:color-mix(in srgb,#f59e0b 6%,transparent)"><div class="sum-lbl" style="color:#b45309">⏳ Pending Approval</div><div class="sum-val" style="color:#b45309">${pendingTxns.length} item${pendingTxns.length!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(pendingAmt)} to review</div></div>`
     : '';
@@ -15404,7 +15455,7 @@ function renderTxnKpis() {
   row.innerHTML = `
     <div class="sum-card"><div class="sum-lbl">${isCC?'Cleared Balance Owed':'Cleared Balance'}</div><div class="sum-val mono" style="color:${clearedBalColor}">${fmtCurrency(Math.abs(clearedBalance))}</div><div class="sum-sub">${esc(acct.name)}</div></div>
     <div class="sum-card${unclrAmt>0?' c-warn':''}"><div class="sum-lbl">Uncleared Amount</div><div class="sum-val mono">${fmtCurrency(Math.abs(unclrAmt))}</div><div class="sum-sub">${unclrTxns.length} uncleared transaction${unclrTxns.length!==1?'s':''}</div></div>
-    ${pendingTile}`;
+    ${futureTile}${pendingTile}`;
 }
 
 // Build unique payee → most-recent categoryId map across ALL transactions for autocomplete
@@ -15420,6 +15471,37 @@ function txnPayeeMap() {
 // Returns today's date string (YYYY-MM-DD) in Central Time (America/Chicago)
 function centralToday() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
+}
+
+// ── Dated-ahead rows ───────────────────────────────────────────────────────
+// centralToday() builds a fresh Intl.DateTimeFormat on every call, which is far
+// too slow to run inside a filter over 14k transactions at ~30 call sites.
+// Cache it; the date cannot change inside one render.
+let _todayCache = { at: 0, v: '' };
+function todayISO() {
+  const now = Date.now();
+  if (!_todayCache.v || now - _todayCache.at > 60000) _todayCache = { at: now, v: centralToday() };
+  return _todayCache.v;
+}
+
+// A row Shiva typed into the register with a date ahead of today. Obligation
+// rows are deliberately excluded: those are machine-generated and already have
+// their own gate (status 'pending' → the ⏳ Pending Approval lane), so they must
+// not be caught here as well.
+function txnIsFuture(t) {
+  return !!t && !t.obligationId && (t.date || '') > todayISO();
+}
+
+// "Has this money actually moved?" — the single predicate every money
+// calculation should use. Three things disqualify a row: awaiting approval,
+// rejected, or dated ahead. Dated-ahead rows stay visible in the register but
+// must not touch a balance, a budget actual or Safe to Spend: payRunway()
+// already models scheduled outflows from templates and card cycles, so counting
+// a future row here would subtract the same payment twice.
+function txnCounts(t) {
+  if (!t) return false;
+  if (t.status === 'pending' || t.status === 'rejected') return false;
+  return !txnIsFuture(t);
 }
 
 // Render one inline-edit row (t=null for new row)
@@ -15914,7 +15996,7 @@ function _renderTxnSearchResults(panel, query) {
   const _srDatalist = `<datalist id="txn-payee-list">${_srPayees.map(p => `<option value="${esc(p)}">`).join('')}</datalist>`;
   const allTxns  = (D.transactions||[])
     .filter(t => {
-      if (t.status === 'pending' || t.status === 'rejected') return false;
+      if (!txnCounts(t)) return false;
       const acctName = (acctMap[t.accountId]?.name||'').toLowerCase();
       const catName  = (txnCatLabel(t.categoryId)||'').toLowerCase();
       return (t.payee||'').toLowerCase().includes(query)
@@ -16058,7 +16140,21 @@ function renderTxnRight() {
   );
   const committedTxns = allAcctTxns.filter(t => !t.status || t.status === 'approved');
   // rejected ones silently excluded from both displays
-  const withBal = txnRunningBalances(acct, committedTxns).reverse(); // newest first
+  // ── Dated-ahead rows sit ABOVE the Today line, outside the running balance ──
+  // Shiva's rule: a manually-entered row with a date in the future has not
+  // happened, so it must not move the balance. Walking it into the running
+  // total would make the topmost figure a projection rather than the number
+  // his bank shows. Obligation rows are exempt (txnIsFuture ignores them) —
+  // they have their own ⏳ Pending Approval gate.
+  const _futTxns  = committedTxns.filter(txnIsFuture);
+  const _pastTxns = _futTxns.length ? committedTxns.filter(t => !txnIsFuture(t)) : committedTxns;
+  const _pastBal  = txnRunningBalances(acct, _pastTxns).reverse(); // newest first
+  const _futRows  = _futTxns.slice()
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+    .map(t => Object.assign({}, t, { _bal: null, _future: true }));
+  const withBal   = _futTxns.length ? [..._futRows, ..._pastBal] : _pastBal;
+  // The real balance as of today — stamped on the Today divider.
+  const _todayBal = _pastBal.length ? _pastBal[0]._bal : (parseFloat(acct.openingBalance) || 0);
   const isCC    = acct.type === 'Credit Card';
   const isLoan  = acct.type === 'Loans';
 
@@ -16216,9 +16312,22 @@ function renderTxnRight() {
   const _allCheckedAcct = _visibleIdsAcct.length > 0 && _visibleIdsAcct.every(id => _selSetAcct.has(id));
   const _visIdsJsonAcct = JSON.stringify(_visibleIdsAcct);
 
-  const rows = pageRows.map(t => {
+  // Where the Today line goes: immediately before the first row that has
+  // actually happened. Only drawn on the page that contains that boundary.
+  const _anyFuture = filteredRows.some(t => t._future);
+  const _todayIdx  = _anyFuture ? filteredRows.findIndex(t => !t._future) : -1;
+  const _todayDivider = `
+      <tr class="txn-today-row"><td colspan="11">
+        <div class="txn-today-line">
+          <span class="txn-today-lbl">Today · ${fmtDate(todayISO())}</span>
+          <span class="txn-today-bal">${fmtCurrency(Math.abs(_todayBal))}${_todayBal < 0 && !isCC ? ' OD' : ''}</span>
+        </div>
+      </td></tr>`;
+
+  const rows = pageRows.map((t, _i) => {
+    const _divider = (_todayIdx >= 0 && (_startIdx + _i) === _todayIdx) ? _todayDivider : '';
     // Editing this row inline
-    if (UI.txnEditRow === t.id) return txnInlineRow(t, acct);
+    if (UI.txnEditRow === t.id) return _divider + txnInlineRow(t, acct);
 
     const isSplit    = t.splits && t.splits.length > 0;
     const isTransfer = !!t.isTransfer;
@@ -16265,16 +16374,21 @@ function renderTxnRight() {
       ? `<span style="display:inline-flex;align-items:center;font-size:.62rem;font-weight:700;padding:1px 5px;background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);border-radius:4px;margin-left:5px;white-space:nowrap" title="Reimbursement received — offsets pending balance">♻ Reimb</span>`
       : '';
     const _rowTint = _isReimb ? 'background:color-mix(in srgb,var(--info) 5%,transparent);' : '';
-    return `
-      <tr data-txn-id="${t.id}" ondblclick="BA.txnStartEdit('${t.id}')" style="${_rowTint}${_isHl?'background:color-mix(in srgb,var(--primary) 12%,transparent);outline:2px solid var(--primary);outline-offset:-2px;':_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
+    const _fut     = !!t._future;
+    const _daysOut = _fut ? Math.max(0, payDiffDays(todayISO(), t.date || '')) : 0;
+    const _futPill = _fut
+      ? `<span class="txn-future-pill">${_daysOut === 1 ? 'tomorrow' : 'in ' + _daysOut + ' days'}</span>`
+      : '';
+    return `${_divider}
+      <tr data-txn-id="${t.id}"${_fut?' class="txn-future"':''} ondblclick="BA.txnStartEdit('${t.id}')" style="${_rowTint}${_isHl?'background:color-mix(in srgb,var(--primary) 12%,transparent);outline:2px solid var(--primary);outline-offset:-2px;':_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
         <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
-        <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
+        <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}${_futPill}</td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
         <td>${catCellContent}${_famBadge}${_reimbBadge}${_mobBadge}</td>
         <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;font-size:.75rem;color:var(--text3)" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
         <td class="r">${debitTd}</td>
         <td class="r">${creditTd}</td>
-        <td class="r txn-bal" style="${balColor?'color:'+balColor:''}">${fmtCurrency(Math.abs(t._bal))}${t._bal<0&&!isCC?' OD':''}</td>
+        <td class="r txn-bal" style="${_fut?'color:var(--text3)':(balColor?'color:'+balColor:'')}">${_fut?'—':fmtCurrency(Math.abs(t._bal))+(t._bal<0&&!isCC?' OD':'')}</td>
         <td style="text-align:center">
           <span class="txn-pill-clr ${t.reconciled?'rec':t.cleared?'yes':'no'}" onclick="${t.reconciled?'':'BA.txnToggleCleared(\''+t.id+'\')'}" title="${t.reconciled?'Reconciled (locked)':t.cleared?'Cleared — click to unmark':'Uncleared — click to mark cleared'}" style="${t.reconciled?'cursor:default':''}">${t.reconciled?'R':t.cleared?'✓':'○'}</span>
         </td>
@@ -16640,7 +16754,7 @@ function finCard(label, value, sub, accent) {
 // ── BALANCE SHEET ─────────────────────────────────────────────────────
 function finBalanceAsOf(acct, asOf) {
   const txns = (D.transactions||[]).filter(t =>
-    t.accountId === acct.id && (t.date||'') <= asOf && (!t.status || t.status === 'approved')
+    t.accountId === acct.id && (t.date||'') <= asOf && txnCounts(t)
   );
   const rows = txnRunningBalances(acct, txns);
   return rows.length ? rows[rows.length-1]._bal : (parseFloat(acct.openingBalance)||0);
@@ -16705,7 +16819,7 @@ function renderBalanceSheet(c) {
   const monthlyIncomeFor = (acct) => {
     const txns = (D.transactions||[]).filter(t =>
       t.accountId === acct.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
-      (!t.status || t.status === 'approved') && (parseFloat(t.credit)||0) > 0 &&
+      txnCounts(t) && (parseFloat(t.credit)||0) > 0 &&
       !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
     );
     return txns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0) / 12;
@@ -16722,7 +16836,7 @@ function renderBalanceSheet(c) {
   const feesFor = (acct) => {
     const txns = (D.transactions||[]).filter(t =>
       t.accountId === acct.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
-      (!t.status || t.status === 'approved')
+      txnCounts(t)
     );
     let total = 0;
     txns.forEach(t => {
@@ -16793,7 +16907,7 @@ function renderBalanceSheet(c) {
   const excludedAcctIds = new Set(allAccounts.filter(a => a.excludeFromNetWorth).map(a => a.id));
   const trailingExpenseTotal = (() => {
     const txns = (D.transactions||[]).filter(t =>
-      !t.isTransfer && (!t.status || t.status === 'approved') &&
+      !t.isTransfer && txnCounts(t) &&
       (t.date||'') >= last12Start && (t.date||'') <= asOf &&
       !excludedAcctIds.has(t.accountId) &&
       !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
@@ -16817,7 +16931,7 @@ function renderBalanceSheet(c) {
   // target move in real time).
   const trailingByCategory = (() => {
     const txns = (D.transactions||[]).filter(t =>
-      !t.isTransfer && (!t.status || t.status === 'approved') &&
+      !t.isTransfer && txnCounts(t) &&
       (t.date||'') >= last12Start && (t.date||'') <= asOf &&
       !excludedAcctIds.has(t.accountId) &&
       !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
@@ -17095,7 +17209,7 @@ function renderIncomeExpenditure(c) {
   (D.txnAccounts||[]).forEach(a => { acctById[a.id] = a; });
 
   const txns = (D.transactions||[]).filter(t =>
-    !t.isTransfer && (!t.status || t.status === 'approved') && (t.date||'') >= start && (t.date||'') <= end &&
+    !t.isTransfer && txnCounts(t) && (t.date||'') >= start && (t.date||'') <= end &&
     // Adjustment/Starting Balance/Vested/Correction/Contribution entries are book-value
     // corrections or your own money moving accounts, not real income or spend — keep both
     // sides of the statement honest by excluding them the same way the Balance Sheet does.
@@ -18899,7 +19013,7 @@ function renderMindfulness() {
   // Same "real cash flow" filter as Income & Expenditure — approved, non-transfer, not a
   // book-value correction, not an account you've excluded from Balance Sheet/Cash Flow.
   const txns = (D.transactions||[]).filter(t =>
-    !t.isTransfer && (!t.status || t.status === 'approved') &&
+    !t.isTransfer && txnCounts(t) &&
     (t.date||'') >= monthStart && (t.date||'') <= monthEnd &&
     !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') &&
     !(acctById[t.accountId]?.excludeFromNetWorth)
@@ -19108,7 +19222,7 @@ function renderMindfulness() {
 // silently understating the ratio.
 function finLoanMonthlyPayment(acct, asOf, last12Start) {
   const ownTxns = (D.transactions||[]).filter(t =>
-    t.accountId === acct.id && (!t.status || t.status === 'approved') &&
+    t.accountId === acct.id && txnCounts(t) &&
     (t.date||'') >= last12Start && (t.date||'') <= asOf &&
     !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') && (parseFloat(t.credit)||0) > 0
   );
@@ -19123,7 +19237,7 @@ function finLoanMonthlyPayment(acct, asOf, last12Start) {
   }
 
   const payeeTxns = (D.transactions||[]).filter(t =>
-    (!t.status || t.status === 'approved') && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
+    txnCounts(t) && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
     !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') &&
     (t.payee||'').trim().toLowerCase() === (acct.name||'').trim().toLowerCase() &&
     (parseFloat(t.debit)||0) > 0
@@ -19172,7 +19286,7 @@ function renderFinancialRatios() {
   // Expenditure / Mindfulness Review (excludes transfers, book-value adjustments, excluded
   // accounts, and reimbursable pass-through spend).
   const trailingTxns = (D.transactions||[]).filter(t =>
-    !t.isTransfer && (!t.status || t.status === 'approved') &&
+    !t.isTransfer && txnCounts(t) &&
     (t.date||'') >= last12Start && (t.date||'') <= asOf &&
     !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'') &&
     !(allAccounts.find(a=>a.id===t.accountId)?.excludeFromNetWorth)
@@ -19240,7 +19354,7 @@ function renderFinancialRatios() {
     incomeAssetRows.forEach(a => {
       const txns = (D.transactions||[]).filter(t =>
         t.accountId === a.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
-        (!t.status || t.status === 'approved') && (parseFloat(t.credit)||0) > 0 &&
+        txnCounts(t) && (parseFloat(t.credit)||0) > 0 &&
         !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
       );
       total += txns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0) / 12;
@@ -19785,7 +19899,7 @@ Object.assign(BA, {
     const txns = (D.transactions||[]).filter(t => {
       if (t.accountId !== cardAccountId) return false;
       if (!t.date || t.date.slice(0,7) !== month) return false;
-      if (t.status === 'pending' || t.status === 'rejected') return false;
+      if (!txnCounts(t)) return false;
       if (t.isTransfer) return false;
       if (t.splits && t.splits.length > 0) return t.splits.some(s => s.categoryId && s.categoryId !== '__income__');
       return t.categoryId && t.categoryId !== '__income__';
@@ -19926,7 +20040,7 @@ Object.assign(BA, {
     const txns = (D.transactions||[]).filter(t => {
       if (t.accountId !== d.cardAccountId) return false;
       if (!t.date || t.date.slice(0,7) !== d.month) return false;
-      if (t.status === 'pending' || t.status === 'rejected') return false;
+      if (!txnCounts(t)) return false;
       if (t.isTransfer) return false;
       if (t.splits && t.splits.length > 0) return t.splits.some(s => s.categoryId && s.categoryId !== '__income__');
       return t.categoryId && t.categoryId !== '__income__';
