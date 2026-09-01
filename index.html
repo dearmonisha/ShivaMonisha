@@ -7047,11 +7047,48 @@ function budgetGetCatActuals(catId, month) {
 // shows up as the cost of care; budget comparisons use budgetGetCatActuals().
 function budgetGetCatSpend(catId, month) {
   const v = _txnActualsFull[catId + '::' + month];
-  if (v !== undefined && Math.abs(v) > 0.001) return v;
+  // `v !== undefined` alone, deliberately: a key exists whenever a transaction
+  // touched this category+month, and ZERO is then a real answer. Guarding on
+  // Math.abs(v) > 0.001 made a month of pure pot-sweeping fall through to the
+  // budget figure, so HOA reported $187.50 of "spending" in Category Trends
+  // when nothing had been spent — the money had gone into savings.
+  if (v !== undefined) return v;
   return budgetGetCatActuals(catId, month);
+}
+// The slice of a category+month's budget figure that came from a pot move.
+function budgetGetCatPotMove(catId, month) {
+  return _txnActualsPot[catId + '::' + month] || 0;
+}
+// Month total across the same categories the grids count in Exp — that is,
+// excluding reimbursable and tracking-only, which the grids tally separately.
+function budgetPotMoveMonthTotal(month) {
+  const trk = new Set(D.budget.trackingCats || []);
+  return (D.budget.categories || []).reduce((s, c) =>
+    (c.reimbursable || trk.has(c.id)) ? s : s + budgetGetCatPotMove(c.id, month), 0);
 }
 function budgetGetCatPreFunded(catId, month) {
   return +(budgetGetCatSpend(catId, month) - budgetGetCatActuals(catId, month)).toFixed(2);
+}
+// ── The single definition of "over budget" ─────────────────────────────────
+// Shared by the Budget table rows, the group filter, the Over Budget toggle
+// badge and the Budget Health scorecard. A reimbursable category is recovered
+// from someone else, and a tracking-only category has no target to breach, so
+// neither can ever be "over".
+//
+// These used to disagree. The row flag excluded both, but the toggle badge
+// counted every category and the group filter used a third rule — so the badge
+// could read higher than the number of rows the filter then showed, and a group
+// whose only "over" category was tracking-only rendered as an empty header.
+// A $0 plan with spending against it still counts as over, as it always has.
+function budgetIsOverCat(cat, month) {
+  if (!cat || cat.reimbursable) return false;
+  if ((D.budget.trackingCats || []).includes(cat.id)) return false;
+  return budgetGetCatActuals(cat.id, month)
+       - Math.max(0, budgetGetAdjustedPlan(cat.id, month)) > 0.005;
+}
+function budgetOverCatIdSet(month) {
+  return new Set((D.budget.categories || [])
+    .filter(c => budgetIsOverCat(c, month)).map(c => c.id));
 }
 function budgetGetCatActualsHasTxn(catId, month) {
   return !!(D.budget.txnActuals || []).find(a => a.categoryId===catId && a.month===month && (parseFloat(a.amount)||0) > 0);
@@ -7596,6 +7633,9 @@ function renderBudgetTable(month) {
   if (!wrap) return;
   const groups = D.budget.groups || [];
   const cats   = D.budget.categories || [];
+  // Computed once so the row flag, the group filter and the toggle badge can
+  // never drift apart again.
+  const _btOverIds = budgetOverCatIdSet(month);
 
   if (groups.length === 0) {
     wrap.innerHTML = `<div style="text-align:center;padding:40px 20px;color:var(--text3);">
@@ -7615,11 +7655,7 @@ function renderBudgetTable(month) {
 
     // In "Over Budget" filter mode, skip this whole group if none of its cats are over
     if (_filterOver) {
-      const hasOver = gcats.some(cat => {
-        const b = budgetGetAdjustedPlan(cat.id, month);
-        const s = budgetGetCatActuals(cat.id, month);
-        return s - Math.max(0, b) > 0.005;
-      });
+      const hasOver = gcats.some(cat => _btOverIds.has(cat.id));
       if (!hasOver) continue;
     }
     tbody += `
@@ -7655,7 +7691,7 @@ function renderBudgetTable(month) {
       const pct     = Math.min(rawPct, 100);  // clamped for bar fill width
       // isOver: half-cent epsilon prevents -0.00 / Cover-button ghost after an exact Cover
       // Reimbursable and tracking-only cats never show as "over"
-      const isOver  = !isReimbursable && !isTracking && spent - Math.max(0, budget) > 0.005;
+      const isOver  = _btOverIds.has(cat.id);
       // A refund can push a month's actual NEGATIVE — most often now that
       // pre-funded spend is excluded, when the care was paid from an HSA but the
       // refund landed in a cash account. `spent > 0` treated that as "no data"
@@ -7870,11 +7906,7 @@ function renderBudgetTable(month) {
     </tr>` : ''}`;
 
   // ── Count over-budget cats for the pill badge ──────────────────
-  const _overCount = (D.budget.categories||[]).filter(cat => {
-    const b = budgetGetAdjustedPlan(cat.id, month);
-    const s = budgetGetCatActuals(cat.id, month);
-    return s - Math.max(0, b) > 0.005;
-  }).length;
+  const _overCount = _btOverIds.size;
   const _curFilter = UI.budgetFilter || 'all';
 
   wrap.innerHTML = `
@@ -10785,7 +10817,10 @@ function renderAnnual() {
   MONTHS.forEach((_,i) => {
     const inc   = getIncome(ym(i));
     const bud   = mBudTotals[i];   // excludes reimbursable
-    const act   = mActTotals[i];   // excludes reimbursable
+    // Exp now includes pot moves (a sweep consumes the envelope), but PotD /
+    // PotW below already account for that same money — subtract it back out so
+    // Net is not charged twice. See budgetPotMoveMonthTotal().
+    const act   = mActTotals[i] - budgetPotMoveMonthTotal(ym(i));   // excludes reimbursable
     const reimb = mReimbTotals[i]; // reimbursable actuals only
     const potW  = getPotW(ym(i));
     const potD  = getPotD(ym(i));
@@ -11084,7 +11119,10 @@ function renderActualsGrid() {
   let potWYearTotal = 0, potDYearTotal = 0;
   MONTHS.forEach((_,i) => {
     const inc   = getIncome(ym(i));
-    const act   = mActTotals[i];
+    // Exp now includes pot moves (a sweep consumes the envelope), but PotD /
+    // PotW below already account for that same money — subtract it back out so
+    // Net is not charged twice. See budgetPotMoveMonthTotal().
+    const act   = mActTotals[i] - budgetPotMoveMonthTotal(ym(i));
     const reimb = mReimbTotals[i];
     const potW  = getPotW(ym(i));
     const potD  = getPotD(ym(i));
@@ -12257,6 +12295,10 @@ function mobNeedsYou(month) {
   } catch (e) {}
   (D.budget?.categories || []).forEach(c => {
     const plan = budgetGetAdjustedPlan(c.id, month), spent = budgetGetCatActuals(c.id, month);
+    // Reimbursable and tracking-only categories can never be "over" — same rule
+    // as the Budget table. The plan > 0 requirement stays, deliberately: this
+    // list is ranked by urgency and should not fill up with $0-plan categories.
+    if (c.reimbursable || (D.budget.trackingCats || []).includes(c.id)) return;
     if (plan > 0 && spent > plan + 0.005) out.push({ kind: 'over', name: c.name, by: spent - plan, rank: 3, sub: -(spent - plan) });
   });
   try {
@@ -12339,14 +12381,18 @@ function renderMobileView() {
   // ── Pre-compute budget totals + overage count (used in tab badge + summary) ──
   const _mobTrackSet = new Set(D.budget.trackingCats || []);
   let totalBudgeted = 0, totalSpent = 0, overBudgetCount = 0;
+  // Same rule as the desktop table — the badge excluded tracking-only
+  // categories but still counted reimbursable ones, so the phone could show a
+  // higher overspend count than the desktop for the same month.
+  const _mobOverIds = budgetOverCatIdSet(month);
   cats.forEach(cat => {
     const isTracking = _mobTrackSet.has(cat.id);
     const bud  = budgetGetAdjustedPlan(cat.id, month);
     const spnt = budgetGetCatActuals(cat.id, month);
     if (!isTracking) totalBudgeted += bud;
     totalSpent += spnt;
-    if (!isTracking && spnt > bud + 0.005) overBudgetCount++;
   });
+  overBudgetCount = _mobOverIds.size;
   const overBadge = overBudgetCount > 0
     ? `<span class="mob-tab-badge">${overBudgetCount}</span>` : '';
 
@@ -15033,14 +15079,55 @@ function oblAutoGenerateTxns() {
 //                          Trends and Spending Breakdown still show what care
 //                          actually cost. Derived, so it is never persisted.
 let _txnActualsFull = {};
+// How much of a category+month's budget figure came from moving money into or
+// out of a savings/reserve pot rather than from spending. Kept separately so
+// the Budget Grid and Actuals Grid can subtract it back out: those already show
+// Pot Deposit / Pot Withdrawal lines and compute Net = Income + PotW − PotD −
+// Exp, so counting a sweep inside Exp as well would subtract it twice.
+let _txnActualsPot = {};
 function recomputeTxnActuals() {
   if (!D.budget.txnActuals) D.budget.txnActuals = [];
   D.budget.txnActuals = [];
-  const groups = {}, full = {};
+  const groups = {}, full = {}, potM = {};
   (D.transactions || []).forEach(t => {
     if (!t.date) return;
     if (!txnCounts(t)) return; // exclude non-approved
-    if (t.isTransfer) return; // transfers are not expenses — skip
+    // ── Pot moves consume the envelope ─────────────────────────────────────
+    // Shiva funds Planned Expense categories by sweeping each month's unspent
+    // remainder into the savings pot, and covers an overspend by drawing from
+    // it — spend + pot movement equals the plan almost exactly every month
+    // (Auto Maintenance Jun: 79.95 + 120.05 = 200.00). Skipping transfers left
+    // those categories reading 0% used when the money had genuinely left the
+    // account, and reading wildly over when the pot had already covered it
+    // (Pet Medical May: 333.67 against a 100 plan, of which the pot paid
+    // 233.67). A deposit counts as budget consumed, a draw gives it back.
+    // Only split-tagged transfers count — that is how a pot move names its
+    // category — and potMoveKind returns null for a move WITHIN one pot family,
+    // so the 2026-08-15 pot migration stays invisible here.
+    if (t.isTransfer) {
+      if (!(t.splits && t.splits.length)) return;
+      const _m = t.date.slice(0, 7);
+      let sign = 0;
+      ['savings', 'reserve'].forEach(fam => {
+        const k = potMoveKind(t, potFamilyIds(fam));
+        if (k === 'deposit') sign += 1;
+        else if (k === 'draw') sign -= 1;
+      });
+      if (!sign) return;
+      t.splits.forEach(sp => {
+        if (!sp.categoryId || sp.categoryId === '__income__') return;
+        const key = sp.categoryId + '::' + _m;
+        const v = sign * (parseFloat(sp.amount) || 0);
+        if (!groups[key]) groups[key] = { categoryId: sp.categoryId, month: _m, amount: 0 };
+        groups[key].amount += v;
+        potM[key] = (potM[key] || 0) + v;
+        // Register the key in the reporting map WITHOUT the pot amount: moving
+        // money into savings is not spending, so Category Trends and Spending
+        // Breakdown must keep showing only what was actually spent.
+        full[key] = (full[key] || 0);
+      });
+      return;
+    }
     const _pf = txnIsPreFunded(t);
     const month = t.date.slice(0, 7);
     // ── Split transaction: distribute across each split line's category ──
@@ -15071,6 +15158,7 @@ function recomputeTxnActuals() {
     groups[key].amount += v;
   });
   _txnActualsFull = full;
+  _txnActualsPot   = potM;
   Object.values(groups).forEach(g => {
     if (Math.abs(g.amount) > 0.001) {
       D.budget.txnActuals.push({ id: uid(), month: g.month, categoryId: g.categoryId, amount: g.amount });
