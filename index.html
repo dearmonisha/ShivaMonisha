@@ -8043,7 +8043,12 @@ const PAY_EARLY_DEBIT_DAYS   = 3;
 // 'Transfer' is exempt for the opposite reason: a standing transfer you set up
 // yourself debits on its scheduled day, and if that day is a weekend the bank
 // moves it LATER, never earlier. Pulling it forward would invent risk.
-const PAY_EARLY_DEBIT_EXEMPT = new Set(['Loans', 'Credit Cards', 'Transfer']);
+// 'Dated ahead' is exempt because the date is a fact, not an estimate: Shiva
+// typed it. The 3-day lead exists for billers that might pull an auto-payment
+// early — a cheque written for the 3rd cannot clear on the 31st, and shifting
+// it backwards made the Payments header read "limited by 08/31/26" two days
+// after that date had passed.
+const PAY_EARLY_DEBIT_EXEMPT = new Set(['Loans', 'Credit Cards', 'Transfer', 'Dated ahead']);
 
 // The date a bill might realistically leave the account. Risk maths only.
 function payRiskDate(ev) {
@@ -8385,6 +8390,18 @@ function payIncomeEvents(from, to, bankId) {
       d = payAddDays(d, 14);
     }
   });
+
+  // The mirror of the dated-ahead outflow block: a deposit typed in with a
+  // future date is money arriving on a known day. Left out, the runway would be
+  // pessimistic in exactly the way it was optimistic about the cheque.
+  (D.transactions || []).filter(t =>
+      t.accountId === bankId && txnIsFuture(t) &&
+      (+t.credit || 0) > 0 && t.date >= from && t.date <= to)
+    .forEach(t => {
+      const amt = +t.credit;
+      const dup = out.some(o => o.date === t.date && Math.abs(o.amount - amt) < 0.011);
+      if (!dup) out.push({ date: t.date, label: t.payee || 'Dated ahead', amount: amt, kind: 'income' });
+    });
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -8656,6 +8673,30 @@ function payOutflowEvents(from, to, meta) {
       const dup = out.some(o => Math.abs(o.amount - amt) <= Math.max(2, amt * 0.03) &&
                                 Math.abs(payDiffDays(o.date, t.date)) <= 10);
       if (!dup) out.push({ date: t.date, label: t.payee, amount: amt, kind: 'committed', cat: 'Pending', auto: false });
+    });
+
+  // ── Dated-ahead rows typed straight into the register ──────────────────────
+  // A cheque written today and dated tomorrow is committed cash. It used to be
+  // caught by accident: an approved future-dated row still reduced
+  // txnCurrentBalance(), so the runway saw less cash. Excluding future rows from
+  // balances (correct — they have not cleared) removed that, and nothing put it
+  // back: the pending-debit block above only matches status === 'pending', and a
+  // hand-entered row carries no status at all. The money then counted NOWHERE,
+  // and Safe to Deploy offered cash that was already spent.
+  //
+  // Only bank rows matter — a future charge on a credit card does not touch cash
+  // until the card is paid. txnIsFuture() already excludes obligation rows, which
+  // the block above and the cycle list represent. The dedupe here is deliberately
+  // tight (same day, same cent): a row Shiva typed by hand is a fact, and the
+  // safer error is to under-state cash rather than to swallow a real cheque.
+  (D.transactions || []).filter(t =>
+      t.accountId === P.bankAccountId && txnIsFuture(t) &&
+      (+t.debit || 0) > 0 && t.date >= from && t.date <= to)
+    .forEach(t => {
+      const amt = +t.debit;
+      const dup = out.some(o => o.date === t.date && Math.abs(o.amount - amt) < 0.011);
+      if (!dup) out.push({ date: t.date, label: t.payee || 'Dated ahead',
+                           amount: amt, kind: 'committed', cat: 'Dated ahead', auto: false });
     });
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
