@@ -492,6 +492,10 @@ table.ccg{border-collapse:collapse;font-size:13.5px;white-space:nowrap}
 .cc-chart-leg-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text2);white-space:nowrap}
 .cc-chart-leg-swatch{width:14px;height:3px;border-radius:2px;flex-shrink:0;display:inline-block}
 .cc-no-data{text-align:center;padding:24px 0;color:var(--text3);font-size:13px}
+/* A pinned label reads as deliberately parked: brighter, ringed, and slightly
+   larger than the transient hover one, so you can tell it will stay. */
+.cc-tip.pinned{background:var(--primary);box-shadow:0 4px 14px rgba(0,0,0,.4);
+  outline:2px solid rgba(255,255,255,.55);outline-offset:0;font-size:12.5px;padding:5px 11px 6px}
 .cc-tip{position:fixed;background:rgba(28,20,16,.93);color:#fff;padding:4px 10px 5px;border-radius:5px;font-size:12px;font-weight:600;pointer-events:none;z-index:9000;display:none;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.35);letter-spacing:.01em;transform:translateX(-50%)}
 .cc-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:rgba(28,20,16,.93)}
 
@@ -6327,7 +6331,11 @@ function buildCCLineChart(type, yearSet) {
   const tipAttrs = (label, v, mi) => {
     const fv = '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
     const txt = (label + ' ' + mLabel(mi) + ': ' + fv).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-    return `onmouseenter="showCCTip(event,'${txt}')" onmouseleave="hideCCTip()" onclick="showCCTip(event,'${txt}')" style="cursor:pointer"`;
+    // Click PINS the label so it survives the pointer leaving — the old handler
+    // called the same transient show() on click, so a click did nothing a hover
+    // had not already done, and on a touch screen the label vanished instantly.
+    return `onmouseenter="showCCTip(event,'${txt}')" onmouseleave="hideCCTip()"`
+         + ` onclick="event.stopPropagation();showCCTip(event,'${txt}',true)" style="cursor:pointer"`;
   };
 
   // Card lines + interactive dots
@@ -6391,7 +6399,12 @@ function buildCCLineChart(type, yearSet) {
 }
 
 // ── Floating tooltip for CC charts ──────────────────────────
-function showCCTip(e, txt) {
+let _ccTipPinned = false;
+function showCCTip(e, txt, pin) {
+  // A pinned label stays until you tap elsewhere or press Escape; hover must
+  // not clobber it, or moving the mouse away from a dot you just clicked would
+  // silently swap the value under your eyes.
+  if (_ccTipPinned && !pin) return;
   let tt = id('cc-tip');
   if (!tt) {
     tt = document.createElement('div');
@@ -6399,6 +6412,8 @@ function showCCTip(e, txt) {
     tt.className = 'cc-tip';
     document.body.appendChild(tt);
   }
+  _ccTipPinned = !!pin;
+  tt.classList.toggle('pinned', !!pin);
   tt.textContent = txt;
   tt.style.display = 'block';
   // Anchor the label above the hovered data point (circle element)
@@ -6412,14 +6427,30 @@ function showCCTip(e, txt) {
   tt.style.setProperty('--caret-flip', above < 8 ? 'scaleY(-1) translateY(100%)' : '');
 }
 function moveCCTip() { /* label is anchored to the dot — no cursor tracking needed */ }
-function hideCCTip() {
+function hideCCTip(force) {
+  if (_ccTipPinned && !force) return;
+  _ccTipPinned = false;
   const tt = id('cc-tip');
-  if (tt) tt.style.display = 'none';
+  if (tt) { tt.style.display = 'none'; tt.classList.remove('pinned'); }
 }
+// Tapping anywhere else, or Escape, releases a pinned label. Registered once at
+// load; the dots stopPropagation so their own click never reaches this.
+document.addEventListener('click', () => { if (_ccTipPinned) hideCCTip(true); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && _ccTipPinned) hideCCTip(true); });
 
 function buildCCGrid(type) {
   const cct = D.ccTracker;
-  const allMonths = (cct.months || []).slice().sort().reverse(); // most recent first
+  // 45 months x 14 cards scrolled sideways forever. Show one year at a time,
+  // newest first. `fullMonths` stays the complete list so the trend arrows can
+  // still compare January against the previous December, and so the utilisation
+  // dot keeps reading the real latest month rather than the latest on screen.
+  const fullMonths = (cct.months || []).slice().sort().reverse();
+  const gridYears  = [...new Set(fullMonths.map(m => m.slice(0, 4)))].sort().reverse();
+  if (!UI.ccGridYear || (UI.ccGridYear !== 'all' && !gridYears.includes(UI.ccGridYear))) {
+    UI.ccGridYear = gridYears[0] || 'all';
+  }
+  const allMonths = UI.ccGridYear === 'all'
+    ? fullMonths : fullMonths.filter(m => m.slice(0, 4) === UI.ccGridYear);
   const ymFmt = ym => {
     const [y, m] = ym.split('-');
     return new Date(+y, +m-1, 1).toLocaleDateString('en-US', {month:'short', year:'2-digit'});
@@ -6432,8 +6463,8 @@ function buildCCGrid(type) {
   let thead = `<tr><th class="card-col">Card</th><th class="stmt-day-col">Stmt Day</th>`;
   allMonths.forEach(ym => { thead += `<th>${ymFmt(ym)}</th>`; });
   thead += `</tr>`;
-  // Latest month for utilization icon
-  const latestMon = allMonths[0];
+  // Latest month for utilization icon — the real one, not the newest on screen
+  const latestMon = fullMonths[0];
   const utilIcon = card => {
     const limit = parseFloat(card.limit) || 0;
     if (!limit) return `<span title="No credit limit set" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--border);margin-right:6px;flex-shrink:0;vertical-align:middle"></span>`;
@@ -6463,8 +6494,9 @@ function buildCCGrid(type) {
       const entry = (cct.data[card.id] || {})[ym];
       const hasData = entry && entry[type] !== undefined && entry[type] !== null;
       const curVal = hasData ? (entry[type] || 0) : null;
-      // Previous month = next index (allMonths is newest-first)
-      const prevYm = allMonths[mi + 1];
+      // Previous month = next index in the FULL list (newest-first), so the
+      // first month of a year still compares against the prior December.
+      const prevYm = fullMonths[fullMonths.indexOf(ym) + 1];
       const prevEntry = prevYm ? (cct.data[card.id] || {})[prevYm] : null;
       const prevVal = (prevEntry && prevEntry[type] !== undefined && prevEntry[type] !== null) ? (prevEntry[type] || 0) : null;
       const cls = hasData ? (type==='interest' ? 'int-val' : 'os-val') : 'zero';
@@ -6481,8 +6513,8 @@ function buildCCGrid(type) {
       const entry = (cct.data[card.id] || {})[ym];
       if (entry) { total += entry[type] || 0; hasAny = true; }
     });
-    // Previous month total
-    const prevYm = allMonths[mi + 1];
+    // Previous month total — full list, same reason as the per-card rows
+    const prevYm = fullMonths[fullMonths.indexOf(ym) + 1];
     let prevTotal = null;
     if (prevYm) {
       let pt = 0, prevAny = false;
@@ -6496,7 +6528,22 @@ function buildCCGrid(type) {
     tbody += `<td><div class="val-cell ${cls}">${hasAny && total > 0 ? fmtVal(total) : '—'}${hasAny && total > 0 ? trendBadge(total, prevTotal) : ''}</div></td>`;
   });
   tbody += `</tr>`;
-  return `<table class="ccg"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+  const yearPills = gridYears.map(y =>
+    `<button class="sl-btn${UI.ccGridYear===y?' active':''}" onclick="switchCCGridYear('${y}')">${y}</button>`
+  ).join('') + `<button class="sl-btn${UI.ccGridYear==='all'?' active':''}" onclick="switchCCGridYear('all')">All ${fullMonths.length} months</button>`;
+  const shown = allMonths.length;
+  return `
+    <div class="slicer" style="margin:0 0 10px">
+      <span class="slicer-lbl">Period</span>
+      ${yearPills}
+      <span style="font-size:.72rem;color:var(--text3);margin-left:6px">${shown} month${shown!==1?'s':''} shown</span>
+    </div>
+    <table class="ccg"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+}
+
+function switchCCGridYear(y) {
+  UI.ccGridYear = y;
+  renderCCTracker();
 }
 
 function editCCCell(cardId, month) {
