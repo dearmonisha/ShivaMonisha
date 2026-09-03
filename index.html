@@ -7020,6 +7020,24 @@ function budgetGetEffectivePlan(catId, month, _depth) {
 //      guard, even though the money was already inside the pot system.
 // Because the same set drives both the "is this a pot flow" test and the "is
 // this internal" test, movements between any two pot accounts now cancel out.
+// Explicit markers a pot move carries on its non-pot leg. They are the fallback
+// when the transfer PAIR LINK is missing: on 2026-02-14 the $32,059.09 and
+// $1,600 fundings of PNC Reserve were saved with transferToAcctId / -FromAcctId
+// null on BOTH legs, so a link-only test could not see $33,659.09 of real pot
+// deposits. Every withdrawal happened to be linked, so the grid showed pots
+// being drained far faster than filled and Net was overstated by that amount
+// from February onward.
+const POT_DEP_CAT = 'bc_pot_deposit';
+const POT_WD_CAT  = '__pot_withdrawal__';
+// One row, one classification — `link || marker`, never a sum of the two, or a
+// row carrying both would be counted twice.
+function potIsWithdrawal(t, ids) {
+  return (ids.has(t.transferFromAcctId) || t.categoryId === POT_WD_CAT) && !ids.has(t.accountId);
+}
+function potIsDeposit(t, ids) {
+  return (ids.has(t.transferToAcctId) || t.categoryId === POT_DEP_CAT) && !ids.has(t.accountId);
+}
+
 function potAccountIdSet() {
   const sp = D.savingsPots || {}, rp = D.reservePots || {};
   return new Set([
@@ -10885,13 +10903,11 @@ function renderAnnual() {
   const potAcctIds = potAccountIdSet();
   const getPotW = m => (D.transactions||[])
     .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
-                 t.status !== 'rejected' &&
-                 potAcctIds.has(t.transferFromAcctId) && !potAcctIds.has(t.accountId))
+                 t.status !== 'rejected' && potIsWithdrawal(t, potAcctIds))
     .reduce((s,t) => s + (parseFloat(t.credit)||0) - (parseFloat(t.debit)||0), 0);
   const getPotD = m => (D.transactions||[])
     .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
-                 t.status !== 'rejected' &&
-                 potAcctIds.has(t.transferToAcctId) && !potAcctIds.has(t.accountId))
+                 t.status !== 'rejected' && potIsDeposit(t, potAcctIds))
     .reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
 
   // CC detection
@@ -11190,16 +11206,16 @@ function renderActualsGrid() {
   // No manual category needed — identified purely by transferFromAcctId
   const getPotW = m => (D.transactions||[])
     .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
-                 t.status !== 'rejected' &&
-                 potAcctIds.has(t.transferFromAcctId) && !potAcctIds.has(t.accountId))
+                 t.status !== 'rejected' && potIsWithdrawal(t, potAcctIds))
     .reduce((s,t) => s + (parseFloat(t.credit)||0) - (parseFloat(t.debit)||0), 0);
 
-  // Pot deposits: isTransfer debit transactions going TO a pot account from a non-pot account
-  // No manual category needed — identified purely by transferToAcctId
+  // Pot deposits: a transfer debit heading TO a pot account from a non-pot one,
+  // recognised by the pair link OR the explicit Pot Deposit category — see
+  // potIsDeposit(). "No manual category needed" was the old assumption and it
+  // is what let two unlinked February rows vanish.
   const getPotD = m => (D.transactions||[])
     .filter(t => t.date && t.date.slice(0,7)===m && t.isTransfer &&
-                 t.status !== 'rejected' &&
-                 potAcctIds.has(t.transferToAcctId) && !potAcctIds.has(t.accountId))
+                 t.status !== 'rejected' && potIsDeposit(t, potAcctIds))
     .reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
 
   let cumulAct = 0;
