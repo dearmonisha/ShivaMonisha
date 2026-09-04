@@ -8097,6 +8097,22 @@ function payBankAccounts() {
   const all = (D.txnAccounts || []).filter(a => ids.has(a.id));
   return all.sort((a, b) => (a.id === P.bankAccountId ? -1 : b.id === P.bankAccountId ? 1 : 0));
 }
+// Which bank funds a given card's payment. Defaults to the primary account.
+// Chosen per card because that is how the money actually moves: Shiva logs into
+// one bank and clears some cards, then the other. It matters now that Safe to
+// Deploy spans two accounts — before this, EVERY recorded payment silently
+// debited P.bankAccountId, so a $5,337 batch would have driven PNC (holding
+// $2,767.69) to −$2,569.31 while the dialog reported the combined balance and
+// raised no warning.
+function paySrcFor(cardId) {
+  const P = payDefaults();
+  const chosen = (UI.paySrc || {})[cardId];
+  return (chosen && payBankAccountIds().has(chosen)) ? chosen : P.bankAccountId;
+}
+function paySrcName(cardId) {
+  const a = (D.txnAccounts || []).find(x => x.id === paySrcFor(cardId));
+  return a ? a.name : 'bank';
+}
 function payBankLabel() {
   const list = payBankAccounts();
   if (!list.length) return 'the bank';
@@ -9195,6 +9211,7 @@ function renderPayments() {
 
   const R  = payRunway();
   const st = payCardStates();
+  const _payBanks = payBankAccounts();   // for the per-card "pay from" selector
   if (UI.payAmount == null) UI.payAmount = Math.floor(R.safe);
   const A  = payAllocate(UI.payAmount, UI.payStrategy, st, R);
   // Minimums the allocator skipped because the card's own statement payment,
@@ -9563,7 +9580,11 @@ function renderPayments() {
         ${x.pay>0.005?`<div style="font-size:.6rem;color:var(--ok);margin-top:2px">−${payFmt2(x.pay*x.apr/1200)}/mo</div>`:''}
         ${x.pay<=0.005&&minCovered?`<div style="font-size:.58rem;color:var(--text3);margin-top:2px">covered on ${fmtDate(x.dueDate)}</div>`:''}
       </td>
-      <td style="padding:8px 6px;text-align:right">
+      <td style="padding:8px 6px;text-align:right;white-space:nowrap">
+        ${_payBanks.length > 1 ? `<select onchange="BA.paySetSrc('${x.id}',this.value)" title="Which account this payment comes out of"
+            style="font-size:.62rem;padding:3px 4px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);max-width:104px;margin-right:4px">
+            ${_payBanks.map(b => `<option value="${b.id}"${b.id===paySrcFor(x.id)?' selected':''}>${esc(b.name)}</option>`).join('')}
+          </select>` : ''}
         <button onclick="PAY.payOne('${x.acct.id}','${x.id}')" style="font-size:.68rem;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">Pay</button>
       </td>
     </tr>`;
@@ -9748,16 +9769,20 @@ const PAY = {
     if (amt <= 0) { toast('Enter an amount for that card first', 'err'); return; }
     const s = payCardStates().find(x => x.id === cardId);
     const purpose = payPurpose(s, amt);
-    const R2 = payRunway();
-    if (R2.cash - amt < 0) {
+    // Overdraft is tested against the account the money actually leaves, not the
+    // combined figure — the combined test would pass while one account went red.
+    const srcId  = paySrcFor(cardId);
+    const srcAcc = (D.txnAccounts || []).find(a => a.id === srcId);
+    const srcBal = srcAcc ? txnCurrentBalance(srcAcc) : 0;
+    if (srcBal - amt < 0) {
       const go = await payConfirm('This overdraws the account',
-        `<div style="line-height:1.7">${esc(payBankLabel())} holds <b>${payFmt2(R2.cash)}</b>.<br>
+        `<div style="line-height:1.7">${esc(srcAcc ? srcAcc.name : 'That account')} holds <b>${payFmt2(srcBal)}</b>.<br>
          Paying <b>${payFmt2(amt)}</b> to ${esc(s ? s.name : 'this card')} leaves
-         <b style="color:var(--danger)">${payFmt2(R2.cash - amt)}</b>.</div>`,
+         <b style="color:var(--danger)">${payFmt2(srcBal - amt)}</b>.</div>`,
         'Record anyway');
       if (!go) return;
     }
-    const r = payRecord(acctId, amt, purpose, { cardId, statementDate: s?.stmtDate, dueDate: s?.dueDate, notes: `Payment — ${s?s.name:''}` });
+    const r = payRecord(acctId, amt, purpose, { cardId, bankAccountId: srcId, statementDate: s?.stmtDate, dueDate: s?.dueDate, notes: `Payment — ${s?s.name:''}` });
     if (!r) { toast('Could not record that payment', 'err'); return; }
     dirty();
     UI.payAmount = null;
@@ -9768,32 +9793,47 @@ const PAY = {
   async applyAll() {
     const A = payAllocate(UI.payAmount, UI.payStrategy, payCardStates(), payRunway());
     if (!A.alloc.length) { toast('Nothing to allocate', 'err'); return; }
+    // Each line names the account it leaves, so the dialog matches what will
+    // actually happen at each bank.
+    const _banks = payBankAccounts();
     const lines = A.alloc.map(x =>
-      `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0"><span>${esc(x.name)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(x.pay)}</b></div>`).join('');
-    const bankName = payBankLabel();
+      `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0"><span>${esc(x.name)}${_banks.length>1?` <span style="color:var(--text3);font-size:.9em">· ${esc(paySrcName(x.id))}</span>`:''}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(x.pay)}</b></div>`).join('');
     // Recompute cash at the moment of recording, not from whatever the screen last drew.
     const R2    = payRunway();
-    const after = R2.cash - A.deployed;
-    const warn  = after < 0
+    // Per ACCOUNT, because a combined balance can look healthy while one account
+    // goes negative — the exact trap that existed before the source picker.
+    const perAcct = _banks.map(b => {
+      const out  = A.alloc.filter(x => paySrcFor(x.id) === b.id).reduce((s2, x) => s2 + x.pay, 0);
+      const bal  = txnCurrentBalance(b);
+      return { name: b.name, out, bal, after: bal - out };
+    }).filter(r => r.out > 0.005);
+    const worst = perAcct.reduce((w, r) => (w == null || r.after < w.after) ? r : w, null);
+    const after = worst ? worst.after : R2.cash - A.deployed;
+    const acctRows = perAcct.map(r =>
+      `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0">
+         <span>${esc(r.name)} after</span>
+         <b style="font-variant-numeric:tabular-nums;color:${r.after<0?'var(--danger)':r.after<R2.floor-0.005?'var(--warn)':'var(--text)'}">${payFmt2(r.after)}</b>
+       </div>`).join('');
+    const overdrawn = perAcct.filter(r => r.after < 0);
+    const warn  = overdrawn.length
       ? `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:var(--danger-bg);color:var(--danger);font-weight:600">
-           This overdraws ${esc(bankName)}. Balance would go from ${payFmt2(R2.cash)} to ${payFmt2(after)}.</div>`
-      : after < R2.floor - 0.005
+           This overdraws ${overdrawn.map(r => esc(r.name) + ' (' + payFmt2(r.after) + ')').join(' and ')}. Change the account on those rows, or lower the amount.</div>`
+      : (worst && worst.after < R2.floor - 0.005)
       ? `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:var(--warn-bg);color:var(--warn);font-weight:600">
-           Leaves ${payFmt2(after)} — below your ${payFmt2(R2.floor)} floor.</div>`
+           Leaves ${esc(worst.name)} at ${payFmt2(worst.after)} — below your ${payFmt2(R2.floor)} floor.</div>`
       : '';
     const go = await payConfirm('Record these payments?',
       `${lines}<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;justify-content:space-between;gap:14px">
-         <span>Total from ${esc(bankName)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(A.deployed)}</b></div>
-       <div style="display:flex;justify-content:space-between;gap:14px;padding-top:4px">
-         <span>${esc(bankName)} after</span><b style="font-variant-numeric:tabular-nums;color:${after<0?'var(--danger)':'var(--text)'}">${payFmt2(after)}</b></div>
+         <span>Total</span><b style="font-variant-numeric:tabular-nums">${payFmt2(A.deployed)}</b></div>
+       ${acctRows}
        ${warn}
        <div style="margin-top:10px;color:var(--ok)">Stops ${payFmt2(A.saved)}/mo of interest, permanently.</div>`,
-      after < 0 ? 'Record anyway — I accept the overdraft' : `Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}`);
+      overdrawn.length ? 'Record anyway — I accept the overdraft' : `Record ${A.alloc.length} payment${A.alloc.length===1?'':'s'}`);
     if (!go) return;
     let n = 0;
     A.alloc.forEach(x => {
       const purpose = payPurpose(x, x.pay);
-      if (payRecord(x.acct.id, x.pay, purpose, { cardId: x.id, statementDate: x.stmtDate, dueDate: x.dueDate, strategy: UI.payStrategy, notes: `Payment — ${x.name}` })) n++;
+      if (payRecord(x.acct.id, x.pay, purpose, { cardId: x.id, bankAccountId: paySrcFor(x.id), statementDate: x.stmtDate, dueDate: x.dueDate, strategy: UI.payStrategy, notes: `Payment — ${x.name}` })) n++;
     });
     dirty();
     UI.payAmount = null;
@@ -13281,6 +13321,12 @@ const BA = {
     renderTreemap();
   },
   dismissSaveError() { clearSaveError(); refreshSaveUI(); },
+
+  paySetSrc(cardId, acctId) {
+    if (!UI.paySrc) UI.paySrc = {};
+    UI.paySrc[cardId] = acctId;
+    renderPayments();          // per-account after-balances change with it
+  },
 
   setMobileTab(tab) { UI.mobileTab = tab; UI.mobileDrillCat = ''; UI.mobHomeAll = false; mobRender('top'); },
   mobHomeMore() { UI.mobHomeAll = true; mobRender('keep'); },
