@@ -8846,16 +8846,25 @@ function payUtilTarget() {
 // Two cases still take the money early, both deliberate:
 //   • no runway projection available — never guess in the risky direction
 //   • the due date falls beyond the runway horizon, so nothing has modelled it
-function payPifEarlyNeed(x, pot, R) {
+// What an issued pay-in-full statement still needs, out of cash ALREADY HELD.
+//
+// This used to discount the amount by the cash the runway forecast would arrive
+// before the due date — three paychecks, in Shiva's case. The arithmetic was
+// sound and the conclusion was wrong: it released $5,337 to Macys at 31.90%
+// while Costco's $4,777.43 statement sat unfunded, because it counted salary
+// that had not landed. The trade was $68/mo of interest saved against a $6,949
+// balance falling off 0% to a 24.74% go-to rate — roughly $143/mo — plus the
+// loss of pay-in-full standing.
+//
+// So: no forecast income. A statement that has been issued is money owed now.
+// The runway still models the outflow separately for the cash-dip warning; this
+// function answers a different question — what must the allocator fund today.
+function payPifEarlyNeed(x) {
   if (!x || x.role !== 'pay-in-full' || x.stmtBal == null || !x.dueDate) return 0;
-  const owed = Math.max(0, x.stmtBal - (x.paid || 0) - (x.pay || 0));
-  if (owed <= 0.005) return 0;
-  if (!R || !Array.isArray(R.series) || !R.series.length) return owed;
-  if (x.dueDate > R.to) return owed;
-  const i = R.series.findIndex(s => s.e && s.e.riskDate >= x.dueDate);
-  if (i < 0) return owed;
-  const low = Math.min(...R.series.slice(i).map(s => s.bal));
-  return Math.max(0, Math.min(owed, (R.floor + Math.max(0, +pot || 0)) - low));
+  // No fallback to the running balance: with no statement nothing has been
+  // billed, and sweeping spare cash into an unbilled 0% balance is exactly the
+  // 2026-08-21 mistake ($2,284 into Costco at 0.00% while Macys sat at 31.90%).
+  return Math.max(0, x.stmtBal - (x.paid || 0) - (x.pay || 0));
 }
 
 function payAllocate(pot, strategy, states, runway) {
@@ -8876,20 +8885,34 @@ function payAllocate(pot, strategy, states, runway) {
   // these forfeits the 0% rate, so the guard has to fail closed — no runway, or
   // a due date past the horizon, both mean payPifEarlyNeed returns the full
   // amount owed and the minimum is funded.
-  const pifSelfCovering = x =>
-    x.role === 'pay-in-full' && x.stmtBal != null &&
-    (x.stmtBal - (x.paid || 0)) >= x.minUnfunded - 0.005 &&
-    payPifEarlyNeed(x, pot, R) <= 0.005;
+  // What a card MUST receive before anything discretionary. For an ordinary card
+  // that is its unfunded minimum; for a pay-in-full card with an issued
+  // statement it is the statement, which subsumes the minimum (same due date,
+  // larger figure). Merging the two into one pass, ordered by due date, is what
+  // stops the old double-count: paying the $48 minimum AND the $4,777 statement
+  // would have over-funded Costco by the minimum.
+  const requiredNow = x => {
+    const base = Math.max(0, x.minUnfunded || 0);
+    const stmt = payPifEarlyNeed(x);
+    return Math.max(base, stmt);
+  };
 
-  m.filter(x => x.minUnfunded > 0.005 && !pifSelfCovering(x))
+  m.filter(x => requiredNow(x) > 0.005)
    .sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'))
    .forEach(x => {
-     const p = Math.min(x.minUnfunded, left, Math.max(0, x.balance));
-     x.pay += p; left -= p; parts.minimums += p;
+     const p = Math.min(requiredNow(x), left, Math.max(0, x.balance));
+     x.pay += p; left -= p;
+     // Attributed to the statement where one drove the figure, so the UI can
+     // explain a large allocation to a 0% card.
+     if (x.role === 'pay-in-full' && x.stmtBal != null) parts.pifEarly += p;
+     else parts.minimums += p;
    });
-  // Recorded for the UI, so the page can say why a minimum shows no allocation.
-  parts.minSkipped = m.filter(x => x.minUnfunded > 0.005 && pifSelfCovering(x))
-                      .map(x => ({ name: x.name, amount: x.minUnfunded, dueDate: x.dueDate }));
+  // Recorded for the UI: a pay-in-full card shows no separate minimum because
+  // its statement payment already covers it on the same day.
+  parts.minSkipped = m.filter(x => x.minUnfunded > 0.005 &&
+      x.role === 'pay-in-full' && x.stmtBal != null &&
+      (x.stmtBal - (x.paid || 0)) >= x.minUnfunded - 0.005)
+    .map(x => ({ name: x.name, amount: x.minUnfunded, dueDate: x.dueDate }));
 
   // Promo catch-up ranks with the minimums, not with the optimisation. A 0% card behind
   // pace is the highest-value dollar in the book: the downside is not the shortfall, it is
@@ -8911,13 +8934,9 @@ function payAllocate(pot, strategy, states, runway) {
   //     Costco at 0.00% while Macys sat at 31.90%, costing about $60/mo.
   //   • no unconditional early settlement either. That reserved the same cash
   //     twice — once by lowering Safe to Deploy, again by eating the deployment.
-  m.forEach(x => {
-    if (left < 1 || x.role !== 'pay-in-full') return;
-    if (x.stmtBal == null) return;              // nothing billed yet — nothing due
-    const p = Math.min(payPifEarlyNeed(x, pot, R), left);
-    if (p <= 0.005) return;
-    x.pay += p; left -= p; parts.pifEarly += p;
-  });
+  // (The separate pay-in-full pass that used to sit here is gone — requiredNow()
+  // above funds issued statements in the same due-date-ordered pass as the
+  // minimums, ahead of the promo catch-up and everything discretionary.)
   parts.discretionary = left;
 
   const eligible = x => x.role !== 'minimum-only' && x.role !== 'pay-in-full';
@@ -9397,7 +9416,9 @@ function renderPayments() {
   const bits = [];
   if (PA.minimums > 0.005) bits.push(`${payFmt2(PA.minimums)} of unfunded minimums`);
   if (PA.promo    > 0.005) bits.push(`${payFmt2(PA.promo)} of 0% promo catch-up`);
-  if (PA.pifEarly > 0.005) bits.push(`${payFmt2(PA.pifEarly)} the runway can't cover on a pay-in-full statement`);
+  // Wording follows the rule, not the old one: an issued pay-in-full statement is
+  // funded from cash already held, without counting salary still to arrive.
+  if (PA.pifEarly > 0.005) bits.push(`${payFmt2(PA.pifEarly)} of pay-in-full statements due`);
   const inertNote = (A.deployed > 0.5 && (PA.discretionary || 0) < 1 && bits.length) ? `
      <div style="font-size:.68rem;color:var(--text2);line-height:1.6;background:var(--surface2);border-radius:6px;padding:8px 11px;margin-bottom:10px">
        <b style="color:var(--text)">Every strategy gives the same answer here.</b>
