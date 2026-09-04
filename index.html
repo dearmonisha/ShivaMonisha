@@ -8069,6 +8069,42 @@ const PAY_EARLY_DEBIT_DAYS   = 3;
 const PAY_EARLY_DEBIT_EXEMPT = new Set(['Loans', 'Credit Cards', 'Transfer', 'Dated ahead']);
 
 // The date a bill might realistically leave the account. Risk maths only.
+// ── Which accounts hold the cash the Payments tab is planning with ─────────
+// It used to be ONE account (payments.bankAccountId), so a second spending
+// account was invisible: Mona's salary splits between PNC and New Spend, and
+// Cash Today showed only the PNC half.
+//
+// Deliberately NOT reusing showInCCRepay, even though Shiva suggested it: that
+// flag is ticked on PNC Reserve, a POT account. Pot money is not spendable cash
+// for the runway, and counting it would both inflate Safe to Deploy and collide
+// with the pot-deposit/withdrawal accounting. Pot accounts are filtered out here
+// belt-and-braces, so ticking the box on one can never leak reserve money in.
+function payBankAccountIds() {
+  const P = payDefaults();
+  const pots = potAccountIdSet();
+  const ids = new Set();
+  if (P.bankAccountId) ids.add(P.bankAccountId);
+  (D.txnAccounts || []).forEach(a => {
+    if (!a.includeInPayments || a.status === 'closed') return;
+    ids.add(a.id);
+  });
+  pots.forEach(x => ids.delete(x));
+  return ids;
+}
+// The accounts themselves, primary first, for labels and for summing cash.
+function payBankAccounts() {
+  const P = payDefaults(), ids = payBankAccountIds();
+  const all = (D.txnAccounts || []).filter(a => ids.has(a.id));
+  return all.sort((a, b) => (a.id === P.bankAccountId ? -1 : b.id === P.bankAccountId ? 1 : 0));
+}
+function payBankLabel() {
+  const list = payBankAccounts();
+  if (!list.length) return 'the bank';
+  if (list.length === 1) return list[0].name;
+  if (list.length === 2) return list[0].name + ' + ' + list[1].name;
+  return list[0].name + ' + ' + (list.length - 1) + ' more';
+}
+
 function payRiskDate(ev) {
   if (!ev) return null;
   if (ev.kind === 'income') return ev.date;
@@ -8384,8 +8420,10 @@ function payPromoRisk() {
 // and stepping 14 days is self-correcting.
 function payIncomeEvents(from, to, bankId) {
   const out = [];
+  // bankId may be a single id (older call sites) or a Set of them.
+  const inBank = t => (bankId instanceof Set) ? bankId.has(t.accountId) : t.accountId === bankId;
   const deposits = (D.transactions || []).filter(t =>
-    t.accountId === bankId && t.categoryId === '__income__' &&
+    inBank(t) && t.categoryId === '__income__' &&
     (+t.credit || 0) > 100 && txnCounts(t));
 
   (D.budget?.incomeSchedules || []).filter(s => s.enabled !== false).forEach(s => {
@@ -8413,7 +8451,7 @@ function payIncomeEvents(from, to, bankId) {
   // future date is money arriving on a known day. Left out, the runway would be
   // pessimistic in exactly the way it was optimistic about the cheque.
   (D.transactions || []).filter(t =>
-      t.accountId === bankId && txnIsFuture(t) &&
+      inBank(t) && txnIsFuture(t) &&
       (+t.credit || 0) > 0 && t.date >= from && t.date <= to)
     .forEach(t => {
       const amt = +t.credit;
@@ -8598,8 +8636,12 @@ function paySaveRT(editId) {
 function payOutflowEvents(from, to, meta) {
   const P = payDefaults();
   const out = [];
-  const bank = (D.txnAccounts || []).find(a => a.id === P.bankAccountId);
-  const bankName = (bank ? bank.name : '').trim().toLowerCase();
+  const _payBankIds = payBankAccountIds();
+  // A template's "Pay From Account" is free text, so match it against EVERY
+  // included account's name — otherwise a bill paid from New Spend looked like
+  // it left no bank at all and was silently dropped from the runway.
+  const _bankNames = new Set(payBankAccounts().map(a => (a.name || '').trim().toLowerCase()));
+  const bank = payBankAccounts()[0];
   const skipped = [];
   let unknown = 0;
 
@@ -8609,7 +8651,7 @@ function payOutflowEvents(from, to, meta) {
   const leavesBank = p => {
     const src = (p.paidFrom || '').trim().toLowerCase();
     if (!src) { unknown++; return true; }
-    return src === bankName;
+    return _bankNames.has(src);
   };
 
   Object.values(D.cycles || {}).forEach(cy => {
@@ -8684,7 +8726,7 @@ function payOutflowEvents(from, to, meta) {
   // Home 975.82 pending on the 20th vs Home Insurance 975.82 due on the 27th),
   // so dedupe on amount + date proximity before adding.
   (D.transactions || []).filter(t =>
-      t.accountId === P.bankAccountId && t.status === 'pending' &&
+      _payBankIds.has(t.accountId) && t.status === 'pending' &&
       (+t.debit || 0) > 0 && t.date >= from && t.date <= to)
     .forEach(t => {
       const amt = +t.debit;
@@ -8708,7 +8750,7 @@ function payOutflowEvents(from, to, meta) {
   // tight (same day, same cent): a row Shiva typed by hand is a fact, and the
   // safer error is to under-state cash rather than to swallow a real cheque.
   (D.transactions || []).filter(t =>
-      t.accountId === P.bankAccountId && txnIsFuture(t) &&
+      _payBankIds.has(t.accountId) && txnIsFuture(t) &&
       (+t.debit || 0) > 0 && t.date >= from && t.date <= to)
     .forEach(t => {
       const amt = +t.debit;
@@ -8721,12 +8763,14 @@ function payOutflowEvents(from, to, meta) {
 
 function payRunway() {
   const P     = payDefaults();
-  const bank  = (D.txnAccounts || []).find(a => a.id === P.bankAccountId) || null;
+  const banks = payBankAccounts();
+  const bank  = banks[0] || null;                    // primary, for labels
   const today = centralToday();
   const to    = payAddDays(today, PAY_HORIZON);
-  const cash  = bank ? txnCurrentBalance(bank) : 0;
+  // Cash is the SUM across every included account, not just the primary one.
+  const cash  = banks.reduce((s, a) => s + txnCurrentBalance(a), 0);
 
-  const income = payIncomeEvents(today, to, P.bankAccountId);
+  const income = payIncomeEvents(today, to, payBankAccountIds());
   const srcMeta = {};
   const outs   = payOutflowEvents(today, to, srcMeta);
   // riskDate is when the money could actually leave (see PAY_EARLY_DEBIT_DAYS).
@@ -9167,7 +9211,7 @@ function renderPayments() {
         <button onclick="PAY.toggleSafeMath()" style="font-size:.7rem;padding:3px 9px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">Close</button>
       </div>
       <table style="width:100%;border-collapse:collapse">
-        ${mathRow(`Cash in ${esc(R.bank ? R.bank.name : 'bank')} right now`, payFmt2(R.cash))}
+        ${mathRow(`Cash in ${esc(payBankLabel())} right now`, payFmt2(R.cash))}
         ${mathRow(`Lowest the balance gets before ${fmtDate(R.to)}`, payFmt2(R.trough),
                   R.trough < R.cash ? 'var(--warn)' : 'var(--text3)',
                   R.trough < R.cash
@@ -9182,7 +9226,7 @@ function renderPayments() {
         <b>Why the lowest point rather than today's balance:</b> paying money out today lowers every future day by the same amount,
         so the day that constrains you is the worst one in the window — not today, and not the next payday.
         <div style="margin-top:6px">
-          <b>Counted:</b> ${R.outs.length} bills and card minimums due before ${fmtDate(R.to)} that come out of ${esc(R.bank ? R.bank.name : 'the bank')},
+          <b>Counted:</b> ${R.outs.length} bills and card minimums due before ${fmtDate(R.to)} that come out of ${esc(payBankLabel())},
           and ${R.income.length} expected ${R.income.length === 1 ? 'paycheque' : 'paycheques'}.
         </div>
         <div style="margin-top:4px;color:var(--text3)">
@@ -9257,7 +9301,7 @@ function renderPayments() {
   const tiles = `
    ${promoAlerts}${promoOk}
    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
-    ${tile('Cash today', payFmt(R.cash), 'var(--text)', esc(R.bank ? R.bank.name : ''))}
+    ${tile('Cash today', payFmt(R.cash), 'var(--text)', esc(payBankLabel()))}
     ${tile('Locked before next pay', payFmt(R.lockedNow), R.lockedNow>0?'var(--warn)':'var(--text3)', R.nextIncome ? `next in ${payDiffDays(R.today,R.nextIncome.date)}d · ${esc(R.nextIncome.label)} ${payFmt(R.nextIncome.amount)}` : 'no scheduled pay')}
     ${tile('Unfunded minimums', payFmtUp(minDueNow), minDueNow>0?'var(--danger)':'var(--ok)',
            minSkipTotal>0.005
@@ -9403,7 +9447,7 @@ function renderPayments() {
          stops <b style="color:var(--ok)">${payFmt2(A.saved)}/mo</b> of interest, permanently.
          ${A.left > 1 ? `<span style="color:var(--warn)"> · ${payFmt(A.left)} unallocated</span>` : ''}
          <div style="margin-top:4px;font-size:.8rem">
-           ${esc(R.bank ? R.bank.name : 'Bank')} after this: <b style="color:${afterBal < 0 ? 'var(--danger)' : afterBal < R.floor ? 'var(--warn)' : 'var(--ok)'};font-variant-numeric:tabular-nums">${payFmt2(afterBal)}</b>
+           ${esc(payBankLabel())} after this: <b style="color:${afterBal < 0 ? 'var(--danger)' : afterBal < R.floor ? 'var(--warn)' : 'var(--ok)'};font-variant-numeric:tabular-nums">${payFmt2(afterBal)}</b>
            ${overdraws ? '<span style="color:var(--danger);font-weight:700"> — this overdraws the account</span>'
              : belowFloor ? `<span style="color:var(--warn)"> — below your ${payFmt(R.floor)} floor</span>` : ''}
          </div>
@@ -9666,7 +9710,7 @@ const PAY = {
     const R2 = payRunway();
     if (R2.cash - amt < 0) {
       const go = await payConfirm('This overdraws the account',
-        `<div style="line-height:1.7">${esc(R2.bank ? R2.bank.name : 'Bank')} holds <b>${payFmt2(R2.cash)}</b>.<br>
+        `<div style="line-height:1.7">${esc(payBankLabel())} holds <b>${payFmt2(R2.cash)}</b>.<br>
          Paying <b>${payFmt2(amt)}</b> to ${esc(s ? s.name : 'this card')} leaves
          <b style="color:var(--danger)">${payFmt2(R2.cash - amt)}</b>.</div>`,
         'Record anyway');
@@ -9685,7 +9729,7 @@ const PAY = {
     if (!A.alloc.length) { toast('Nothing to allocate', 'err'); return; }
     const lines = A.alloc.map(x =>
       `<div style="display:flex;justify-content:space-between;gap:14px;padding:3px 0"><span>${esc(x.name)}</span><b style="font-variant-numeric:tabular-nums">${payFmt2(x.pay)}</b></div>`).join('');
-    const bankName = (D.txnAccounts || []).find(a => a.id === payDefaults().bankAccountId)?.name || 'bank';
+    const bankName = payBankLabel();
     // Recompute cash at the moment of recording, not from whatever the screen last drew.
     const R2    = payRunway();
     const after = R2.cash - A.deployed;
@@ -12736,7 +12780,7 @@ function renderMobileView() {
       ${R ? `<div class="mob-summary-card" style="border-color:color-mix(in srgb,var(--primary) 30%,transparent)">
         <div style="font-size:.75rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Safe to spend</div>
         <div style="font-size:2rem;font-weight:800;letter-spacing:-.03em;color:${safeColor};line-height:1.1">${fmtCurrency(R.safe)}</div>
-        <div style="font-size:.75rem;color:var(--text3);margin-top:2px">${fmtC(R.cash)} in ${esc(R.bank ? R.bank.name : 'the bank')} · dips to ${fmtC(R.trough)} on ${mobShortDate(R.troughDate)}</div>
+        <div style="font-size:.75rem;color:var(--text3);margin-top:2px">${fmtC(R.cash)} in ${esc(payBankLabel())} · dips to ${fmtC(R.trough)} on ${mobShortDate(R.troughDate)}</div>
       </div>` : ''}
       ${sinceHTML}
       ${weekHTML}
@@ -12772,7 +12816,7 @@ function renderMobileView() {
             <span style="font-size:1.35rem;font-weight:800;color:${safeColor}">${fmtCurrency(R.safe)}</span>
           </div>
           <div style="font-size:.75rem;color:var(--text3);margin-top:2px">
-            ${fmtC(R.cash)} in ${esc(R.bank ? R.bank.name : 'the bank')} · lowest point ${fmtC(R.trough)} on ${fmtDate(R.troughDate)}
+            ${fmtC(R.cash)} in ${esc(payBankLabel())} · lowest point ${fmtC(R.trough)} on ${fmtDate(R.troughDate)}
           </div>
           ${rows ? `<div style="margin-top:8px">
             <div style="font-size:.68rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">Next out</div>
@@ -16891,6 +16935,13 @@ function txnEditAccountModal(editId) {
       </div>
       <div class="fg" style="grid-column:1/-1">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
+          <input type="checkbox" id="tacct-inpay" ${a?.includeInPayments ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
+          Include in Payments cash
+        </label>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Adds this account's balance to Cash Today and Safe to Deploy on the Payments tab, and lets its income, pending debits and dated-ahead rows feed the cash runway. Tick it for every everyday spending account, not just the main one. Savings-pot and reserve accounts are always excluded, whatever is ticked here — that money is already earmarked.</div>
+      </div>
+      <div class="fg" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
           <input type="checkbox" id="tacct-prefunded" ${a?.preFunded ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
           Pre-funded — spending here doesn't count against budgets
         </label>
@@ -19772,6 +19823,7 @@ Object.assign(BA, {
       showInCCRepay: id('tacct-ccrepay')?.checked || false,
       excludeFromNetWorth: id('tacct-exclude-nw')?.checked || false,
       preFunded: id('tacct-prefunded')?.checked || false,
+      includeInPayments: id('tacct-inpay')?.checked || false,
       cashflowClass: existing?.cashflowClass || 'neutral',
       interestRate: id('tacct-rate')?.value !== '' ? parseFloat(id('tacct-rate').value) : null,
       status: id('tacct-status-closed')?.checked ? 'closed' : 'active',
