@@ -8938,6 +8938,15 @@ function payAllocate(pot, strategy, states, runway) {
   // above funds issued statements in the same due-date-ordered pass as the
   // minimums, ahead of the promo catch-up and everything discretionary.)
   parts.discretionary = left;
+  // Anything still owed after the pot ran dry. Shiva asked why Chase got its
+  // full $300 while Apple sat below its minimum; the answer was that the pot was
+  // $198.18 short of everything due, and the panel had no way of saying so —
+  // it reported what was FUNDED and let that read as what was REQUIRED.
+  parts.shortfalls = m.filter(x => requiredNow(x) - x.pay > 0.005)
+    .map(x => ({ name: x.name, short: requiredNow(x) - x.pay, dueDate: x.dueDate,
+                 kind: (x.role === 'pay-in-full' && x.stmtBal != null) ? 'statement' : 'minimum' }))
+    .sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
+  parts.shortTotal = parts.shortfalls.reduce((s2, x) => s2 + x.short, 0);
 
   const eligible = x => x.role !== 'minimum-only' && x.role !== 'pay-in-full';
 
@@ -9414,11 +9423,22 @@ function renderPayments() {
   const PA = A.parts || {};
   const committedTotal = (PA.minimums || 0) + (PA.promo || 0) + (PA.pifEarly || 0);
   const bits = [];
-  if (PA.minimums > 0.005) bits.push(`${payFmt2(PA.minimums)} of unfunded minimums`);
+  // Report what was REQUIRED, not merely what fitted — the funded figure hid a
+  // card sitting below its minimum.
+  const _minRequired = (PA.minimums || 0)
+    + (PA.shortfalls || []).filter(x => x.kind === 'minimum').reduce((s2, x) => s2 + x.short, 0);
+  if (_minRequired > 0.005) bits.push(`${payFmt2(_minRequired)} of unfunded minimums`);
   if (PA.promo    > 0.005) bits.push(`${payFmt2(PA.promo)} of 0% promo catch-up`);
   // Wording follows the rule, not the old one: an issued pay-in-full statement is
   // funded from cash already held, without counting salary still to arrive.
   if (PA.pifEarly > 0.005) bits.push(`${payFmt2(PA.pifEarly)} of pay-in-full statements due`);
+  const shortNote = (PA.shortTotal > 0.005) ? `
+     <div style="font-size:.7rem;line-height:1.6;background:var(--danger-bg);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:6px;padding:9px 12px;margin-bottom:10px;color:var(--text)">
+       <b style="color:var(--danger)">${payFmt2(PA.shortTotal)} short of everything due.</b>
+       ${PA.shortfalls.map(x => `${esc(x.name)} is ${payFmt2(x.short)} under its ${x.kind} (due ${fmtDate(x.dueDate)})`).join('; ')}.
+       Allocation runs in due-date order, so the shortfall lands on whatever is due last —
+       there is not enough cash today to cover it all.
+     </div>` : '';
   const inertNote = (A.deployed > 0.5 && (PA.discretionary || 0) < 1 && bits.length) ? `
      <div style="font-size:.68rem;color:var(--text2);line-height:1.6;background:var(--surface2);border-radius:6px;padding:8px 11px;margin-bottom:10px">
        <b style="color:var(--text)">Every strategy gives the same answer here.</b>
@@ -9461,7 +9481,7 @@ function renderPayments() {
        </div>
        <div style="font-size:.66rem;color:var(--text3);line-height:1.65;min-width:210px">${cmpTxt}</div>
      </div>
-     ${inertNote}
+     ${shortNote}${inertNote}
      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px">
        <div style="font-size:.82rem;color:var(--text2)">
          Deploying <b style="color:var(--text)">${payFmt(A.deployed)}</b> across <b>${A.alloc.length}</b> card${A.alloc.length===1?'':'s'}
