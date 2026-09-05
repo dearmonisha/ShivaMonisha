@@ -1798,16 +1798,45 @@ function oblDueDatesInMonth(o, type, ym) {
   }
   return [];
 }
-// First due date from today onward. Replaces oblNextRenewal() everywhere it was
-// used to mean "when does this next charge", because that one ignored billing
-// cycle edge cases, end dates and every non-monthly cadence.
-function oblNextChargeDate(o, type) {
+// Which occurrences are finished with. Approved means it happened; rejected
+// means you decided it will not. Pending is NOT done — it is still the next
+// thing you have to deal with.
+function oblActionedOccurrences(oblId) {
+  const done = new Set();
+  (D.transactions || []).forEach(t => {
+    if (t.obligationId !== oblId) return;
+    if (t.status !== 'approved' && t.status !== 'rejected') return;
+    done.add((t.oblMonth || (t.date||'').slice(0,7)) + '::' + (t.oblOcc || 0));
+  });
+  return done;
+}
+// The most recent occurrence you actually approved, for the "already charged" note.
+function oblLastApproved(oblId) {
+  return (D.transactions || [])
+    .filter(t => t.obligationId === oblId && t.status === 'approved' && t.date)
+    .sort((a,b) => (b.date||'').localeCompare(a.date||''))[0] || null;
+}
+// The next charge you still have to deal with — NOT simply the next date on the
+// calendar. Google One is anchored to 6 September, so on the 5th the grid read
+// "Due tomorrow" even though its September charge had already been approved on
+// the 4th. An occurrence that has been approved or rejected is finished, and
+// the next renewal is the one after it.
+//
+// Pass { skipActioned: false } where the pure schedule is what is wanted — the
+// modal's cadence preview and the calendar both mean "when does this fall due",
+// not "what do you still owe".
+function oblNextChargeDate(o, type, opts) {
+  const done  = (opts && opts.skipActioned === false) ? null : oblActionedOccurrences(o.id);
   const today = centralToday();
   let [y,m] = today.split('-').map(Number);
   for (let i = 0; i < 30; i++) {
     const ym = y + '-' + String(m).padStart(2,'0');
-    const hit = oblDueDatesInMonth(o, type, ym).find(d => d >= today);
-    if (hit) return hit;
+    const dues = oblDueDatesInMonth(o, type, ym);
+    for (let occ = 0; occ < dues.length; occ++) {
+      if (dues[occ] < today) continue;
+      if (done && done.has(ym + '::' + occ)) continue;
+      return dues[occ];
+    }
     m++; if (m > 12) { m = 1; y++; }
   }
   return null;
@@ -12415,13 +12444,18 @@ function renderOblSubscriptions() {
     const nameStyle = struck ? 'text-decoration:line-through;color:var(--text3)' : '';
     const rowStyle  = dimmed ? 'opacity:.6' : '';
     const endNote = sub.endDate ? `<div style="font-size:.68rem;color:var(--warn);margin-top:1px">ends ${fmtDate(sub.endDate)}</div>` : '';
+    // When this cycle is already settled, say so — otherwise a date pushed a
+    // year out looks like the obligation has been forgotten about.
+    const _sched = oblNextChargeDate(sub, 'subscription', { skipActioned: false });
+    const _last  = (renewal && _sched && renewal !== _sched) ? oblLastApproved(sub.id) : null;
+    const paidNote = _last ? `<br><span style="font-size:.68rem;color:var(--ok)">✓ charged ${fmtDate(_last.date)}</span>` : '';
     return `<tr style="${rowStyle}">
       <td>${oblCatPill(sub)}<span style="${nameStyle}">${esc(sub.name)}</span>${oblDupBadge(_dupWarn, sub.id)}${oblPriceBadge(sub)}
         <div style="margin-top:2px">${oblPostBadges(sub)}</div>${endNote}</td>
       <td class="r">${fmtCurrency(sub.cost)}</td>
       <td>${sub.billingCycle}</td>
       <td class="r" style="color:var(--text3)">${fmtCurrency(monthly)}/mo</td>
-      <td>${struck || !renewal ? '<span style="color:var(--text3)">—</span>' : `<span style="color:${urgCol};font-weight:600">${urgLbl}</span><br><span style="font-size:.72rem;color:var(--text3)">${fmtDate(renewal)}</span>`}</td>
+      <td>${struck || !renewal ? '<span style="color:var(--text3)">—</span>' : `<span style="color:${urgCol};font-weight:600">${urgLbl}</span><br><span style="font-size:.72rem;color:var(--text3)">${fmtDate(renewal)}</span>${paidNote}`}</td>
       <td>${(() => {
         const pm = sub.paymentMethod||'';
         const warn = pm && oblPayAcctMismatch(pm) ? ' <span title="Account not found in Transactions" style="color:var(--warn);cursor:default">⚠️</span>' : '';
