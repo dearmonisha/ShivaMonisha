@@ -1737,6 +1737,18 @@ function oblGroupLabel(expenseTypeId) {
   const grp = (D.budget.groups||[]).find(g => g.id === cat.groupId);
   return grp ? grp.name : (cat.name || 'Uncategorised');
 }
+// Which of the Monthly tab's own coarse categories this obligation belongs to.
+// That tab speaks a different, older vocabulary than the budget groups, and the
+// slicer chips along the top are built from it — so a Monthly row has to be
+// labelled in ITS language, not the budget's. Use the budget group when the two
+// happen to agree (Utilities, Insurance), otherwise fall back to what the row
+// fundamentally is.
+function oblMonthlyCategory(o, type) {
+  const group = oblGroupLabel(o.expenseTypeId);
+  if ((D.categories || []).includes(group)) return group;
+  return type === 'emi' ? 'Loans' : type === 'split' ? 'Other' : 'Subscriptions';
+}
+
 function oblCatPill(o) {
   if (oblHasSplitTemplate(o)) {
     const n = o.splitTemplate.filter(l => l && l.categoryId).length;
@@ -3666,7 +3678,7 @@ function generateCycle() {
     D.cycles[ym].payments.push({
       id: uid(), templateId: null, obligationId: obj.id, oblType: type,
       name: oblName(obj),
-      category: oblGroupLabel(obj.expenseTypeId), type: '',
+      category: oblMonthlyCategory(obj, type), type: '',
       statementDate: null, dueDate: dues[0],
       amountDue: oblExpectedAmount(obj, type),
       outstandingBalance: null, amountPaid: null,
