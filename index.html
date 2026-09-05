@@ -1189,7 +1189,6 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 // ════════════════════════════════════════════════════════════
 let D = {
   categories: ['Utilities','Credit Cards','Subscriptions','Insurance','Loans','Other'],
-  accounts: ['Chase Checking','BofA Savings','Manual / Check'],
   templates: [],
   cycles: {},  // keyed "YYYY-MM" → { payments: [...] }
   familyAccounts: null,  // seeded on first load
@@ -1200,7 +1199,7 @@ let D = {
 let UI = {
   view: 'monthly',
   month: ymNow(),
-  setupTab: 'templates',
+  setupTab: 'accounts',
   dirty: false,
   catFilter: 'All',        // monthly slicer selection
   sortCol: 'dueDate',      // default sort by due date
@@ -1237,6 +1236,9 @@ let UI = {
     emi:   { col: 'name',   dir: 'asc' },
     split: { col: 'name',   dir: 'asc' },
   },
+  acctSearch:      '',   // Setup → Accounts: free-text filter
+  acctTypeFilter:  '',   // Setup → Accounts: type filter
+  acctShowClosed:  false, // Setup → Accounts: include closed accounts
   _oblSplitLines:  [],   // split-template editor state while an obligation modal is open
   oblHistOpen:     null, // Obligations grid: which row's posted history is open
   oblSearch:       '',   // Obligations grid: free-text filter
@@ -1564,6 +1566,10 @@ function _applyData(raw) {
   if (!D.budget.expenseSchedules) D.budget.expenseSchedules = [];
   if (!D.budget.ccRepayments)     D.budget.ccRepayments     = [];
   if (!D.budget.rolloverPotLinks) D.budget.rolloverPotLinks = {};
+  // D.accounts was a list of bare strings used only to fill two dropdowns. It is
+  // gone; account pickers read the real register (D.txnAccounts) now. Deleted on
+  // load as well as in the data, so an older file cannot reintroduce it.
+  if (D.accounts !== undefined) { delete D.accounts; dirty(); }
   if (!D.obligations) D.obligations = { subscriptions: [], emis: [], splits: [] };
   if (!D.obligations.subscriptions) D.obligations.subscriptions = [];
   if (!D.obligations.emis)          D.obligations.emis          = [];
@@ -3307,7 +3313,7 @@ function rowHTML(p, idx) {
   const amtFmt  = fmtCurrency(p.amountDue);
   const balFmt  = fmtCurrency(p.outstandingBalance);
   const paidFmt = fmtCurrency(p.amountPaid);
-  const pfrom   = p.paidFrom || '';
+  const pfrom   = acctLabel(p.paidFromId, p.paidFrom);
 
   // Paid From: editable only for non-automatic payments
   const paidFromCell = p.isAutomatic
@@ -3408,7 +3414,33 @@ function editCell(cellEl, field, pid, type) {
 }
 
 function editPaidFrom(cellEl, pid) {
-  editCellSel(cellEl, 'paidFrom', pid, D.accounts);
+  editCellAcct(cellEl, pid);
+}
+
+// Paid From is an account, not a label. It writes the id and keeps the name
+// beside it for display, so a renamed account follows every row that used it.
+function editCellAcct(cellEl, pid) {
+  if (cellEl.dataset.editing) return;
+  cellEl.dataset.editing = '1';
+  const p = findPayment(pid);
+  if (!p) return;
+  const sel = document.createElement('select');
+  sel.className = 'finput';
+  sel.style.cssText = 'height:26px;font-size:.8rem;width:100%';
+  sel.innerHTML = acctOptions(p.paidFromId, p.paidFrom, { blank: '— None —' });
+  const commit = () => {
+    const aid = sel.value || null;
+    p.paidFromId = aid;
+    p.paidFrom   = aid ? acctLabel(aid, null) : null;
+    dirty();
+    renderMonthly();
+  };
+  sel.addEventListener('change', commit);
+  sel.addEventListener('blur', commit);
+  sel.addEventListener('keydown', e => { if (e.key === 'Escape') { delete cellEl.dataset.editing; renderMonthly(); } });
+  while (cellEl.firstChild) cellEl.removeChild(cellEl.firstChild);
+  cellEl.appendChild(sel);
+  sel.focus();
 }
 
 function editCellSel(cellEl, field, pid, options) {
@@ -3594,7 +3626,8 @@ function generateCycle() {
           outstandingBalance: null,
           amountPaid: null,
           isPaid: false, paidDate: null,
-          paidFrom: t.paymentAccount || null,
+          paidFromId: t.paymentAccountId || (acctByName(t.paymentAccount)||{}).id || null,
+          paidFrom: acctLabel(t.paymentAccountId, t.paymentAccount) || null,
           isAutomatic: t.isAutomatic || false,
           notes: ''
         });
@@ -3612,7 +3645,8 @@ function generateCycle() {
         outstandingBalance: null,
         amountPaid: null,
         isPaid: false, paidDate: null,
-        paidFrom: t.paymentAccount || null,
+        paidFromId: t.paymentAccountId || (acctByName(t.paymentAccount)||{}).id || null,
+        paidFrom: acctLabel(t.paymentAccountId, t.paymentAccount) || null,
         isAutomatic: t.isAutomatic || false,
         notes: ''
       });
@@ -3637,6 +3671,8 @@ function generateCycle() {
       amountDue: oblExpectedAmount(obj, type),
       outstandingBalance: null, amountPaid: null,
       isPaid: false, paidDate: null,
+      paidFromId: (acctByName(obj.paymentMethod)||{}).id || null,
+      paidFromId: (acctByName(obj.paymentMethod)||{}).id || null,
       paidFrom: obj.paymentMethod || null,
       isAutomatic: false,
       notes: dues.length > 1 ? `${dues.length} charges this month` : (obj.amountType === 'variable' ? 'variable — estimate' : '')
@@ -3671,7 +3707,7 @@ function generateCycle() {
 // ════════════════════════════════════════════════════════════
 function addPaymentModal() {
   const catOpts = D.categories.map(c=>`<option>${esc(c)}</option>`).join('');
-  const acctOpts = D.accounts.map(a=>`<option>${esc(a)}</option>`).join('');
+  const acctOpts = acctOptions(null, null, { blank: false });
   showModal(`
     <div class="modal-title">Add Payment — ${ymLabel(UI.month)}</div>
     <div class="form-grid">
@@ -3716,7 +3752,8 @@ function submitAddPayment() {
     outstandingBalance: bal ? parseFloat(bal) : null,
     amountPaid: null,
     isPaid: false, paidDate: null,
-    paidFrom: id('np-acct').value || null,
+    paidFromId: id('np-acct').value || null,
+    paidFrom: acctLabel(id('np-acct').value || null, null) || null,
     isAutomatic: id('np-auto').checked,
     notes: ''
   });
@@ -3783,11 +3820,11 @@ function renderSetup() {
     </div>
 
     <div class="stabs">
-      <button class="stab ${UI.setupTab==='templates'?'active':''}" id="stab-templates" onclick="switchSetupTab('templates')">Payment Templates</button>
-      <button class="stab ${UI.setupTab==='accounts'?'active':''}" id="stab-accounts" onclick="switchSetupTab('accounts')">Payment Accounts</button>
-      <button class="stab ${UI.setupTab==='categories'?'active':''}" id="stab-categories" onclick="switchSetupTab('categories')">Categories</button>
+      <button class="stab ${UI.setupTab==='accounts'?'active':''}" id="stab-accounts" onclick="switchSetupTab('accounts')">Accounts</button>
       <button class="stab ${UI.setupTab==='recurring'?'active':''}" id="stab-recurring" onclick="switchSetupTab('recurring')">Recurring Expenses</button>
       <button class="stab ${UI.setupTab==='transfers'?'active':''}" id="stab-transfers" onclick="switchSetupTab('transfers')">Standing Transfers</button>
+      <button class="stab ${UI.setupTab==='categories'?'active':''}" id="stab-categories" onclick="switchSetupTab('categories')">Categories</button>
+      <button class="stab ${UI.setupTab==='templates'?'active':''}" id="stab-templates" onclick="switchSetupTab('templates')">Payment Templates</button>
     </div>
     <div id="setup-content"></div>
   `;
@@ -3962,7 +3999,7 @@ function renderTemplates(c) {
     if (sf === 'suspended' &&  t.isActive) return false;
     // Text search across name, category, frequency
     if (q) {
-      const hay = [t.name, t.category, t.frequency, t.paymentAccount].join(' ').toLowerCase();
+      const hay = [t.name, t.category, t.frequency, acctLabel(t.paymentAccountId, t.paymentAccount)].join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -3981,7 +4018,7 @@ function renderTemplates(c) {
       <td><div class="cell mono">${amtInfo}</div></td>
       <td><div class="cell">${stmtInfo}</div></td>
       <td><div class="cell">${dueInfo}</div></td>
-      <td><div class="cell">${t.isAutomatic?`<span class="abadge">AUTO</span> <span style="font-size:11px;color:var(--text3)">${esc(t.paymentAccount||'')}</span>`:'<span style="color:var(--text3);font-size:11px">Manual</span>'}</div></td>
+      <td><div class="cell">${t.isAutomatic?`<span class="abadge">AUTO</span> <span style="font-size:11px;color:var(--text3)">${esc(acctLabel(t.paymentAccountId, t.paymentAccount))}</span>`:'<span style="color:var(--text3);font-size:11px">Manual</span>'}</div></td>
       <td><div class="cell">${t.isActive?'<span style="color:var(--ok);font-size:11px;font-weight:700">Active</span>':'<span class="sus-badge">Suspended</span>'}</div></td>
       <td><div class="ract">
         <button class="ibtn" title="Edit" onclick="editTplModal('${t.id}')">✏️</button>
@@ -4045,7 +4082,7 @@ function editTplModal(tid) {
   const t = tid ? D.templates.find(x=>x.id===tid) : null;
   const ev = v => esc(v||'');
   const catOpts = D.categories.map(c=>`<option ${(t?.category||'')==c?'selected':''}>${ev(c)}</option>`).join('');
-  const acctOpts = D.accounts.map(a=>`<option ${(t?.paymentAccount||'')==a?'selected':''}>${ev(a)}</option>`).join('');
+  const acctOpts = acctOptions(t?.paymentAccountId, t?.paymentAccount, { blank: '— Select —' });
   const freqs = ['Monthly','Bi-Weekly','Quarterly','Semi-Annual','Annual'];
   const fOpts = freqs.map(f=>`<option ${(t?.frequency||'Monthly')===f?'selected':''}>${f}</option>`).join('');
   const isFixed = t?.isFixed||false;
@@ -4086,7 +4123,7 @@ function editTplModal(tid) {
       </div></div>
       <div class="fg" id="t-autogrp">
         <label class="flbl">Pay From Account <span id="t-acct-hint" style="font-weight:400;color:var(--text3);font-size:.7rem">${t?.isAutomatic?'— debited automatically':'— set this even for manual payments'}</span></label>
-        <select class="finput" id="t-acct"><option value="">— Select —</option>${acctOpts}</select>
+        <select class="finput" id="t-acct">${acctOpts}</select>
         <div style="font-size:.68rem;color:var(--text3);margin-top:3px;line-height:1.45">
           Tells the Payments tab whether this bill actually leaves your bank. Bills charged to a card are excluded from the cash runway.
         </div>
@@ -4141,7 +4178,10 @@ function submitTpl(existId) {
     isAutomatic: isAuto,
     // Saved whether or not the payment is automatic — manual bills still leave a
     // specific account, and the Payments runway keys off this
-    paymentAccount: id('t-acct')?.value || null,
+    paymentAccountId: id('t-acct')?.value || null,
+    // The name is kept alongside the id purely so search and old rows still
+    // read correctly; every lookup prefers the id.
+    paymentAccount: acctLabel(id('t-acct')?.value || null, null) || null,
     ccCardId: id('t-cccard')?.value || null,
     isActive: existId ? (D.templates.find(t=>t.id===existId)?.isActive ?? true) : true
   };
@@ -4184,37 +4224,83 @@ function deleteTpl(tid) {
 
 // ── ACCOUNTS ──
 function renderAccounts(c) {
-  const chips = D.accounts.map(a => `
-    <div class="chip">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="var(--primary)"><path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v1H0V4zm0 3h16v5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V7zm3 2a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1H3zm2.5 0a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1h-5z"/></svg>
-      ${esc(a)}
-      <span class="chip-x" onclick="removeAccount('${esc(a)}')">×</span>
-    </div>`).join('');
+  const all   = D.txnAccounts || [];
+  const q     = (UI.acctSearch||'').trim().toLowerCase();
+  const tf    = UI.acctTypeFilter || '';
+  const showClosed = !!UI.acctShowClosed;
+  const rows  = all.filter(a => {
+    if (!showClosed && a.status === 'closed') return false;
+    if (tf && a.type !== tf) return false;
+    if (q && !(a.name||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const ORDER = ['Bank','Savings','Cash','Credit Card','Loans','Investment','Real Estate','Tracking'];
+  const grouped = {};
+  rows.forEach(a => { (grouped[a.type||'Other'] = grouped[a.type||'Other'] || []).push(a); });
+  const openCt   = all.filter(a => a.status !== 'closed').length;
+  const closedCt = all.length - openCt;
+
+  const pill = (txt, title, tone) => `<span title="${esc(title)}" style="font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:1px 6px;border-radius:99px;white-space:nowrap;background:color-mix(in srgb,var(--${tone}) 12%,transparent);color:var(--${tone});border:1px solid color-mix(in srgb,var(--${tone}) 28%,transparent)">${esc(txt)}</span>`;
+
+  const body = ORDER.concat(Object.keys(grouped).filter(t => !ORDER.includes(t)))
+    .filter(t => grouped[t] && grouped[t].length)
+    .map(t => {
+      const list = grouped[t].slice().sort((a,b) => (a.name||'').localeCompare(b.name||''));
+      const sub  = list.reduce((sum,a) => sum + txnCurrentBalance(a), 0);
+      return `
+      <div class="obl-section-hdr" style="margin-top:16px">
+        <h3 style="font-size:.9rem;font-weight:700;color:var(--text)">${esc(t)}
+          <span style="font-size:.76rem;font-weight:400;color:var(--text3)">${list.length} account${list.length!==1?'s':''} · ${fmtCurrency(Math.abs(sub))}</span></h3>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;overflow-x:auto">
+        <table class="obl-tbl"><tbody>${list.map(a => {
+          const card = acctCard(a);
+          const bal  = txnCurrentBalance(a);
+          const flags = [];
+          if (a.status === 'closed')      flags.push(pill('closed','Hidden from everyday lists; history kept','text3'));
+          if (a.includeInPayments)        flags.push(pill('payments cash','Feeds Cash Today and Safe to Deploy','ok'));
+          if (a.preFunded)                flags.push(pill('pre-funded',"Spending here doesn't count against budgets",'info'));
+          if (a.excludeFromNetWorth)      flags.push(pill('off balance sheet','Excluded from Net Worth and Cash Flow','text3'));
+          if (a.showInCCRepay)            flags.push(pill('cc repay source','Shown in the CC Repayment Planner','info'));
+          if (card && card.active === false) flags.push(pill('card inactive','Credit record is inactive','warn'));
+          const terms = card
+            ? `<div style="font-size:.7rem;color:var(--text3);margin-top:2px">limit ${fmtCurrency(card.limit||0)} · ${card.apr||0}% APR${card.intDay?` · stmt ${oblOrdinal(card.intDay)}`:''}${card.promoExpiration?` · 0% to ${fmtDate(card.promoExpiration)}`:''}</div>`
+            : (a.interestRate ? `<div style="font-size:.7rem;color:var(--text3);margin-top:2px">${a.interestRate}% APR</div>` : '');
+          const isDebt = a.type === 'Credit Card' || a.type === 'Loans';
+          return `<tr${a.status==='closed'?' style="opacity:.55"':''}>
+            <td style="min-width:200px"><span style="font-weight:600">${esc(a.name)}</span>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">${flags.join('')}</div>${terms}</td>
+            <td class="r" style="white-space:nowrap;font-weight:600;color:${isDebt ? (bal>0?'var(--danger)':'var(--ok)') : (bal>=0?'var(--ok)':'var(--danger)')}">${fmtCurrency(Math.abs(bal))}</td>
+            <td style="width:1%;white-space:nowrap;text-align:right">
+              <button class="btn btn-sm btn-ghost btn-xs" onclick="acctEditModal('${a.id}')" title="Edit">✎</button>
+            </td></tr>`;
+        }).join('')}</tbody></table>
+      </div>`;
+    }).join('');
 
   c.innerHTML = `
-    <div class="setup-toolbar"><span class="stitle">Payment Accounts</span></div>
-    <div class="setup-grid">
-      <div class="chips">${chips || '<span style="color:var(--text3);font-size:12px">No accounts yet</span>'}</div>
-      <div class="chip-add">
-        <input id="new-acct" placeholder="Add account (e.g. Chase Checking)" onkeydown="if(event.key==='Enter')addAccount()">
-        <button class="btn btn-primary btn-sm" onclick="addAccount()">&#65291; Add</button>
-      </div>
-    </div>`;
+    <div class="setup-toolbar"><span class="stitle">Accounts</span>
+      <button class="btn btn-primary btn-sm" onclick="acctEditModal(null)">＋ Add Account</button></div>
+    <div style="font-size:.78rem;color:var(--text3);margin:0 0 10px;max-width:80ch">
+      Every account in one place — bank, cards, loans, investments and tracking. Credit limits and APRs are edited inside the card's own account, so a card's name is only ever entered once. The Transactions and Credit Cards tabs read from this list.
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
+      <input class="finput" style="max-width:220px;height:32px;font-size:.82rem" placeholder="Search accounts…" value="${esc(UI.acctSearch||'')}" oninput="BA.acctSetSearch(this.value)">
+      <select class="finput" style="max-width:170px;height:32px;font-size:.82rem" onchange="BA.acctSetTypeFilter(this.value)">
+        <option value="">All types</option>
+        ${ORDER.map(t => `<option value="${t}"${t===tf?' selected':''}>${t}</option>`).join('')}
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--text2);cursor:pointer">
+        <input type="checkbox" ${showClosed?'checked':''} onchange="BA.acctToggleClosed()" style="width:14px;height:14px;accent-color:var(--primary)">
+        Show ${closedCt} closed
+      </label>
+      <span style="margin-left:auto;font-size:.76rem;color:var(--text3)">${openCt} open · ${all.length} total</span>
+    </div>
+    ${body || '<div style="color:var(--text3);font-size:.85rem;padding:24px 0">No accounts match.</div>'}`;
 }
-
-function addAccount() {
-  const v = id('new-acct').value.trim();
-  if (!v) return;
-  if (D.accounts.includes(v)) { toast('Already exists', 'err'); return; }
-  D.accounts.push(v);
-  dirty(); renderSetupContent(); toast('Account added', 'ok');
-}
-
-function removeAccount(name) {
-  if (!confirm(`Remove account "${name}"?`)) return;
-  D.accounts = D.accounts.filter(a=>a!==name);
-  dirty(); renderSetupContent(); toast('Account removed');
-}
+// addAccount() / removeAccount() managed D.accounts — a list of bare strings
+// with no data behind it, and no way for a value to be wrong. Accounts are
+// created in Setup → Accounts now, against the real register.
 
 // ── CATEGORIES ──
 function renderCategories(c) {
@@ -6337,170 +6423,20 @@ function buildCardHealthPanel() {
     </div>`;
 }
 
+// A second, unreachable editCCCardModal() lived here. Two function declarations
+// of the same name existed; the later one always won, so this one had been dead
+// for as long as both were present. Card editing now happens in acctEditModal().
+// saveCCCardEdit / confirmDeleteCCCard / deleteCCCard lived here, all reachable
+// only from that dead modal. Removing a card now happens by deleting its
+// account in Setup → Accounts, which deactivates the card rather than dropping
+// its statement history.
+function addCCCardModal() { acctOpenInSetup(null); }
 function editCCCardModal(cardId) {
-  const cct = D.ccTracker;
-  const card = cct.cards.find(c => c.id === cardId);
-  if (!card) return;
-  const isActive = card.active !== false;
-  showModal(`
-    <div class="modal-title">Edit Card &mdash; ${esc(card.name)}</div>
-    <div class="form-grid">
-      <div class="fg"><label class="flbl">Card Name</label>
-        <input id="ecc-name"  class="finput" type="text"   value="${esc(card.name)}"></div>
-      <div class="fg"><label class="flbl">Statement Day (e.g. 15th)</label>
-        <input id="ecc-day"   class="finput" type="text"   value="${esc(card.intDay||'')}" placeholder="e.g. 15th"></div>
-      <div class="fg"><label class="flbl">Credit Limit ($)</label>
-        <input id="ecc-limit" class="finput" type="number" step="100" min="0" value="${card.limit != null ? card.limit : ''}"></div>
-      <div class="fg"><label class="flbl">APR (%)</label>
-        <input id="ecc-apr"   class="finput" type="number" step="0.01" min="0" max="100" value="${card.apr != null ? card.apr : ''}" placeholder="e.g. 24.99"></div>
-      <div class="fg"><label class="flbl">Status</label>
-        <select id="ecc-active" class="finput">
-          <option value="1"${isActive ? ' selected' : ''}>Active</option>
-          <option value="0"${!isActive ? ' selected' : ''}>Inactive</option>
-        </select></div>
-    </div>
-    <div class="mfoot" style="justify-content:space-between">
-      <button class="btn" style="color:var(--danger);border-color:var(--danger)" onclick="confirmDeleteCCCard('${esc(cardId)}')">Delete Card</button>
-      <div style="display:flex;gap:8px">
-        <button class="btn" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveCCCardEdit('${esc(cardId)}')">Save</button>
-      </div>
-    </div>`);
-  setTimeout(() => id('ecc-name')?.focus(), 50);
-}
-
-function saveCCCardEdit(cardId) {
-  const cct = D.ccTracker;
-  const card = cct.cards.find(c => c.id === cardId);
-  if (!card) return;
-  const name  = id('ecc-name').value.trim();
-  const day   = id('ecc-day').value.trim();
-  const limit = parseFloat(id('ecc-limit').value);
-  const apr   = parseFloat(id('ecc-apr').value);
-  if (name)          card.name   = name;
-  if (day !== undefined) card.intDay = day;
-  if (!isNaN(limit) && limit >= 0) card.limit = limit;
-  if (!isNaN(apr)   && apr   >= 0) card.apr   = apr;
-  card.active = id('ecc-active').value === '1';
-  dirty(); closeModal(); renderCCTracker();
-  toast('Card updated ✓', 'ok');
-}
-
-function confirmDeleteCCCard(cardId) {
-  const card = D.ccTracker.cards.find(c => c.id === cardId);
-  if (!card) return;
-  showModal(`
-    <div class="modal-title" style="color:var(--danger)">Delete &ldquo;${esc(card.name)}&rdquo;?</div>
-    <p style="margin:0 0 16px;font-size:14px;color:var(--text2)">This permanently removes <strong>${esc(card.name)}</strong> and all its recorded interest &amp; outstanding history across every month. This cannot be undone.</p>
-    <div class="mfoot" style="justify-content:space-between">
-      <button class="btn" onclick="editCCCardModal('${esc(cardId)}')">&#8592; Back</button>
-      <button class="btn" style="background:var(--danger);color:#fff;border-color:var(--danger)" onclick="deleteCCCard('${esc(cardId)}')">Yes, Delete Card</button>
-    </div>`);
-}
-
-function deleteCCCard(cardId) {
-  const cct = D.ccTracker;
-  const card = cct.cards.find(c => c.id === cardId);
-  if (!card) return;
-  const name = card.name;
-  cct.cards = cct.cards.filter(c => c.id !== cardId);
-  delete cct.data[cardId];
-  dirty(); closeModal(); renderCCTracker();
-  toast(`"${name}" deleted`, 'ok');
-}
-
-function _ccCardModalHTML(card) {
-  const isEdit = !!card;
-  const ev = v => esc(v||'');
-  // Transaction accounts for the linked account picker
-  const acctOpts = (D.txnAccounts||[])
-    .filter(a => a.type === 'Credit Card' && (a.status !== 'closed' || a.id === card?.linkedTxnAccountId))
-    .map(a => `<option value="${a.id}" ${(card?.linkedTxnAccountId||'')=== a.id?'selected':''}>${ev(a.name)}</option>`)
-    .join('');
-  const allAcctOpts = (D.txnAccounts||[])
-    .filter(a => a.status !== 'closed' || a.id === card?.linkedTxnAccountId)
-    .map(a => `<option value="${a.id}" ${(card?.linkedTxnAccountId||'')=== a.id?'selected':''}>${ev(a.name)}</option>`)
-    .join('');
-  // Expense category options for interest
-  const catOpts = txnCatOptions(card?.interestCategoryId || null);
-  return `
-    <div class="modal-title">${isEdit?'Edit':'Add'} Credit Card</div>
-    <div class="form-grid">
-      <div class="fg"><label class="flbl">Card Name <span style="color:var(--danger)">*</span></label>
-        <input id="ncc-name"  class="finput" type="text" value="${ev(card?.name)}" placeholder="e.g. Chase Sapphire"></div>
-      <div class="fg"><label class="flbl">Statement Day (e.g. 15)</label>
-        <input id="ncc-day"   class="finput" type="text" value="${ev(card?.intDay)}" placeholder="e.g. 15"></div>
-      <div class="fg"><label class="flbl">Credit Limit ($)</label>
-        <input id="ncc-limit" class="finput" type="number" step="100" min="0" value="${card?.limit!=null?card.limit:''}" placeholder="e.g. 10000"></div>
-      <div class="fg"><label class="flbl">APR (%)</label>
-        <input id="ncc-apr"   class="finput" type="number" step="0.01" min="0" max="100" value="${card?.apr!=null?card.apr:''}" placeholder="e.g. 24.99"></div>
-      <div class="fg"><label class="flbl">Status</label>
-        <select id="ncc-active" class="finput">
-          <option value="1" ${card?.active!==false?'selected':''}>Active</option>
-          <option value="0" ${card?.active===false?'selected':''}>Inactive</option>
-        </select></div>
-      <div class="fg full" style="margin-top:4px;padding-top:10px;border-top:1px dashed var(--border)">
-        <span style="font-size:.72rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Auto-Sync Links</span>
-      </div>
-      <div class="fg full"><label class="flbl">Transactions Account <span style="font-size:.7rem;font-weight:400;color:var(--text3)">— which account in Transactions tab = this card?</span></label>
-        <select id="ncc-acct" class="finput"><option value="">— None —</option>${allAcctOpts}</select></div>
-      <div class="fg full"><label class="flbl">Interest Expense Category <span style="font-size:.7rem;font-weight:400;color:var(--text3)">— which category do you tag CC interest transactions with?</span></label>
-        <select id="ncc-intcat" class="finput"><option value="">— None —</option>${catOpts}</select></div>
-    </div>
-    <div class="mfoot">
-      <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="${isEdit?`updateCCCard('${card.id}')`:'saveNewCCCard()'}">
-        ${isEdit?'Save Changes':'Add Card'}
-      </button>
-    </div>`;
-}
-
-function addCCCardModal() {
-  showModal(_ccCardModalHTML(null));
-  setTimeout(() => id('ncc-name')?.focus(), 50);
-}
-
-function editCCCardModal(cardId) {
-  const card = (D.ccTracker.cards||[]).find(c => c.id === cardId);
-  if (!card) return;
-  showModal(_ccCardModalHTML(card));
-  setTimeout(() => id('ncc-name')?.focus(), 50);
-}
-
-function _readCCCardFields() {
-  const name  = id('ncc-name').value.trim();
-  if (!name) { id('ncc-name').style.borderColor = 'var(--danger)'; id('ncc-name').focus(); return null; }
-  const limit = parseFloat(id('ncc-limit').value);
-  const apr   = parseFloat(id('ncc-apr').value);
-  return {
-    name,
-    intDay:              id('ncc-day').value.trim() || '',
-    limit:               (!isNaN(limit) && limit >= 0) ? limit : 0,
-    apr:                 (!isNaN(apr)   && apr   >= 0) ? apr   : 0,
-    active:              id('ncc-active').value === '1',
-    linkedTxnAccountId:  id('ncc-acct')?.value   || null,
-    interestCategoryId:  id('ncc-intcat')?.value  || null,
-  };
-}
-
-function saveNewCCCard() {
-  const fields = _readCCCardFields();
-  if (!fields) return;
-  const slug  = fields.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-  const newId = slug + '_' + Date.now().toString(36);
-  D.ccTracker.cards.push({ id: newId, ...fields });
-  dirty(); closeModal(); renderCCTracker();
-  toast(`${fields.name} added ✓`, 'ok');
-}
-
-function updateCCCard(cardId) {
-  const fields = _readCCCardFields();
-  if (!fields) return;
-  const idx = (D.ccTracker.cards||[]).findIndex(c => c.id === cardId);
-  if (idx < 0) return;
-  D.ccTracker.cards[idx] = { ...D.ccTracker.cards[idx], ...fields };
-  dirty(); closeModal(); renderCCTracker();
-  toast('Card updated ✓', 'ok');
+  const card = (D.ccTracker?.cards||[]).find(c => c.id === cardId);
+  const acct = card && ((D.txnAccounts||[]).find(a => a.ccCardId === card.id)
+                     || (card.linkedTxnAccountId ? acctById(card.linkedTxnAccountId) : null));
+  if (!acct) { toast('That card has no account yet — add it in Setup → Accounts', 'err'); acctOpenInSetup(null); return; }
+  acctOpenInSetup(acct.id);
 }
 
 function renderCCTracker() {
@@ -9128,7 +9064,7 @@ function payOutflowEvents(from, to, meta) {
   // A template's "Pay From Account" is free text, so match it against EVERY
   // included account's name — otherwise a bill paid from New Spend looked like
   // it left no bank at all and was silently dropped from the runway.
-  const _bankNames = new Set(payBankAccounts().map(a => (a.name || '').trim().toLowerCase()));
+  const _bankIds = new Set(payBankAccounts().map(a => a.id));
   const bank = payBankAccounts()[0];
   const skipped = [];
   let unknown = 0;
@@ -9137,9 +9073,9 @@ function payOutflowEvents(from, to, meta) {
   // understates what is available. `paidFrom` comes from the template's Pay From Account.
   // Unset means unknown — counted, because under-stating cash is the safer error.
   const leavesBank = p => {
-    const src = (p.paidFrom || '').trim().toLowerCase();
-    if (!src) { unknown++; return true; }
-    return _bankNames.has(src);
+    const acct = acctResolve(p.paidFromId, p.paidFrom);
+    if (!acct) { unknown++; return true; }   // unknown counts — understating cash is the safer error
+    return _bankIds.has(acct.id);
   };
 
   Object.values(D.cycles || {}).forEach(cy => {
@@ -10916,10 +10852,14 @@ function renderCCRepaySection(month) {
   const wrap = id('ccRepayWrap');
   if (!wrap) return;
 
-  const ccAccounts  = (D.txnAccounts || []).filter(a => a.type === 'Credit Card');
+  const ccAccounts  = (D.txnAccounts || []).filter(a =>
+    a.type === 'Credit Card' &&
+    // A closed card stays visible only while it still owes something, so a card
+    // closed mid-cycle can still be paid off; once settled it drops out.
+    (a.status !== 'closed' || a.id === UI.ccrSelectedCard || txnCurrentBalance(a) > 0.005));
   if (!ccAccounts.length) { wrap.innerHTML = ''; return; }
 
-  const bankAccounts = (D.txnAccounts || []).filter(a => ['Bank', 'Savings', 'Cash'].includes(a.type));
+  const bankAccounts = (D.txnAccounts || []).filter(a => ['Bank', 'Savings', 'Cash'].includes(a.type) && a.status !== 'closed');
   const repayments   = D.budget.ccRepayments || [];
   const monthLabel   = bFmtMonth(month);
   const selCardId    = UI.ccrSelectedCard || null;
@@ -11067,8 +11007,10 @@ function renderCCRepaySection(month) {
     : '';
 
   // ── ADD PAYMENT form row (pinned at bottom of right panel) ──
-  const bankOpts   = bankAccounts.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('');
-  const cardOpts   = cardRows.map(r => `<option value="${r.card.id}"${r.card.id===selCardId?' selected':''}>${esc(r.card.name)}</option>`).join('');
+  const bankOpts   = acctOptions(null, null, { types: ['Bank','Savings','Cash'], blank: false, flat: true });
+  const cardOpts   = cardRows
+    .filter(r => r.card.status !== 'closed' || r.card.id === selCardId)
+    .map(r => `<option value="${r.card.id}"${r.card.id===selCardId?' selected':''}>${esc(r.card.name)}</option>`).join('');
   const frmRemain  = selCard ? (cardRows.find(r => r.card.id === selCardId)?.remaining || 0)
                              : (cardRows.find(r => r.remaining > 0)?.remaining || 0);
   const addPayRow  = `<tr style="background:color-mix(in srgb,var(--primary) 5%,var(--surface2));border-top:2px solid var(--border)">
@@ -12338,13 +12280,10 @@ function oblUpdatePreview(type) {
 
 // Build <option> list from D.txnAccounts for obligation modals
 function oblTxnAcctOptions(selectedName) {
-  const opts = (D.txnAccounts||[])
-    .filter(a => a.status !== 'closed' || (a.name||'') === (selectedName||''))
-    .map(a => {
-      const sel = (a.name||'') === (selectedName||'') ? ' selected' : '';
-      return `<option value="${esc(a.name||'')}"${sel}>${esc(a.name||'')}</option>`;
-    }).join('');
-  return `<option value="">— Select account —</option>${opts}`;
+  // Obligations still store the account NAME in paymentMethod, so this one asks
+  // for name-valued options — but it is the same builder, same closed-account
+  // rule and same grouping as every other account picker.
+  return acctOptions(null, selectedName, { valueBy: 'name', blank: '— Select account —' });
 }
 
 function oblHistRow(oblId, type, cols) {
@@ -14742,6 +14681,10 @@ const BA = {
     UI.oblTab = 'review';
     switchView('obligations');
   },
+  acctSetSearch(v)     { UI.acctSearch = v; renderSetupContent(); const el = document.querySelector('#setup-content input[placeholder^="Search accounts"]'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } },
+  acctSetTypeFilter(v) { UI.acctTypeFilter = v; renderSetupContent(); },
+  acctToggleClosed()   { UI.acctShowClosed = !UI.acctShowClosed; renderSetupContent(); },
+
   oblSplitAdd() {
     if (!UI._oblSplitLines) UI._oblSplitLines = [];
     UI._oblSplitLines.push({ categoryId: '', amount: 0, remainder: UI._oblSplitLines.length === 0, notes: '' });
@@ -15685,10 +15628,10 @@ const BA = {
     const potLinks = D.budget.rolloverPotLinks || {};
     const curLink  = potLinks[catId] || '';
     // Savings-type accounts to pick from (Bank + Savings — not CC or Investment)
-    const accts = (D.txnAccounts||[]).filter(a => ['Bank','Savings','Cash'].includes(a.type));
-    const opts  = accts.map(a =>
-      `<option value="${esc(a.id)}" ${a.id===curLink?'selected':''}>${esc(a.name)} (${a.type}) — ${fmtCurrency(txnCurrentBalance(a))}</option>`
-    ).join('');
+    const opts = acctOptions(curLink, null, {
+      types: ['Bank','Savings','Cash'], blank: '— None —', flat: true,
+      label: a => `${esc(a.name)} (${esc(a.type)}) — ${fmtCurrency(txnCurrentBalance(a))}`,
+    });
     showModal(`
       <div class="modal-title">🏦 Link Savings Pot — ${esc(cat.name)}</div>
       <p style="font-size:.82rem;color:var(--text2);margin:0 0 14px">
@@ -16581,7 +16524,7 @@ function renderTxnLeftNav() {
           <span class="txn-drag-handle" ondragstart="event.stopPropagation()" onclick="event.stopPropagation()" title="Drag to reorder">⠿</span>
           <span class="txn-acct-name" style="flex:1;min-width:0">${esc(acct.name)}</span>
           <span style="font-size:.75rem;font-weight:600;flex-shrink:0;margin-right:2px">${balMeta}</span>
-          <button class="btn btn-sm btn-ghost btn-xs" style="padding:0 3px;font-size:.7rem;opacity:.55;flex-shrink:0" onclick="event.stopPropagation();txnEditAccountModal('${acct.id}')" title="Edit account">✎</button>
+          <button class="btn btn-sm btn-ghost btn-xs" style="padding:0 3px;font-size:.7rem;opacity:.55;flex-shrink:0" onclick="event.stopPropagation();acctOpenInSetup('${acct.id}')" title="Edit account in Setup">✎</button>
         </div>
       </div>`;
   }
@@ -16624,7 +16567,7 @@ function renderTxnLeftNav() {
       </a>
     </div>` : ''}
     <div style="border-top:1px solid var(--border);padding:6px 8px;flex-shrink:0">
-      <button class="txn-add-acct" style="width:100%;margin:0" onclick="txnAddAccountModal()">＋ Add Account</button>
+      <button class="txn-add-acct" style="width:100%;margin:0" onclick="acctOpenInSetup(null)">＋ Add Account</button>
     </div>`;
   // Restore scroll position so selecting an account doesn't jump the nav to the top
   const _newScrollEl = nav.querySelector('.txn-nav-scroll');
@@ -17822,7 +17765,65 @@ function renderTxnRight() {
 }
 
 // ── Account CRUD ──────────────────────────────────────────────
-function txnAddAccountModal() { txnEditAccountModal(null); }
+// ══════════════════════════════════════════════════════════════
+// ACCOUNTS — one register, one editor
+// Rebuilt 2026-09-05. There used to be three places an "account" lived:
+//   D.txnAccounts     the real register — every transaction hangs off its ids
+//   D.ccTracker.cards not accounts, but CREDIT TERMS for 14 of those accounts
+//   D.accounts        a list of 10 bare strings with no data behind it
+// The third is gone. Four of its ten entries named accounts that did not
+// exist, and because a free-text label cannot be wrong, a typo ("Dicover")
+// sat on four Monthly rows unnoticed. Card terms are now edited inside the
+// account they belong to, so a card's name is entered once.
+// ══════════════════════════════════════════════════════════════
+function acctById(aid)   { return (D.txnAccounts||[]).find(a => a.id === aid) || null; }
+function acctByName(nm)  {
+  const n = (nm||'').trim().toLowerCase();
+  if (!n) return null;
+  return (D.txnAccounts||[]).find(a => (a.name||'').trim().toLowerCase() === n) || null;
+}
+// Stored account references are id-first, name-second: every historical row
+// written before the migration carries only a name, and must keep resolving.
+function acctResolve(aid, nm) { return (aid && acctById(aid)) || acctByName(nm); }
+function acctLabel(aid, nm)   { const a = acctResolve(aid, nm); return a ? a.name : (nm || ''); }
+// EVERY account dropdown in the app goes through this. It is the single reason
+// a closed account can no longer be offered anywhere: three closed banks
+// (Running Savings, TD, TD Savings) used to appear in the CC Repayment "Pay
+// from" picker, the rollover-pot picker and the Savings Pots config, because
+// each built its own <option> list and only some of them remembered to filter.
+//
+//   types    — restrict to certain account types
+//   valueBy  — 'id' (default) or 'name', for the few records that still store a name
+//   label    — custom option text, e.g. with the balance appended
+//   flat     — skip the per-type <optgroup> headings
+// An account that is already selected is always offered even when closed, so
+// opening a form never silently changes a setting you had saved.
+function acctOptions(selectedId, selectedName, opts) {
+  const o    = opts || {};
+  const cur  = acctResolve(selectedId, selectedName);
+  const list = (D.txnAccounts||[])
+    .filter(a => a.status !== 'closed' || (cur && a.id === cur.id))
+    .filter(a => !o.types || o.types.includes(a.type))
+    .sort((a,b) => (a.type||'').localeCompare(b.type||'') || (a.name||'').localeCompare(b.name||''));
+  const val = a => o.valueBy === 'name' ? esc(a.name||'') : a.id;
+  const lab = a => o.label ? o.label(a) : esc(a.name);
+  const opt = a => `<option value="${val(a)}"${cur && a.id === cur.id ? ' selected' : ''}>${lab(a)}</option>`;
+  let html = o.blank === false ? '' : `<option value="">${esc(o.blank || '— None —')}</option>`;
+  if (o.flat) return html + list.map(opt).join('');
+  const byType = {};
+  list.forEach(a => { (byType[a.type||'Other'] = byType[a.type||'Other'] || []).push(a); });
+  Object.keys(byType).sort().forEach(t => {
+    html += `<optgroup label="${esc(t)}">` + byType[t].map(opt).join('') + `</optgroup>`;
+  });
+  return html;
+}
+// The card record carrying this account's credit terms, if any.
+function acctCard(a) {
+  if (!a) return null;
+  return (D.ccTracker?.cards||[]).find(c => c.id === a.ccCardId || c.linkedTxnAccountId === a.id) || null;
+}
+
+function txnAddAccountModal() { acctEditModal(null); }
 
 // ── Transfer modal ─────────────────────────────────────────────
 function txnTransferModal(editTransferId) {
@@ -17876,64 +17877,89 @@ function txnTransferModal(editTransferId) {
   BA._txfrRenderSplits();
 }
 
-function txnEditAccountModal(editId) {
-  const a = editId ? (D.txnAccounts||[]).find(x => x.id === editId) : null;
+function txnEditAccountModal(editId) { acctEditModal(editId); }
+
+const ACCT_TYPES = {
+  'Banking':                 ['Bank','Savings','Credit Card','Cash'],
+  'Assets & Investments':    ['Investment','Real Estate','Tracking'],
+  'Liabilities':             ['Loans'],
+};
+const ACCT_FLAGS = [
+  ['acct-ccrepay',    'showInCCRepay',       'Show available balance in CC Repayment Planner',
+   'Enable for bank/savings accounts you use to pay credit card bills'],
+  ['acct-exclude-nw', 'excludeFromNetWorth', 'Exclude from Balance Sheet / Net Worth / Cash Flow',
+   "Use for accounts that aren't really your assets, liabilities, income, or spending — e.g. a Tracking account holding a family member's money you're just managing on their behalf. Also excludes the account's transactions from Wealth (days), the FI investment-goal panel, and the Income &amp; Expenditure statement."],
+  ['acct-inpay',      'includeInPayments',   'Include in Payments cash',
+   'Adds this account\u2019s balance to Cash Today and Safe to Deploy on the Payments tab, and lets its income, pending debits and dated-ahead rows feed the cash runway. Tick it for every everyday spending account, not just the main one. Savings-pot and reserve accounts are always excluded, whatever is ticked here — that money is already earmarked.'],
+  ['acct-prefunded',  'preFunded',           "Pre-funded — spending here doesn't count against budgets",
+   'For money that is already earmarked and replenished outside your household cash flow — an HSA fed by payroll, an FSA, a 529. Spending stays in Category Trends, Spending Breakdown and every statement, so you still see what it really cost; it simply stops competing with the monthly budget and the savings pot for that category, which are sized for out-of-pocket cash.'],
+];
+
+function acctEditModal(editId) {
+  const a    = editId ? acctById(editId) : null;
+  const card = acctCard(a);
+  const isCC = a ? a.type === 'Credit Card' : false;
+  const CASH_TYPES = ['Bank','Savings','Cash'];
+  const flag = ([fid, key, title, help]) => `
+      <div class="fg${fid === 'acct-ccrepay' ? ' acct-cashonly' : ''}" style="grid-column:1/-1${
+        fid === 'acct-ccrepay' && a && !CASH_TYPES.includes(a.type) ? ';display:none' : ''}">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
+          <input type="checkbox" id="${fid}" ${a && a[key] ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
+          ${title}
+        </label>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">${help}</div>
+      </div>`;
   showModal(`
     <div class="modal-title">${a ? 'Edit' : 'Add'} Account</div>
     <div class="form-grid">
-      <div class="fg"><label class="flbl">Account Name *</label><input id="tacct-name" class="finput" value="${a ? esc(a.name) : ''}" placeholder="e.g. Chase Checking"></div>
+      <div class="fg"><label class="flbl">Account Name *</label>
+        <input id="acct-name" class="finput" value="${a ? esc(a.name) : ''}" placeholder="e.g. Chase Checking"></div>
       <div class="fg"><label class="flbl">Account Type</label>
-        <select id="tacct-type" class="finput">
-          <optgroup label="Banking">
-            <option${a&&a.type==='Bank'?' selected':''}>Bank</option>
-            <option${a&&a.type==='Savings'?' selected':''}>Savings</option>
-            <option${a&&a.type==='Credit Card'?' selected':''}>Credit Card</option>
-            <option${a&&a.type==='Cash'?' selected':''}>Cash</option>
-          </optgroup>
-          <optgroup label="Assets &amp; Investments">
-            <option${a&&a.type==='Investment'?' selected':''}>Investment</option>
-            <option${a&&a.type==='Real Estate'?' selected':''}>Real Estate</option>
-            <option${a&&a.type==='Tracking'?' selected':''}>Tracking</option>
-          </optgroup>
-          <optgroup label="Liabilities">
-            <option${a&&a.type==='Loans'?' selected':''}>Loans</option>
-          </optgroup>
+        <select id="acct-type" class="finput" onchange="acctToggleCardFields()">
+          ${Object.entries(ACCT_TYPES).map(([grp, types]) => `<optgroup label="${esc(grp)}">${
+            types.map(t => `<option${a && a.type === t ? ' selected' : ''}>${t}</option>`).join('')
+          }</optgroup>`).join('')}
         </select></div>
-      <div class="fg"><label class="flbl">Opening Balance</label><input id="tacct-bal" class="finput" type="number" step="0.01" value="${a ? (a.openingBalance||0) : 0}" placeholder="0.00"></div>
-      <div class="fg"><label class="flbl">Opening Date</label><input id="tacct-date" class="finput" type="date" value="${a ? (a.openingDate||'') : new Date().toISOString().slice(0,10)}"></div>
-      <div class="fg"><label class="flbl">Interest Rate % (APR)</label><input id="tacct-rate" class="finput" type="number" step="0.01" value="${a && a.interestRate!=null ? a.interestRate : ''}" placeholder="e.g. 6.5"></div>
-      <div class="fg"></div>
-      <div class="fg" style="grid-column:1/-1">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
-          <input type="checkbox" id="tacct-ccrepay" ${a?.showInCCRepay ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
-          Show available balance in CC Repayment Planner
-        </label>
-        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Enable for bank/savings accounts you use to pay credit card bills</div>
+      <div class="fg"><label class="flbl">Opening Balance</label>
+        <input id="acct-bal" class="finput" type="number" step="0.01" value="${a ? (a.openingBalance||0) : 0}" placeholder="0.00"></div>
+      <div class="fg"><label class="flbl">Opening Date</label>
+        <input id="acct-date" class="finput" type="date" value="${a ? (a.openingDate||'') : centralToday()}"></div>
+
+      <!-- ── Credit terms, shown only for a Credit Card ────────────────── -->
+      <div class="fg full" id="acct-cc-head" style="display:${isCC?'':'none'};margin-top:4px;padding-top:10px;border-top:1px dashed var(--border)">
+        <span style="font-size:.72rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Credit terms</span>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:3px">Edited here rather than on the Credit Cards tab, so the card's name is only ever entered once.</div>
       </div>
+      <div class="fg acct-cc" style="display:${isCC?'':'none'}"><label class="flbl">Credit Limit ($)</label>
+        <input id="acct-limit" class="finput" type="number" step="100" min="0" value="${card && card.limit!=null ? card.limit : ''}" placeholder="e.g. 10000"></div>
+      <div class="fg acct-cc" style="display:${isCC?'':'none'}"><label class="flbl">APR (%)</label>
+        <input id="acct-apr" class="finput" type="number" step="0.01" min="0" max="100" value="${card && card.apr!=null ? card.apr : ''}" placeholder="e.g. 24.99"></div>
+      <div class="fg acct-cc" style="display:${isCC?'':'none'}"><label class="flbl">Statement Day</label>
+        <input id="acct-intday" class="finput" type="text" value="${card ? esc(card.intDay||'') : ''}" placeholder="e.g. 15"></div>
+      <div class="fg acct-cc" style="display:${isCC?'':'none'}"><label class="flbl">Promo 0% Expires</label>
+        <input id="acct-promo" class="finput" type="date" value="${card ? esc(card.promoExpiration||'') : ''}"></div>
+      <div class="fg acct-cc" style="display:${isCC?'':'none'}"><label class="flbl">Repayment Role</label>
+        <select id="acct-role" class="finput">
+          ${['avalanche','minimum-only','pay-in-full'].map(r => `<option value="${r}"${card && card.strategyRole === r ? ' selected' : ''}>${
+            r === 'avalanche' ? 'Avalanche — compete for extra cash' : r === 'minimum-only' ? 'Minimum only — 0% promo' : 'Pay in full each month'}</option>`).join('')}
+        </select></div>
+      <div class="fg acct-cc" style="display:${isCC?'':'none'}"><label class="flbl">Card Active</label>
+        <select id="acct-cardactive" class="finput">
+          <option value="1"${!card || card.active !== false ? ' selected' : ''}>Active</option>
+          <option value="0"${card && card.active === false ? ' selected' : ''}>Inactive</option>
+        </select></div>
+      <div class="fg full acct-cc" style="display:${isCC?'':'none'}"><label class="flbl">Interest Expense Category
+        <span style="font-size:.7rem;font-weight:400;color:var(--text3)">— which category you tag CC interest with</span></label>
+        <select id="acct-intcat" class="finput">${txnCatOptions(card ? (card.interestCategoryId||null) : null)}</select></div>
+
+      <div class="fg" id="acct-rate-wrap" style="display:${isCC?'none':''}"><label class="flbl">Interest Rate % (APR)</label>
+        <input id="acct-rate" class="finput" type="number" step="0.01" value="${a && a.interestRate!=null ? a.interestRate : ''}" placeholder="e.g. 6.5"></div>
+      <div class="fg" id="acct-rate-pad" style="display:${isCC?'none':''}"></div>
+
+      ${ACCT_FLAGS.map(flag).join('')}
       <div class="fg" style="grid-column:1/-1">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
-          <input type="checkbox" id="tacct-exclude-nw" ${a?.excludeFromNetWorth ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
-          Exclude from Balance Sheet / Net Worth / Cash Flow
-        </label>
-        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Use for accounts that aren't really your assets, liabilities, income, or spending — e.g. a Tracking account holding a family member's money you're just managing on their behalf. Also excludes the account's transactions from Wealth (days), the FI investment-goal panel, and the Income &amp; Expenditure statement.</div>
-      </div>
-      <div class="fg" style="grid-column:1/-1">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
-          <input type="checkbox" id="tacct-inpay" ${a?.includeInPayments ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
-          Include in Payments cash
-        </label>
-        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Adds this account's balance to Cash Today and Safe to Deploy on the Payments tab, and lets its income, pending debits and dated-ahead rows feed the cash runway. Tick it for every everyday spending account, not just the main one. Savings-pot and reserve accounts are always excluded, whatever is ticked here — that money is already earmarked.</div>
-      </div>
-      <div class="fg" style="grid-column:1/-1">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
-          <input type="checkbox" id="tacct-prefunded" ${a?.preFunded ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
-          Pre-funded — spending here doesn't count against budgets
-        </label>
-        <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">For money that is already earmarked and replenished outside your household cash flow — an HSA fed by payroll, an FSA, a 529. Spending stays in Category Trends, Spending Breakdown and every statement, so you still see what it really cost; it simply stops competing with the monthly budget and the savings pot for that category, which are sized for out-of-pocket cash.</div>
-      </div>
-      <div class="fg" style="grid-column:1/-1">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.82rem;color:var(--text2)">
-          <input type="checkbox" id="tacct-status-closed" ${a?.status==='closed' ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
+          <input type="checkbox" id="acct-closed" ${a && a.status === 'closed' ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px">
           Closed account
         </label>
         <div style="font-size:.72rem;color:var(--text3);margin-top:3px;padding-left:22px">Hides this account from the everyday account list, transfer/move pickers, and Balance Sheet — its transaction history stays intact and can still be shown via "Show closed accounts"</div>
@@ -17946,16 +17972,26 @@ function txnEditAccountModal(editId) {
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="BA.txnSaveAccount('${editId||''}')">Save</button>
     </div>`);
-  setTimeout(() => id('tacct-name')?.focus(), 50);
+  setTimeout(() => id('acct-name')?.focus(), 50);
+}
+function acctToggleCardFields() {
+  const type = id('acct-type')?.value || '';
+  const isCC = type === 'Credit Card';
+  document.querySelectorAll('.acct-cc').forEach(el => { el.style.display = isCC ? '' : 'none'; });
+  const h = id('acct-cc-head'); if (h) h.style.display = isCC ? '' : 'none';
+  ['acct-rate-wrap','acct-rate-pad'].forEach(k => { const el = id(k); if (el) el.style.display = isCC ? 'none' : ''; });
+  // "Show available balance in CC Repayment Planner" is about an account you pay
+  // bills FROM, so it only belongs on cash accounts.
+  const isCash = ['Bank','Savings','Cash'].includes(type);
+  document.querySelectorAll('.acct-cashonly').forEach(el => { el.style.display = isCash ? '' : 'none'; });
+}
+// Open the one editor, wherever you clicked from.
+function acctOpenInSetup(accountId) {
+  UI.setupTab = 'accounts';
+  switchView('setup');
+  setTimeout(() => acctEditModal(accountId || null), 60);
 }
 
-// ════════════════════════════════════════════════════════════
-// REPORTS
-// ════════════════════════════════════════════════════════════
-let _reportCharts = {};
-// ══════════════════════════════════════════════════════════════════════
-// FINANCIAL STATEMENTS  (Balance Sheet + Income & Expenditure)
-// ══════════════════════════════════════════════════════════════════════
 const FIN_ASSET_TYPES     = ['Bank','Investment','Real Estate','Tracking'];
 const FIN_LIABILITY_TYPES = ['Credit Card','Loans','Loan'];
 // Payees that represent book-value changes, reconciliations, or your own money moving
@@ -17972,7 +18008,6 @@ const FIN_CASHFLOW_META = {
   'expense-liability': { label: 'Expense Liability',  color: '#ef4444' },
   'neutral':           { label: 'Neutral',            color: '#9ca3af' },
 };
-
 function renderFinancials() {
   const wrap = id('view-financials');
   if (!wrap) return;
@@ -20794,43 +20829,84 @@ Object.assign(BA, {
 
   // ── Account CRUD ────────────────────────────────────────────
   txnSaveAccount(editId) {
-    const name = id('tacct-name').value.trim();
+    const name = id('acct-name').value.trim();
     if (!name) { toast('Account name is required','err'); return; }
-    const existing = editId ? (D.txnAccounts||[]).find(a => a.id === editId) : null;
+    const existing = editId ? acctById(editId) : null;
+    const type     = id('acct-type').value;
+    const isCC     = type === 'Credit Card';
     const obj = {
       id: editId || uid(),
-      name,
-      type: id('tacct-type').value,
-      openingBalance: parseFloat(id('tacct-bal').value) || 0,
-      openingDate: id('tacct-date').value,
-      ccCardId: existing?.ccCardId || null,  // preserve link if editing a CC-sourced account
-      showInCCRepay: id('tacct-ccrepay')?.checked || false,
-      excludeFromNetWorth: id('tacct-exclude-nw')?.checked || false,
-      preFunded: id('tacct-prefunded')?.checked || false,
-      includeInPayments: id('tacct-inpay')?.checked || false,
-      cashflowClass: existing?.cashflowClass || 'neutral',
-      interestRate: id('tacct-rate')?.value !== '' ? parseFloat(id('tacct-rate').value) : null,
-      status: id('tacct-status-closed')?.checked ? 'closed' : 'active',
+      name, type,
+      openingBalance: parseFloat(id('acct-bal').value) || 0,
+      openingDate: id('acct-date').value,
+      showInCCRepay:       id('acct-ccrepay')?.checked   || false,
+      excludeFromNetWorth: id('acct-exclude-nw')?.checked || false,
+      preFunded:           id('acct-prefunded')?.checked  || false,
+      includeInPayments:   id('acct-inpay')?.checked      || false,
+      interestRate: (!isCC && id('acct-rate')?.value !== '') ? parseFloat(id('acct-rate').value) : (isCC ? null : null),
+      status: id('acct-closed')?.checked ? 'closed' : 'active',
     };
+    // Merge, never replace — same rule as transactions. Anything this form does
+    // not render (cashflowClass, ccCardId, and whatever gets added later) is
+    // metadata it has no business destroying.
+    const merged = { ...(existing || { cashflowClass: 'neutral', ccCardId: null }), ...obj };
+
+    // ── Credit terms travel with the account ──────────────────────────────
+    if (isCC) {
+      let card = acctCard(merged);
+      if (!card) {
+        card = { id: name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'') + '_' + Date.now().toString(36) };
+        if (!D.ccTracker) D.ccTracker = {};
+        if (!Array.isArray(D.ccTracker.cards)) D.ccTracker.cards = [];
+        D.ccTracker.cards.push(card);
+      }
+      const _lim = parseFloat(id('acct-limit')?.value), _apr = parseFloat(id('acct-apr')?.value);
+      card.name               = name;                       // one name, entered once
+      card.limit              = (!isNaN(_lim) && _lim >= 0) ? _lim : 0;
+      card.apr                = (!isNaN(_apr) && _apr >= 0) ? _apr : 0;
+      card.intDay             = (id('acct-intday')?.value || '').trim();
+      card.promoExpiration    = id('acct-promo')?.value || '';
+      card.strategyRole       = id('acct-role')?.value || card.strategyRole || 'avalanche';
+      card.payInFull          = card.strategyRole === 'pay-in-full';
+      card.active             = id('acct-cardactive')?.value !== '0';
+      card.interestCategoryId = id('acct-intcat')?.value || null;
+      card.linkedTxnAccountId = merged.id;
+      merged.ccCardId         = card.id;
+    } else if (merged.ccCardId) {
+      // Type changed away from Credit Card. Unlink rather than delete — the card
+      // carries statement history that is not ours to throw away.
+      const old = (D.ccTracker?.cards||[]).find(c => c.id === merged.ccCardId);
+      if (old) { old.active = false; old.linkedTxnAccountId = null; }
+      merged.ccCardId = null;
+    }
+
     if (editId) {
       const idx = D.txnAccounts.findIndex(a => a.id === editId);
-      if (idx >= 0) D.txnAccounts[idx] = obj;
+      if (idx >= 0) D.txnAccounts[idx] = merged;
     } else {
-      D.txnAccounts.push(obj);
-      if (!UI.txnAccount) UI.txnAccount = obj.id;
+      D.txnAccounts.push(merged);
+      if (!UI.txnAccount) UI.txnAccount = merged.id;
     }
     // The pre-funded flag changes which spending counts against budgets, so the
     // actuals have to be rebuilt before anything re-renders off them.
     recomputeTxnActuals();
-    dirty(); closeModal(); renderTransactions();
+    dirty(); closeModal();
+    if (UI.view === 'setup') renderSetupContent();
+    else if (UI.view === 'cc') renderCCTracker();
+    else renderTransactions();
+    toast(`${name} saved ✓`, 'ok');
   },
   txnDeleteAccount(acctId) {
+    const acct  = acctById(acctId);
     const txnCt = (D.transactions||[]).filter(t => t.accountId === acctId).length;
-    if (!confirm(`Delete this account?${txnCt ? `\n\nThis will also delete ${txnCt} transaction${txnCt!==1?'s':''} linked to it.` : ''}`)) return;
+    const card  = acctCard(acct);
+    if (!confirm(`Delete this account?${txnCt ? `\n\nThis will also delete ${txnCt} transaction${txnCt!==1?'s':''} linked to it.` : ''}${card ? `\n\nIts credit-card record ("${card.name}") will be deactivated, not deleted — statement history is kept.` : ''}`)) return;
+    if (card) { card.active = false; card.linkedTxnAccountId = null; }
     D.txnAccounts = D.txnAccounts.filter(a => a.id !== acctId);
     D.transactions = (D.transactions||[]).filter(t => t.accountId !== acctId);
     if (UI.txnAccount === acctId) UI.txnAccount = (D.txnAccounts[0]||{}).id || null;
-    recomputeTxnActuals(); dirty(); closeModal(); renderTransactions();
+    recomputeTxnActuals(); dirty(); closeModal();
+    if (UI.view === 'setup') renderSetupContent(); else renderTransactions();
   },
 
   // ── Move transaction to another account ──────────────────────
@@ -21538,13 +21614,12 @@ Object.assign(BA, {
       .filter(r => r.month === month && r.cardAccountId === cardId)
       .reduce((s, r) => s + (parseFloat(r.amountPaid) || 0), 0);
 
-    // paidFrom in Monthly tab stores the account *name* (a string from D.accounts),
-    // not the account ID — resolve it here so the dropdown shows correctly
-    const bankAcctName = (D.txnAccounts || []).find(a => a.id === bankAcctId)?.name || null;
+    const bankAcctName = acctLabel(bankAcctId, null) || null;
 
     const findEntry = ym => (D.cycles[ym]?.payments || []).find(p => p.templateId === linkedTpl.id);
     const hasAmtDue = p  => p && (+p.amountDue > 0);
-    const markPaid  = p  => { p.isPaid = true; p.paidDate = centralToday(); p.amountPaid = totalPaid; if (bankAcctName) p.paidFrom = bankAcctName; };
+    const markPaid  = p  => { p.isPaid = true; p.paidDate = centralToday(); p.amountPaid = totalPaid;
+      if (bankAcctId) { p.paidFromId = bankAcctId; p.paidFrom = bankAcctName; } };
 
     const cur = findEntry(month);
     // Only auto-mark if a Min Amt Due has been set — otherwise statement hasn't been generated yet
@@ -22260,7 +22335,6 @@ Object.assign(BA, {
   savingsPotsConfigure() {
     const sp     = D.savingsPots || {};
     const groups = D.budget?.groups || [];
-    const accts  = D.txnAccounts   || [];
     showModal(`
       <div class="modal-title">⚙ Configure Savings Pots</div>
       <div style="margin-bottom:14px">
@@ -22273,8 +22347,7 @@ Object.assign(BA, {
       <div style="margin-bottom:20px">
         <label style="font-size:.82rem;font-weight:700;display:block;margin-bottom:5px;color:var(--text2)">Savings / Growth Account</label>
         <select id="sp-cfg-acct" class="finput" style="width:100%">
-          <option value="">— Select an account —</option>
-          ${accts.map(a => `<option value="${esc(a.id)}" ${sp.growthAccountId === a.id ? 'selected' : ''}>${esc(a.name)} (${esc(a.type)})</option>`).join('')}
+          ${acctOptions(sp.growthAccountId, null, { blank: '— Select an account —', label: a => `${esc(a.name)} (${esc(a.type)})` })}
         </select>
       </div>
       <div class="mfoot" style="justify-content:flex-end;gap:8px">
@@ -22306,7 +22379,7 @@ Object.assign(BA, {
   },
   reservePotsConfigure() {
     const rp    = D.reservePots || {};
-    const accts = (D.txnAccounts || []).filter(a => a.status !== 'closed' || a.id === rp.reserveAccountId);
+
     const rolloverCats = D.budget.rolloverCats || [];
     const catNames = (D.budget.categories || [])
       .filter(c => rolloverCats.includes(c.id))
@@ -22316,8 +22389,7 @@ Object.assign(BA, {
       <div style="margin-bottom:16px">
         <label style="font-size:.82rem;font-weight:700;display:block;margin-bottom:5px;color:var(--text2)">Reserve Account</label>
         <select id="rp-cfg-acct" class="finput" style="width:100%">
-          <option value="">— Select an account —</option>
-          ${accts.map(a => `<option value="${esc(a.id)}" ${rp.reserveAccountId === a.id ? 'selected' : ''}>${esc(a.name)} (${esc(a.type)})</option>`).join('')}
+          ${acctOptions(rp.reserveAccountId, null, { blank: '— Select an account —', label: a => `${esc(a.name)} (${esc(a.type)})` })}
         </select>
       </div>
       <div style="background:var(--surface2);border-radius:var(--r1);padding:10px 12px;font-size:.78rem;color:var(--text2);margin-bottom:16px">
