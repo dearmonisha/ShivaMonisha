@@ -1023,16 +1023,20 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
     <!-- Obligations sticky nav — sub-tabs + import button stay visible while scrolling -->
     <div class="budget-sticky-bar" style="flex-wrap:wrap;gap:6px;padding:6px 14px;align-items:center;">
       <div class="obl-subtabs" style="margin-bottom:0;border-bottom:none;flex:1;min-width:0;">
+        <button class="obl-stab" id="obl-stab-review" onclick="BA.oblTab('review')">⏳ Review</button>
         <button class="obl-stab active" id="obl-stab-subscriptions" onclick="BA.oblTab('subscriptions')">📅 Subscriptions</button>
         <button class="obl-stab" id="obl-stab-emis" onclick="BA.oblTab('emis')">💳 Loans</button>
         <button class="obl-stab" id="obl-stab-splits" onclick="BA.oblTab('splits')">✂️ Split Payments</button>
         <button class="obl-stab" id="obl-stab-calendar" onclick="BA.oblTab('calendar')">🗓 Calendar</button>
+        <button class="obl-stab" id="obl-stab-analytics" onclick="BA.oblTab('analytics')">📊 Analytics</button>
       </div>
     </div>
+    <div id="obl-pane-review" style="display:none"></div>
     <div id="obl-pane-subscriptions"></div>
     <div id="obl-pane-emis" style="display:none"></div>
     <div id="obl-pane-splits" style="display:none"></div>
     <div id="obl-pane-calendar" style="display:none"></div>
+    <div id="obl-pane-analytics" style="display:none"></div>
   </div>
   <div id="view-budget" style="display:none">
     <!-- Budget sticky bar (includes month nav so it stays visible while scrolling) -->
@@ -1233,6 +1237,11 @@ let UI = {
     emi:   { col: 'name',   dir: 'asc' },
     split: { col: 'name',   dir: 'asc' },
   },
+  _oblSplitLines:  [],   // split-template editor state while an obligation modal is open
+  oblHistOpen:     null, // Obligations grid: which row's posted history is open
+  oblSearch:       '',   // Obligations grid: free-text filter
+  oblAcctFilter:   '',   // Obligations grid: paying account filter
+  oblStatusFilter: '',   // Obligations grid: status filter
   // Split-transaction inline editing state
   _txnSplitMode:   false,
   _txnSplitLines:  [],   // [{ categoryId, amount }]
@@ -1626,7 +1635,9 @@ function _applyData(raw) {
       });
     }
   });
-  // Auto-generate obligation transactions (idempotent — deduped by obligationId::oblMonth)
+  // Normalise the obligation model first — generation reads the fields it seeds
+  oblMigrate();
+  // Auto-generate obligation transactions (idempotent — deduped by obligationId::oblMonth::occurrence)
   oblAutoGenerateTxns();
   // Recompute txn actuals so Budget Grid shows correct values immediately on load
   if (typeof recomputeTxnActuals === "function") recomputeTxnActuals();
@@ -1635,9 +1646,12 @@ function _applyData(raw) {
 // ── Obligations utility functions ────────────────────────────
 const OBL_SUB_CYCLES = ['Monthly','Quarterly','Twice a Year','Annual','Weekly'];
 const OBL_EMI_FREQS  = ['Monthly','Bi-weekly','Quarterly'];
-const OBL_SUB_CATS   = ['Streaming','Music','Software','Gaming','News','Health & Fitness','Shopping','Utilities','Education','Other'];
-const OBL_EMI_CATS   = ['Electronics','Appliances','Vehicle','Furniture','Jewelry','Medical','Education','Home Improvement','Other'];
-const OBL_SPLIT_CATS = ['Education','Health & Fitness','Home Improvement','Shopping','Utilities','Travel','Entertainment','Other'];
+// The old SubTrack `category` taxonomy (Streaming / Music / Software / …) is
+// gone. It had drifted into noise — 13 of 40 active subscriptions were filed as
+// "Streaming", including pest control, septic, home security, two dealer plans
+// and two credit-card membership fees. The budget Expense Type is now the only
+// classification, and the coloured pill is derived from its budget GROUP, so
+// there is nothing extra to fill in and it always agrees with every other tab.
 
 function oblNextRenewal(startDate, cycle) {
   const now = new Date(); now.setHours(0,0,0,0);
@@ -1655,6 +1669,456 @@ function oblNextRenewal(startDate, cycle) {
 function oblToMonthly(cost, cycle) {
   const map = { Monthly:1, Quarterly:1/3, 'Twice a Year':1/6, Annual:1/12, Weekly:52/12 };
   return cost * (map[cycle] || 1);
+}
+
+// ══════════════════════════════════════════════════════════════
+// OBLIGATION MODEL HELPERS
+// Rebuilt 2026-09-05. Obligations began as a standalone subscription tracker
+// and had budgeting and Transactions bolted on around it; everything below
+// exists to close that seam. Read alongside oblAutoGenerateTxns().
+// ══════════════════════════════════════════════════════════════
+
+// Local-midnight ISO. Never use toISOString() on a date built from Y/M/D parts —
+// it converts through UTC and can hand back the previous day.
+function oblISO(d) {
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function oblMonthIdx(ymOrIso) {
+  const [y,m] = String(ymOrIso).split('-').map(Number);
+  return y*12 + (m-1);
+}
+function oblClampDay(ym, day) {
+  const [y,m] = ym.split('-').map(Number);
+  const d = Math.min(Math.max(parseInt(day)||1, 1), new Date(y, m, 0).getDate());
+  return ym + '-' + String(d).padStart(2,'0');
+}
+function oblName(o)  { return (o && (o.name || o.itemName)) || ''; }
+function oblOrdinal(n) {
+  const d = parseInt(n); if (!d) return '—';
+  const s = ['th','st','nd','rd'][(d % 100 - 20) % 10] || ['th','st','nd','rd'][d % 100] || 'th';
+  return d + s;
+}
+function oblFind(oblId) {
+  if (!oblId || !D.obligations) return null;
+  let f = (D.obligations.subscriptions||[]).find(x => x.id === oblId);
+  if (f) return { obj: f, type: 'subscription' };
+  f = (D.obligations.emis||[]).find(x => x.id === oblId);
+  if (f) return { obj: f, type: 'emi' };
+  f = (D.obligations.splits||[]).find(x => x.id === oblId);
+  if (f) return { obj: f, type: 'split' };
+  return null;
+}
+function oblAll() {
+  if (!D.obligations) return [];
+  return [
+    ...(D.obligations.subscriptions||[]).map(o => ({ obj:o, type:'subscription' })),
+    ...(D.obligations.emis||[]).map(o => ({ obj:o, type:'emi' })),
+    ...(D.obligations.splits||[]).map(o => ({ obj:o, type:'split' })),
+  ];
+}
+// Missing flag means ON, so nothing that used to post silently stops posting.
+function oblAutoPost(o) { return !o || o.autoPost !== false; }
+function oblIsActive(o) { return !o || (o.status || 'Active') === 'Active'; }
+
+// ── One classification: the budget expense type ───────────────
+function oblGroupLabel(expenseTypeId) {
+  if (!expenseTypeId) return 'Uncategorised';
+  if (expenseTypeId === '__income__')          return 'Income';
+  if (expenseTypeId === '__family_deposits__') return 'Family Deposits';
+  if (expenseTypeId === '__pot_withdrawal__')  return 'Pot Withdrawal';
+  const cat = (D.budget.categories||[]).find(c => c.id === expenseTypeId);
+  if (!cat) return 'Uncategorised';
+  const grp = (D.budget.groups||[]).find(g => g.id === cat.groupId);
+  return grp ? grp.name : (cat.name || 'Uncategorised');
+}
+function oblCatPill(o) {
+  if (oblHasSplitTemplate(o)) {
+    const n = o.splitTemplate.filter(l => l && l.categoryId).length;
+    const names = o.splitTemplate.filter(l => l && l.categoryId).map(l => (txnCatLabel(l.categoryId)||'?') + (l.remainder ? ' (remainder)' : ' ' + fmtCurrency(l.amount))).join(' · ');
+    return `<span class="obl-pill blue" title="${esc(names)}" style="margin-right:5px">✂ Split (${n})</span>`;
+  }
+  const lbl = oblGroupLabel(o.expenseTypeId);
+  const un  = lbl === 'Uncategorised';
+  const ttl = un ? 'No expense type set — this cannot post to a budget category'
+                 : 'Expense type: ' + (txnCatLabel(o.expenseTypeId) || lbl);
+  return `<span class="obl-pill ${un?'red':'purple'}" title="${esc(ttl)}" style="margin-right:5px">${esc(lbl)}</span>`;
+}
+
+// ── Occurrence engine ─────────────────────────────────────────
+// Every due date an obligation has inside one calendar month. This replaces the
+// three separate "does it fall due this month" predicates, each of which
+// answered a yes/no question where the real answer is a LIST: a Weekly
+// subscription never posted at all (the cycle map had no Weekly key, so the
+// predicate returned false), and a Bi-weekly loan posted one row a month where
+// roughly 2.17 payments are actually due.
+function oblEveryNDaysInMonth(startISO, n, ym) {
+  const out = [];
+  if (!startISO) return out;
+  const start = new Date(startISO + 'T00:00:00');
+  const [y,m] = ym.split('-').map(Number);
+  const first = new Date(y, m-1, 1), last = new Date(y, m, 0);
+  if (start > last) return out;
+  const d = new Date(start);
+  const stride = Math.floor((first - start) / 86400000 / n);
+  if (stride > 0) d.setDate(d.getDate() + stride * n);
+  while (d < first) d.setDate(d.getDate() + n);
+  let guard = 0;
+  while (d <= last && guard++ < 40) { out.push(oblISO(d)); d.setDate(d.getDate() + n); }
+  return out;
+}
+function oblDueDatesInMonth(o, type, ym) {
+  if (!o || !o.startDate) return [];
+  const startYM = o.startDate.slice(0,7);
+  if (oblMonthIdx(ym) < oblMonthIdx(startYM)) return [];
+  // endDate stops generation on its own, so a thing you know is ending does not
+  // depend on you remembering to cancel it in the right month.
+  if (o.endDate && ym > o.endDate.slice(0,7)) return [];
+  const cap = list => list.filter(d => !o.endDate || d <= o.endDate);
+
+  if (type === 'subscription') {
+    const cyc = o.billingCycle || 'Monthly';
+    if (cyc === 'Weekly') return cap(oblEveryNDaysInMonth(o.startDate, 7, ym));
+    const cm = { Monthly:1, Quarterly:3, 'Twice a Year':6, Annual:12 }[cyc];
+    if (!cm) return [];
+    if ((oblMonthIdx(ym) - oblMonthIdx(startYM)) % cm !== 0) return [];
+    return cap([oblClampDay(ym, parseInt(o.startDate.split('-')[2]) || 1)]);
+  }
+  if (type === 'emi') {
+    if (o.maturityDate && oblMonthIdx(ym) > oblMonthIdx(o.maturityDate.slice(0,7))) return [];
+    const mat = list => list.filter(d => !o.maturityDate || d <= o.maturityDate);
+    const freq = o.frequency || 'Monthly';
+    if (freq === 'Bi-weekly') return cap(mat(oblEveryNDaysInMonth(o.startDate, 14, ym)));
+    if (freq === 'Quarterly' && (oblMonthIdx(ym) - oblMonthIdx(startYM)) % 3 !== 0) return [];
+    return cap(mat([oblClampDay(ym, o.dueDateEachMonth)]));
+  }
+  if (type === 'split') {
+    const n = oblMonthIdx(ym) - oblMonthIdx(startYM);
+    if (n < 0 || n >= (parseInt(o.totalInstallments) || 0)) return [];
+    return cap([oblClampDay(ym, o.dueDateEachMonth)]);
+  }
+  return [];
+}
+// First due date from today onward. Replaces oblNextRenewal() everywhere it was
+// used to mean "when does this next charge", because that one ignored billing
+// cycle edge cases, end dates and every non-monthly cadence.
+function oblNextChargeDate(o, type) {
+  const today = centralToday();
+  let [y,m] = today.split('-').map(Number);
+  for (let i = 0; i < 30; i++) {
+    const ym = y + '-' + String(m).padStart(2,'0');
+    const hit = oblDueDatesInMonth(o, type, ym).find(d => d >= today);
+    if (hit) return hit;
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return null;
+}
+
+// ── Split templates ───────────────────────────────────────────
+// One charge, several budget categories. T-Mobile arrives as a single $327
+// debit that is really four things: two of Tanvi's phone lines, a share of
+// Mama's family shopping, the discounted Netflix T-Mobile bills alongside it,
+// and the actual phone bill as whatever is left. There was no way to say that,
+// so the row had to be rejected every month and re-entered by hand.
+//
+// A line is either a fixed amount or THE remainder. Exactly one line takes the
+// remainder — if none is flagged, the last line does — which is what keeps the
+// split adding up when the bill changes, without re-typing every line.
+function oblHasSplitTemplate(o) {
+  return !!(o && Array.isArray(o.splitTemplate) && o.splitTemplate.filter(l => l && l.categoryId).length);
+}
+function oblSplitLinesFor(o, total) {
+  const tpl = ((o && o.splitTemplate) || []).filter(l => l && l.categoryId);
+  if (!tpl.length) return null;
+  const amt = Math.round((+total||0)*100)/100;
+  let remIdx = tpl.findIndex(l => l.remainder);
+  if (remIdx < 0) remIdx = tpl.length - 1;
+  let fixedSum = 0;
+  const out = tpl.map((l, i) => {
+    if (i === remIdx) return { categoryId: l.categoryId, amount: 0, notes: l.notes || '' };
+    const v = Math.round((+l.amount||0)*100)/100;
+    fixedSum += v;
+    return { categoryId: l.categoryId, amount: v, notes: l.notes || '' };
+  });
+  out[remIdx].amount = Math.round((amt - fixedSum)*100)/100;
+  return out;
+}
+// What the remainder line would come to — shown live in the editor so a
+// template that cannot work is visible before it is saved.
+function oblSplitPreview(lines, total) {
+  const tpl = (lines||[]).filter(l => l && l.categoryId);
+  if (!tpl.length) return null;
+  let remIdx = tpl.findIndex(l => l.remainder);
+  if (remIdx < 0) remIdx = tpl.length - 1;
+  const fixedSum = tpl.reduce((s,l,i) => i === remIdx ? s : s + (Math.round((+l.amount||0)*100)/100), 0);
+  return { remainder: Math.round(((+total||0) - fixedSum)*100)/100, remIdx, fixedSum, lines: tpl };
+}
+
+// ── Amounts ───────────────────────────────────────────────────
+function oblBaseAmount(o, type) {
+  if (type === 'emi')   return parseFloat(o.emiAmount) || 0;
+  if (type === 'split') return parseFloat(o.installmentAmount) || 0;
+  return parseFloat(o.cost) || 0;
+}
+// Charges this app recorded AS this obligation — an approved, linked row.
+// Deliberately narrow: this is what oblExpectedAmount() spends money on, so it
+// only trusts charges that went through the approval flow.
+function oblActualHistory(oblId, limit) {
+  const out = (D.transactions||[])
+    .filter(t => t.obligationId === oblId && t.status === 'approved')
+    .sort((a,b) => (b.date||'').localeCompare(a.date||''))
+    .map(t => ({ date: t.date, amount: Math.round(((+t.debit||0) || (+t.credit||0))*100)/100, id: t.id }))
+    .filter(x => x.amount > 0);
+  return limit ? out.slice(0, limit) : out;
+}
+// Everything KNOWN about what this thing charges, including the price history
+// seeded from matching payees in the ledger. Wider on purpose: this is what the
+// approve dialog shows you, and context you can see is safe in a way that an
+// amount posted on your behalf is not.
+function oblKnownCharges(oblId, limit) {
+  const o = oblFind(oblId);
+  const seen = new Map();
+  ((o && o.obj.costHistory) || []).forEach(h => { if (h && h.date && h.amount > 0) seen.set(h.date + '|' + h.amount, { date: h.date, amount: h.amount }); });
+  oblActualHistory(oblId).forEach(h => seen.set(h.date + '|' + h.amount, h));
+  const out = [...seen.values()].sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  return limit ? out.slice(0, limit) : out;
+}
+// What the next charge is expected to be. A Variable obligation is worth far
+// more as "whatever it was last time" than as a figure typed months ago: 22 of
+// the 32 obligations with ledger history charge something other than the number
+// stored on them (Culligan 81–150, All State Home 474–974, XBOX 0.95–33).
+function oblExpectedAmount(o, type) {
+  const base = oblBaseAmount(o, type);
+  if (o.amountType !== 'variable') return base;
+  const h = oblActualHistory(o.id, 3).map(x => x.amount);
+  if (!h.length) return base;
+  // Median of the last three, not the most recent. One catch-up charge — Club 4
+  // Kids was billed $1,296 for three missed months — must not become next
+  // month's estimate.
+  const sorted = h.slice().sort((a,b) => a-b);
+  return sorted[Math.floor(sorted.length/2)];
+}
+// Called on every approval. Keeps a price history, and promotes a genuinely
+// changed price onto the obligation — but only after the SAME new figure has
+// been charged twice running, so one odd month never rewrites the stored cost.
+function oblRecordActual(o, type, amount, dateISO) {
+  if (!o) return;
+  const amt = Math.round((+amount||0)*100)/100;
+  if (!(amt > 0) || !dateISO) return;
+  if (!Array.isArray(o.costHistory)) o.costHistory = [];
+  o.costHistory = o.costHistory.filter(h => h.date !== dateISO);
+  o.costHistory.push({ date: dateISO, amount: amt });
+  o.costHistory.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  if (o.costHistory.length > 36) o.costHistory = o.costHistory.slice(-36);
+  if (o.amountType === 'variable') return;
+  const base = oblBaseAmount(o, type), h = o.costHistory;
+  if (h.length >= 2 && Math.abs(h[h.length-1].amount - h[h.length-2].amount) < 0.005
+      && base > 0 && Math.abs(amt - base) > 0.005) {
+    o.priceChange = { from: base, to: amt, date: dateISO };
+    if (type === 'emi') o.emiAmount = amt;
+    else if (type === 'split') o.installmentAmount = amt;
+    else o.cost = amt;
+  }
+}
+function oblPriceBadge(o) {
+  const pc = o.priceChange;
+  if (!pc || Math.abs(pc.to - pc.from) < 0.005) return '';
+  const up = pc.to > pc.from;
+  return `<span title="Price changed on ${esc(pc.date||'')} — stored cost updated after two charges at the new figure"
+    style="margin-left:6px;font-size:.66rem;font-weight:700;padding:1px 6px;border-radius:99px;white-space:nowrap;
+    background:color-mix(in srgb,var(--${up?'danger':'ok'}) 12%,transparent);color:var(--${up?'danger':'ok'})">${up?'↑':'↓'} ${fmtCurrency(pc.from)}→${fmtCurrency(pc.to)}</span>`;
+}
+
+// ── Duplicate detection ───────────────────────────────────────
+// The one place in the app where the same number could live twice and disagree.
+// Six bills existed as BOTH a Monthly template and an obligation, and T-Mobile
+// had already drifted (326.46 against 327.00).
+function oblNormName(s) { return (s||'').trim().toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function oblDuplicateWarnings() {
+  const warn = {};   // obligationId -> [message]
+  const add  = (id_, msg) => { (warn[id_] = warn[id_] || []).push(msg); };
+  const items = oblAll().filter(x => oblIsActive(x.obj));
+
+  // vs active Monthly templates. A "Credit Cards" template is a card PAYMENT,
+  // never the same thing as a subscription charged to that card — without this
+  // exclusion the Apple, Amazon, Chase and Citi cards each matched a
+  // same-named subscription and the warning became noise.
+  (D.templates || []).filter(t => t.isActive && !/credit/i.test(t.category||'')).forEach(t => {
+    const tn = oblNormName(t.name), tAmt = t.isFixed ? (+t.fixedAmount||0) : 0;
+    const tAcct = oblNormName(t.paymentAccount);
+    items.forEach(({obj, type}) => {
+      if (obj.trackInMonthly) return;   // it IS the Monthly row — not a duplicate
+      const on = oblNormName(oblName(obj)), oAmt = oblBaseAmount(obj, type);
+      const sameName  = tn && on && tn === on;
+      const sameMoney = tAmt > 0 && oAmt > 0 && Math.abs(tAmt - oAmt) <= Math.max(0.02, oAmt*0.02)
+                        && tAcct && tAcct === oblNormName(obj.paymentMethod);
+      if (sameName || sameMoney)
+        add(obj.id, `Also a Monthly template — "${t.name}"${sameMoney && !sameName ? ' (same amount and account)' : ''}`);
+    });
+  });
+
+  // Within Obligations, only an exact name collision counts. Matching on equal
+  // amounts was tried and is too weak a signal to act on: Club 4 Shiva and
+  // Club 4 Mona are both $31.12 monthly, and Viacord Aadi and Viacord Tamanna
+  // are both $125 a year — four separate real obligations, not two duplicates.
+  for (let i = 0; i < items.length; i++) for (let j = i+1; j < items.length; j++) {
+    const a = items[i], b = items[j];
+    const an = oblNormName(oblName(a.obj)), bn = oblNormName(oblName(b.obj));
+    if (an && an === bn) {
+      add(a.obj.id, `Looks like a duplicate of "${oblName(b.obj)}"`);
+      add(b.obj.id, `Looks like a duplicate of "${oblName(a.obj)}"`);
+    }
+  }
+  return warn;
+}
+function oblDupBadge(warnMap, oblId) {
+  const w = warnMap && warnMap[oblId];
+  if (!w || !w.length) return '';
+  return `<span title="${esc(w.join(' · '))}" style="margin-left:5px;cursor:help;color:var(--warn);font-weight:700">⚠</span>`;
+}
+
+// ── Reconcile imported bank rows into pending obligations ──────
+// The bank row and the auto-posted row are the same charge. Matching them
+// approves the pending row with the bank's REAL date and amount instead of
+// leaving two transactions and a figure to retype — which is also the cleanest
+// answer to variable bills: the bank tells you the amount, so you never type one.
+//
+// Two tiers, both deliberately conservative. A loose amount window on its own
+// would happily marry two unrelated charges on the same card.
+//   1. payee names match (either contains the other) → within 10% and 10 days
+//   2. no name match → amount within 1% and 7 days
+// Anything else is imported as a new row and left alone.
+function oblReconcileImported(incoming) {
+  const pool  = (D.transactions || []).filter(t => t.status === 'pending' && t.obligationId);
+  const norm  = v => (v||'').trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+  const days  = (a,b) => Math.abs((new Date(a+'T00:00:00') - new Date(b+'T00:00:00')) / 86400000);
+  const used  = new Set();
+  const stillNew = [], matched = [];
+  (incoming || []).forEach(n => {
+    const nAmt = (+n.debit||0) || (+n.credit||0);
+    const cand = (nAmt > 0 && n.date) ? pool.find(pr => {
+      if (used.has(pr.id) || pr.accountId !== n.accountId || !pr.date) return false;
+      const pAmt = (+pr.debit||0) || (+pr.credit||0);
+      if (!(pAmt > 0)) return false;
+      const an = norm(n.payee), bn = norm(pr.payee);
+      const nameHit = an && bn && (an === bn || an.includes(bn) || bn.includes(an));
+      return nameHit
+        ? Math.abs(pAmt - nAmt) <= Math.max(0.02, pAmt*0.10) && days(n.date, pr.date) <= 10
+        : Math.abs(pAmt - nAmt) <= Math.max(0.02, pAmt*0.01) && days(n.date, pr.date) <= 7;
+    }) : null;
+    if (!cand) { stillNew.push(n); return; }
+    used.add(cand.id);
+    oblApproveTxn(cand, n.date, nAmt, { cleared: !!n.cleared });
+    cand.notes = (cand.notes ? cand.notes + ' · ' : '') + 'reconciled with imported row';
+    if (n.payee && n.payee !== cand.payee) cand.importPayee = n.payee;
+    matched.push(cand.payee || n.payee || 'obligation');
+  });
+  return { stillNew, matched };
+}
+
+// ── Pending rows awaiting review, across every account ─────────
+function oblPendingRows() {
+  return (D.transactions || [])
+    .filter(t => t.status === 'pending' && t.obligationId)
+    .sort((a,b) => (a.date||a.oblMonth||'').localeCompare(b.date||b.oblMonth||''));
+}
+// "Overdue" now means something real: a pending row whose date has passed and
+// which you have neither approved nor rejected. The old KPI counted renewals
+// that were behind — a number oblNextRenewal() makes structurally impossible,
+// because it rolls forward until the date is >= today.
+function oblOverdueCount(type) {
+  const today = centralToday();
+  return oblPendingRows().filter(t => (!type || t.oblType === type) && (t.date||'') < today).length;
+}
+
+// ── Approval, in one place ────────────────────────────────────
+// Every path that approves an obligation row goes through this: the queue, the
+// per-account ledger, the mobile card and CSV import reconciliation. Approving
+// used to only flip a status; it now also counts the split installment, ticks
+// the linked Monthly row and records the real amount against the obligation.
+function oblApproveTxn(t, dateISO, amount, opts) {
+  if (!t) return false;
+  const o   = oblFind(t.obligationId);
+  const amt = Math.round((+amount||0)*100)/100;
+  if (!(amt > 0)) return false;
+  t.date = dateISO || t.date;
+  if ((+t.credit||0) > 0 && !((+t.debit||0) > 0)) { t.credit = amt; t.debit = 0; }
+  else                                            { t.debit  = amt; t.credit = 0; }
+  t.status = 'approved';
+  if (opts && opts.cleared) t.cleared = true;
+  if (o) {
+    // Re-cut the split lines to the amount actually being approved, so editing
+    // the total in the queue keeps the remainder line honest.
+    const relines = oblSplitLinesFor(o.obj, amt);
+    if (relines) { t.splits = relines; t.categoryId = null; }
+    else if (!t.splits && !t.categoryId && o.obj.expenseTypeId) t.categoryId = o.obj.expenseTypeId;
+    oblRecordActual(o.obj, o.type, amt, t.date);
+    // A split installment is paid when its transaction is approved. Before this,
+    // only the manual ✓ on the Splits grid moved installmentsPaid, so the two
+    // counters drifted — Texas Radiology read 0 of 8 with its rows in the ledger.
+    if (o.type === 'split' && !t.oblCountedSplit) {
+      const tot = parseInt(o.obj.totalInstallments) || 0;
+      o.obj.installmentsPaid = Math.min((parseInt(o.obj.installmentsPaid)||0) + 1, tot);
+      if (tot && o.obj.installmentsPaid >= tot) o.obj.status = 'Completed';
+      t.oblCountedSplit = true;
+    }
+    oblTickMonthlyRow(o.obj, t);
+  }
+  return true;
+}
+// Undo the installment count when an approval is taken back, so ✓ and ✕ are
+// genuinely symmetric.
+function oblUncountSplit(t) {
+  if (!t || !t.oblCountedSplit) return;
+  const o = oblFind(t.obligationId);
+  if (o && o.type === 'split') {
+    o.obj.installmentsPaid = Math.max((parseInt(o.obj.installmentsPaid)||0) - 1, 0);
+    if (o.obj.status === 'Completed' && o.obj.installmentsPaid < (parseInt(o.obj.totalInstallments)||0))
+      o.obj.status = 'Active';
+  }
+  delete t.oblCountedSplit;
+}
+// One action, both ledgers: approving the transaction marks the Monthly row paid.
+function oblTickMonthlyRow(obj, t) {
+  const ym = t.oblMonth || (t.date||'').slice(0,7);
+  const rows = (D.cycles && D.cycles[ym] && D.cycles[ym].payments) || [];
+  const row  = rows.find(p => p.obligationId === obj.id && !p.isPaid);
+  if (!row) return;
+  row.isPaid     = true;
+  row.paidDate   = t.date;
+  row.amountPaid = (+t.debit||0) || (+t.credit||0);
+  if (!row.paidFrom && obj.paymentMethod) row.paidFrom = obj.paymentMethod;
+}
+
+// ── One-time data migration ───────────────────────────────────
+// Runs on every load and is idempotent. Renames the mislabelled generateMonthly
+// flag and seeds the fields the rebuilt module expects.
+function oblMigrate() {
+  if (!D.obligations) return;
+  let changed = 0;
+  oblAll().forEach(({obj}) => {
+    // "Generate in Monthly tab" never touched the Monthly tab. The flag only
+    // ever decided whether a PENDING TRANSACTION was posted, and it also deleted
+    // any pending row that already existed — so unticking it to tidy up Monthly
+    // silently switched off Transactions posting instead. Same behaviour, honest name.
+    if (obj.generateMonthly !== undefined) {
+      if (obj.autoPost === undefined) obj.autoPost = obj.generateMonthly !== false;
+      delete obj.generateMonthly; changed++;
+    }
+    if (obj.autoPost === undefined)       { obj.autoPost = true; changed++; }
+    if (obj.trackInMonthly === undefined) { obj.trackInMonthly = false; changed++; }
+    if (obj.amountType === undefined)     { obj.amountType = 'fixed'; changed++; }
+    if (obj.splitTemplate === undefined)  { obj.splitTemplate = []; changed++; }
+    if (obj.endDate === undefined)        { obj.endDate = ''; changed++; }
+    // Write-only fields: nextRenewalDate was saved by the form and read by
+    // nothing (both the grid and the generator derive from startDate), and
+    // currency/website were stored on 40 records and never rendered.
+    ['nextRenewalDate','currency','website','category'].forEach(k => {
+      if (obj[k] !== undefined) { delete obj[k]; changed++; }
+    });
+  });
+  if (!D.settings) D.settings = {};
+  if (!D.settings.oblStartMonth) { D.settings.oblStartMonth = '2026-04'; changed++; }
+  if (changed) dirty();
 }
 
 function oblDaysDiff(dateStr) {
@@ -1734,55 +2198,9 @@ function oblEnrichEmi(e) {
   return { ...e, totalInstallments: total, installmentsPaid: paid, remainingBalance: remaining };
 }
 
-function oblEmiNextDue(e) {
-  const [y, m] = (ymNow()).split('-').map(Number);
-  const day = Math.min(+e.dueDateEachMonth || 1, new Date(y, m, 0).getDate());
-  return `${String(y).padStart(4,'0')}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-}
-
-// Does subscription renew during a given YYYY-MM?
-function oblSubRenewsInMonth(sub, ym) {
-  return oblNextRenewal(sub.startDate, sub.billingCycle).startsWith(ym);
-}
-
-// Historical-aware version: does subscription renew in any past/present YYYY-MM?
-function oblSubRenewsInMonthAny(sub, ym) {
-  const [y, m] = ym.split('-').map(Number);
-  const start = new Date((sub.startDate || '2000-01-01') + 'T00:00:00');
-  const startYM = start.getFullYear() * 12 + (start.getMonth()); // 0-based months
-  const thisYM  = y * 12 + (m - 1); // convert to 0-based
-  if (thisYM < startYM) return false;
-  const cycleMap = { Monthly: 1, Quarterly: 3, 'Twice a Year': 6, Annual: 12 };
-  const cm = cycleMap[sub.billingCycle || 'Monthly'];
-  if (!cm) return false;
-  return (thisYM - startYM) % cm === 0;
-}
-
-// Does EMI have a payment in a given YYYY-MM?
-function oblEmiDueInMonth(emi, ym) {
-  const [y, m] = ym.split('-').map(Number);
-  const start  = new Date(emi.startDate + 'T00:00:00');
-  const thisYM = y * 12 + (m - 1);
-  const startYM = start.getFullYear() * 12 + start.getMonth();
-  if (thisYM < startYM) return false;
-  if (emi.maturityDate) {
-    const end  = new Date(emi.maturityDate + 'T00:00:00');
-    const endYM = end.getFullYear() * 12 + end.getMonth();
-    if (thisYM > endYM) return false;
-  }
-  if ((emi.frequency || 'Monthly') === 'Quarterly') return (thisYM - startYM) % 3 === 0;
-  return true;
-}
-
-// Does split have a payment in a given YYYY-MM?
-function oblSplitDueInMonth(split, ym) {
-  const [y, m] = ym.split('-').map(Number);
-  const start  = new Date(split.startDate + 'T00:00:00');
-  const thisYM = y * 12 + (m - 1);
-  const startYM = start.getFullYear() * 12 + start.getMonth();
-  if (thisYM < startYM) return false;
-  return (thisYM - startYM) < split.totalInstallments;
-}
+// oblEmiNextDue() and oblSubRenewsInMonth() lived here. Both assumed one due
+// date per month and neither was called by anything after the occurrence engine
+// (oblDueDatesInMonth) replaced them.
 
 // ── GitHub overlay ───────────────────────────────────────────
 function _showOverlay(mode) {
@@ -3097,10 +3515,15 @@ function generateCycle() {
   const existing = D.cycles[ym]?.payments || [];
   const firing = D.templates.filter(t => t.isActive && templateFires(t, ym));
   const expTotals = getExpenseScheduleTotals(ym).filter(r => r.count > 0 && r.total > 0);
-  // Obligations are tracked separately in the Obligations tab and auto-populate
-  // into the Transactions module — they are intentionally excluded here.
+  // Obligations flagged "Also track in the Monthly tab" are rendered here from
+  // the obligation itself. Before this, the two tabs were separate stores that
+  // never spoke: six bills existed as BOTH a template and an obligation, and
+  // T-Mobile had already drifted (326.46 against 327.00). Now the amount, due
+  // day and paying account live in exactly one place.
+  const oblMonthly = oblAll().filter(({obj, type}) =>
+    obj.trackInMonthly && oblIsActive(obj) && oblDueDatesInMonth(obj, type, ym).length > 0);
 
-  if (!firing.length && !expTotals.length) {
+  if (!firing.length && !expTotals.length && !oblMonthly.length) {
     toast('No active templates or recurring expenses match this month. Check Setup.', 'err');
     return;
   }
@@ -3172,6 +3595,26 @@ function generateCycle() {
   const [ymY, ymM] = ym.split('-').map(Number);
   const nextMon = ymM === 12 ? `${ymY + 1}-01` : `${ymY}-${String(ymM + 1).padStart(2, '0')}`;
   const due1st  = `${nextMon}-01`;
+  // ── Obligations flagged for the Monthly tab ──
+  const existOblIds = new Set(existing.filter(p => p.obligationId).map(p => p.obligationId));
+  oblMonthly.forEach(({ obj, type }) => {
+    if (existOblIds.has(obj.id)) return;
+    const dues = oblDueDatesInMonth(obj, type, ym);
+    D.cycles[ym].payments.push({
+      id: uid(), templateId: null, obligationId: obj.id, oblType: type,
+      name: oblName(obj),
+      category: oblGroupLabel(obj.expenseTypeId), type: '',
+      statementDate: null, dueDate: dues[0],
+      amountDue: oblExpectedAmount(obj, type),
+      outstandingBalance: null, amountPaid: null,
+      isPaid: false, paidDate: null,
+      paidFrom: obj.paymentMethod || null,
+      isAutomatic: false,
+      notes: dues.length > 1 ? `${dues.length} charges this month` : (obj.amountType === 'variable' ? 'variable — estimate' : '')
+    });
+    added++;
+  });
+
   expTotals.forEach(({ sc, count, total }) => {
     if (existEscIds.has(sc.id)) return;
     D.cycles[ym].payments.push({
@@ -11585,15 +12028,104 @@ function initBudgetDragDrop(wrap) {
 // ══════════════════════════════════════════════════════════════
 function renderObligations() {
   const tab = UI.oblTab || 'subscriptions';
-  ['subscriptions','emis','splits','calendar'].forEach(t => {
+  ['review','subscriptions','emis','splits','calendar','analytics'].forEach(t => {
     const pane = id('obl-pane-' + t), btn = id('obl-stab-' + t);
     if (pane) pane.style.display = t === tab ? '' : 'none';
     if (btn)  btn.classList.toggle('active', t === tab);
   });
-  if (tab === 'subscriptions') renderOblSubscriptions();
-  else if (tab === 'emis')     renderOblEmis();
-  else if (tab === 'splits')   renderOblSplits();
-  else if (tab === 'calendar') renderOblCalendar();
+  // Badge the Review tab so the queue announces itself from any sub-tab
+  const rb = id('obl-stab-review');
+  if (rb) {
+    const n = oblPendingRows().length;
+    rb.innerHTML = '⏳ Review' + (n ? ` <span class="badge" style="background:#f59e0b;color:#fff;border:none;padding:0 6px;border-radius:99px;font-size:.68rem;font-weight:700">${n}</span>` : '');
+  }
+  if (tab === 'review')             renderOblReview();
+  else if (tab === 'subscriptions') renderOblSubscriptions();
+  else if (tab === 'emis')          renderOblEmis();
+  else if (tab === 'splits')        renderOblSplits();
+  else if (tab === 'calendar')      renderOblCalendar();
+  else if (tab === 'analytics')     renderOblAnalytics();
+}
+
+// ── The approval queue ────────────────────────────────────────
+// Twelve pending rows for September sat across six accounts, and the only way
+// to see them was to select each account in turn — the All-Accounts ledger
+// filters pending rows out entirely. This is all of them, on one screen, with
+// the date and amount editable in place and no dialog for the ones that are
+// already right.
+function renderOblReview() {
+  const pane = id('obl-pane-review');
+  if (!pane) return;
+  const rows   = oblPendingRows();
+  const accts  = {}; (D.txnAccounts||[]).forEach(a => { accts[a.id] = a.name; });
+  const today  = centralToday();
+  const total  = rows.reduce((s,t) => s + ((+t.debit||0) || (+t.credit||0)), 0);
+  const overdue = rows.filter(t => (t.date||'') < today).length;
+  const ico = { subscription: '📦', emi: '🏦', split: '✂️' };
+
+  const rejected = (D.transactions||[]).filter(t =>
+    t.status === 'rejected' && t.obligationId && !t.dismissed &&
+    (t.oblMonth || t.date || '').slice(0,7) >= today.slice(0,7));
+
+  const rowHTML = rows.map(t => {
+    const hist = oblKnownCharges(t.obligationId, 3);
+    const amt  = (+t.debit||0) || (+t.credit||0);
+    const late = (t.date||'') < today;
+    const o    = oblFind(t.obligationId);
+    const chips = hist.length ? hist.map(h =>
+      `<button type="button" class="btn btn-sm btn-ghost btn-xs" style="font-variant-numeric:tabular-nums;padding:1px 6px"
+         title="charged ${esc(fmtDate(h.date))}" onclick="id('oblrv-amt-${t.id}').value='${h.amount}'">${fmtCurrency(h.amount)}</button>`).join('') : '';
+    return `<tr style="${late?'background:color-mix(in srgb,var(--danger) 4%,transparent)':''}">
+      <td style="white-space:nowrap"><input type="date" id="oblrv-date-${t.id}" class="finput" style="height:30px;font-size:.8rem;width:145px" value="${esc(t.date||'')}"></td>
+      <td><span style="font-weight:600">${ico[t.oblType]||'🔁'} ${esc(t.payee||'')}</span>
+        ${late?`<span style="margin-left:6px;font-size:.66rem;font-weight:700;color:var(--danger)">past due</span>`:''}
+        ${o && o.obj.amountType === 'variable' ? `<span style="margin-left:5px;font-size:.64rem;font-weight:700;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--info) 14%,transparent);color:var(--info)">variable</span>` : ''}
+        <div style="font-size:.72rem;color:var(--text3);margin-top:1px">${esc(accts[t.accountId]||'—')} · ${
+          t.splits && t.splits.length
+            ? `<span title="${esc(t.splits.map(l => (txnCatLabel(l.categoryId)||'?') + ' ' + fmtCurrency(l.amount)).join(' · '))}" style="cursor:help">✂ split ${t.splits.length} ways</span>`
+            : esc(txnCatLabel(t.categoryId) || 'no expense type')}</div></td>
+      <td style="white-space:nowrap"><input type="number" step="0.01" min="0" id="oblrv-amt-${t.id}" class="finput" style="height:30px;font-size:.8rem;width:110px;text-align:right" value="${amt}">
+        ${chips?`<div style="display:flex;gap:3px;margin-top:3px;flex-wrap:wrap">${chips}</div>`:''}</td>
+      <td style="white-space:nowrap;text-align:right">
+        <button class="btn btn-sm btn-primary btn-xs" onclick="BA.oblReviewApprove('${t.id}')" title="Approve with the values shown">✓ Approve</button>
+        <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="BA.oblReviewReject('${t.id}')" title="Reject — do not record">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  pane.innerHTML = `
+    <div class="sum-row kpi-sticky-obl">
+      <div class="sum-card ${rows.length?'c-warn':'c-ok'}"><div class="sum-lbl">Awaiting Review</div><div class="sum-val">${rows.length}</div><div class="sum-sub">across ${new Set(rows.map(r=>r.accountId)).size} account${new Set(rows.map(r=>r.accountId)).size!==1?'s':''}</div></div>
+      <div class="sum-card"><div class="sum-lbl">Total</div><div class="sum-val">${fmtCurrency(total)}</div><div class="sum-sub">if all approved</div></div>
+      <div class="sum-card ${overdue?'c-danger':''}"><div class="sum-lbl">Past Due</div><div class="sum-val">${overdue}</div><div class="sum-sub">date has passed</div></div>
+    </div>
+    <div class="obl-section-hdr">
+      <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">⏳ Pending Approval</h3>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:.72rem;color:var(--text3);display:flex;align-items:center;gap:5px">Generate from
+          <input type="month" class="finput" style="height:28px;font-size:.75rem;width:135px" value="${esc(oblStartMonth())}" onchange="BA.oblSetStartMonth(this.value)"></label>
+        ${rows.length ? `<button class="btn btn-sm" onclick="BA.oblReviewApproveAll()" title="Approve every row whose date and amount are still exactly as generated">✓✓ Approve all unchanged</button>` : ''}
+      </div>
+    </div>
+    ${rows.length ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;overflow-x:auto">
+      <table class="obl-tbl"><thead><tr><th style="width:160px">Date</th><th>What</th><th style="width:190px">Amount</th><th style="width:190px"></th></tr></thead>
+      <tbody>${rowHTML}</tbody></table></div>`
+    : `<div class="obl-empty" style="padding:40px"><div class="obl-empty-icon">✅</div><p>Nothing waiting. Every posted obligation has been approved or rejected.</p></div>`}
+    ${rejected.length ? `
+      <div class="obl-section-hdr" style="margin-top:20px">
+        <h3 style="font-size:.95rem;font-weight:700;color:var(--text3)">🚫 Rejected this month or later
+          <span style="font-size:.78rem;font-weight:400">${rejected.length}</span></h3>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;overflow-x:auto">
+        <table class="obl-tbl"><tbody>${rejected.map(t => `<tr style="opacity:.75">
+          <td style="white-space:nowrap;color:var(--text3);font-size:.78rem">${fmtDate(t.date||t.oblMonth)}</td>
+          <td>${ico[t.oblType]||'🔁'} ${esc(t.payee||'')} <span style="color:var(--text3);font-size:.72rem">· ${esc(accts[t.accountId]||'—')}</span></td>
+          <td class="r">${fmtCurrency((+t.debit||0)||(+t.credit||0))}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblReviewRestore('${t.id}')" title="Put back in the queue">↺</button>
+            <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="BA.oblReviewDismiss('${t.id}')" title="Dismiss permanently">✕</button>
+          </td></tr>`).join('')}</tbody></table>
+      </div>` : ''}`;
 }
 
 // ── Shared sort helper ────────────────────────────────────────
@@ -11607,7 +12139,7 @@ function oblSortArr(arr, type) {
       else if (col === 'cost'){ av = +a.cost||0;                          bv = +b.cost||0; }
       else if (col === 'cycle'){ av = a.billingCycle||'';                 bv = b.billingCycle||''; }
       else if (col === 'monthly'){ av = oblToMonthly(+a.cost,a.billingCycle); bv = oblToMonthly(+b.cost,b.billingCycle); }
-      else if (col === 'renewal'){ av = oblNextRenewal(a.startDate,a.billingCycle); bv = oblNextRenewal(b.startDate,b.billingCycle); }
+      else if (col === 'renewal'){ av = oblNextChargeDate(a,'subscription')||'9999'; bv = oblNextChargeDate(b,'subscription')||'9999'; }
       else if (col === 'payment'){ av = (a.paymentMethod||'').toLowerCase(); bv = (b.paymentMethod||'').toLowerCase(); }
       else if (col === 'assigned'){ av = (a.assignedTo||'').toLowerCase(); bv = (b.assignedTo||'').toLowerCase(); }
       else if (col === 'status'){ av = a.status||'';                      bv = b.status||''; }
@@ -11653,6 +12185,128 @@ function oblPayAcctMismatch(paymentMethod) {
   return !(D.txnAccounts||[]).some(a => (a.name||'').toLowerCase() === nm);
 }
 
+// ── Shared obligation form controls ──────────────────────────
+// The same three decisions apply to a subscription, a loan and a split, so they
+// are written once. Previously only Loans had a posting switch — and its label
+// described something it did not do.
+function oblPostingFields(o) {
+  const auto  = !o || o.autoPost !== false;
+  const month = !!(o && o.trackInMonthly);
+  const box = (idAttr, on, title, body) => `
+    <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);user-select:none">
+      <input type="checkbox" id="${idAttr}" style="margin-top:2px;width:16px;height:16px;cursor:pointer;accent-color:var(--primary)" ${on?'checked':''}>
+      <span>
+        <span style="display:block;font-size:.83rem;font-weight:600;color:var(--text)">${title}</span>
+        <span style="display:block;font-size:.75rem;color:var(--text3);margin-top:2px">${body}</span>
+      </span>
+    </label>`;
+  return `
+    <div class="fg" style="grid-column:1/-1">
+      <label class="flbl">Where this shows up</label>
+      <div style="display:grid;gap:8px">
+        ${box('obl-autopost', auto, 'Auto-post to Transactions',
+              'Creates a pending transaction on each due date for you to approve. Turn off for anything you record by hand.')}
+        ${box('obl-trackmonthly', month, 'Also track in the Monthly tab',
+              'Adds a payment row to Generate from Templates each month, built from this obligation — so the amount, due day and paying account live in one place instead of two.')}
+      </div>
+    </div>`;
+}
+function oblAmountTypeField(o) {
+  const v = (o && o.amountType) || 'fixed';
+  return `<div class="fg"><label class="flbl">Amount behaviour</label>
+    <select id="obl-amttype" class="finput">
+      <option value="fixed"${v==='fixed'?' selected':''}>Fixed — same every time</option>
+      <option value="variable"${v==='variable'?' selected':''}>Variable — bill differs each time</option>
+    </select>
+    <div style="font-size:.7rem;color:var(--text3);margin-top:3px">Variable posts the middle of the last three actual charges rather than the figure stored here — so one catch-up bill never becomes next month's estimate.</div>
+  </div>`;
+}
+// Compact repeating editor. Kept in UI._oblSplitLines while the modal is open
+// so add/remove re-renders only this block.
+function oblSplitEditor(o) {
+  UI._oblSplitLines = JSON.parse(JSON.stringify((o && o.splitTemplate) || []));
+  return `<div class="fg" style="grid-column:1/-1">
+    <label class="flbl">Split across categories <span style="font-size:.7rem;color:var(--text3)">(optional — for one charge that covers several things)</span></label>
+    <div id="obl-split-wrap" style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px"></div>
+  </div>`;
+}
+function oblRenderSplitEditor() {
+  const wrap = id('obl-split-wrap'); if (!wrap) return;
+  const lines = UI._oblSplitLines || [];
+  const total = parseFloat(id('osub-cost')?.value ?? id('oemi-emi')?.value ?? id('ospl-inst')?.value) || 0;
+  const pv    = oblSplitPreview(lines, total);
+  const rows = lines.map((l, i) => `
+    <div style="display:grid;grid-template-columns:1fr 110px 90px 30px;gap:6px;align-items:center;margin-bottom:6px">
+      <select class="finput" style="height:30px;font-size:.8rem" onchange="BA.oblSplitSet(${i},'categoryId',this.value)">${txnCatOptions(l.categoryId||null)}</select>
+      <input class="finput" style="height:30px;font-size:.8rem;text-align:right" type="number" step="0.01" placeholder="0.00"
+        value="${l.remainder ? '' : (l.amount ?? '')}" ${l.remainder?'disabled':''} onchange="BA.oblSplitSet(${i},'amount',this.value)">
+      <label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:var(--text2);cursor:pointer;white-space:nowrap">
+        <input type="radio" name="obl-split-rem" ${l.remainder?'checked':''} style="accent-color:var(--primary)" onchange="BA.oblSplitSetRemainder(${i})"> rest
+      </label>
+      <button type="button" class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="BA.oblSplitRemove(${i})" title="Remove line">✕</button>
+    </div>`).join('');
+  const hint = !pv ? `<div style="font-size:.72rem;color:var(--text3)">No split — the whole charge posts to the Expense Type above.</div>`
+    : pv.remainder < 0
+      ? `<div style="font-size:.75rem;color:var(--danger);font-weight:600">The fixed lines come to ${fmtCurrency(pv.fixedSum)}, more than the ${fmtCurrency(total)} charge — the remainder would be ${fmtCurrency(pv.remainder)}.</div>`
+      : `<div style="font-size:.75rem;color:var(--text2)"><b>${esc(txnCatLabel(pv.lines[pv.remIdx].categoryId)||'Last line')}</b> takes the rest: <b>${fmtCurrency(pv.remainder)}</b> of ${fmtCurrency(total)}. Re-cut automatically whenever the bill differs.</div>`;
+  wrap.innerHTML = `${rows}
+    <div style="display:flex;gap:8px;align-items:center;margin-top:${rows?'8':'0'}px">
+      <button type="button" class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblSplitAdd()">＋ Add line</button>
+      ${rows ? `<button type="button" class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="BA.oblSplitClear()">Clear split</button>` : ''}
+    </div>
+    <div style="margin-top:7px">${hint}</div>`;
+}
+function oblGatherSplitTemplate() {
+  const lines = (UI._oblSplitLines || []).filter(l => l && l.categoryId);
+  if (!lines.length) return [];
+  if (!lines.some(l => l.remainder)) lines[lines.length - 1].remainder = true;
+  return lines.map(l => ({
+    categoryId: l.categoryId,
+    amount: l.remainder ? 0 : (Math.round((parseFloat(l.amount)||0)*100)/100),
+    remainder: !!l.remainder,
+    notes: (l.notes||'').trim(),
+  }));
+}
+
+function oblEndDateField(o) {
+  return `<div class="fg"><label class="flbl">End Date <span style="font-size:.7rem;color:var(--text3)">(optional)</span></label>
+    <input id="obl-enddate" class="finput" type="date" value="${o&&o.endDate?esc(o.endDate):''}">
+    <div style="font-size:.7rem;color:var(--text3);margin-top:3px">Stops posting after this date on its own — no need to remember to cancel it.</div>
+  </div>`;
+}
+// Live "next charge" line. The single best guard against the anchor-date
+// mistake: three subscriptions carry a startDate that is really the NEXT
+// renewal, and Apple's (2027-05-29) means it cannot post for another 20 months.
+function oblPreviewLine() {
+  return `<div class="fg" style="grid-column:1/-1">
+    <div id="obl-preview" style="font-size:.78rem;color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:8px 11px">—</div>
+  </div>`;
+}
+function oblUpdatePreview(type) {
+  const el = id('obl-preview'); if (!el) return;
+  const pfx = type === 'subscription' ? 'osub' : type === 'emi' ? 'oemi' : 'ospl';
+  const o = {
+    startDate: id(pfx+'-start')?.value || '',
+    endDate:   id('obl-enddate')?.value || '',
+    billingCycle: id('osub-cycle')?.value || 'Monthly',
+    frequency:    id('oemi-freq')?.value || 'Monthly',
+    dueDateEachMonth: id(pfx+'-day')?.value || 1,
+    maturityDate: id('oemi-end')?.value || '',
+    totalInstallments: id('ospl-count')?.value || 0,
+  };
+  if (!o.startDate) { el.innerHTML = '<span style="color:var(--text3)">Set a first charge date to see the schedule.</span>'; return; }
+  const dates = [];
+  let [y,m] = centralToday().split('-').map(Number);
+  for (let i = 0; i < 30 && dates.length < 3; i++) {
+    const ym = y + '-' + String(m).padStart(2,'0');
+    oblDueDatesInMonth(o, type, ym).forEach(d => { if (d >= centralToday() && dates.length < 3) dates.push(d); });
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  el.innerHTML = dates.length
+    ? `<b>Next charge:</b> ${fmtDate(dates[0])}${dates.length>1?' <span style="color:var(--text3)">then '+dates.slice(1).map(fmtDate).join(', ')+'</span>':''}`
+    : `<span style="color:var(--warn)">⚠ This will not post in the next 30 months — check the first charge date${o.endDate?' and end date':''}.</span>`;
+}
+
 // Build <option> list from D.txnAccounts for obligation modals
 function oblTxnAcctOptions(selectedName) {
   const opts = (D.txnAccounts||[])
@@ -11662,6 +12316,74 @@ function oblTxnAcctOptions(selectedName) {
       return `<option value="${esc(a.name||'')}"${sel}>${esc(a.name||'')}</option>`;
     }).join('');
   return `<option value="">— Select account —</option>${opts}`;
+}
+
+function oblHistRow(oblId, type, cols) {
+  if (!UI.oblHistOpen || UI.oblHistOpen !== oblId) return '';
+  return `<tr><td colspan="${cols}" style="padding:0">${oblHistoryPanel(oblId, type)}</td></tr>`;
+}
+// Every charge this obligation has actually posted, expected against actual.
+// The obligation and its transactions had no link in either direction before.
+function oblHistoryPanel(oblId, type) {
+  const o = oblFind(oblId); if (!o) return '';
+  const hist = oblKnownCharges(oblId, 12);
+  const exp  = oblBaseAmount(o.obj, type);
+  if (!hist.length) return `<div style="padding:10px 14px;font-size:.78rem;color:var(--text3)">Nothing posted yet.</div>`;
+  const rows = hist.map(h => {
+    const d = h.amount - exp;
+    const col = Math.abs(d) < 0.005 ? 'var(--text3)' : d > 0 ? 'var(--danger)' : 'var(--ok)';
+    return `<tr><td style="color:var(--text3);font-size:.76rem">${fmtDate(h.date)}</td>
+      <td class="r">${fmtCurrency(h.amount)}</td>
+      <td class="r" style="color:${col};font-size:.76rem">${Math.abs(d) < 0.005 ? 'as expected' : (d>0?'+':'−')+fmtCurrency(Math.abs(d))}</td></tr>`;
+  }).join('');
+  const tot = hist.reduce((a,h)=>a+h.amount,0);
+  return `<div style="padding:8px 14px 12px;background:var(--surface2)">
+    <div style="font-size:.7rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Posted history · expected ${fmtCurrency(exp)}</div>
+    <table class="obl-tbl" style="background:transparent"><tbody>${rows}</tbody></table>
+    <div style="font-size:.74rem;color:var(--text3);margin-top:4px">${hist.length} charge${hist.length!==1?'s':''} · ${fmtCurrency(tot)} total</div>
+  </div>`;
+}
+
+// Where an obligation shows up, said out loud on the row.
+function oblPostBadges(o) {
+  const b = [];
+  if (!oblAutoPost(o)) b.push(`<span title="Not posted to Transactions — you record this by hand" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:var(--surface2);color:var(--text3);border:1px solid var(--border);white-space:nowrap">manual</span>`);
+  if (o.trackInMonthly)  b.push(`<span title="Also generated as a Monthly tab payment row" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:var(--primary);color:#fff;opacity:.85;white-space:nowrap">monthly</span>`);
+  if (o.amountType === 'variable') b.push(`<span title="Variable — posts using the most recent actual charge" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--info) 14%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);white-space:nowrap">variable</span>`);
+  if (oblAutoPost(o) && !o.expenseTypeId && !oblHasSplitTemplate(o)) b.push(`<span title="No expense type — this will not post until one is set" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);white-space:nowrap">no type</span>`);
+  return b.length ? ' ' + b.join(' ') : '';
+}
+// Search + account + status filter. 48 obligations across three sub-tabs is a
+// lot of scrolling for a grid that could only sort.
+function oblFilterBar(kind, rows) {
+  const q  = UI.oblSearch || '';
+  const af = UI.oblAcctFilter || '';
+  const sf = UI.oblStatusFilter || '';
+  const accts = [...new Set(rows.map(r => (r.paymentMethod||'').trim()).filter(Boolean))].sort();
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0 4px">
+    <input id="obl-search" class="finput" style="max-width:220px;height:32px;font-size:.82rem" placeholder="Search ${esc(kind)}…"
+      value="${esc(q)}" oninput="BA.oblSetSearch(this.value)">
+    <select class="finput" style="max-width:180px;height:32px;font-size:.82rem" onchange="BA.oblSetAcctFilter(this.value)">
+      <option value="">All accounts</option>
+      ${accts.map(a => `<option value="${esc(a)}"${a===af?' selected':''}>${esc(a)}</option>`).join('')}
+    </select>
+    <select class="finput" style="max-width:150px;height:32px;font-size:.82rem" onchange="BA.oblSetStatusFilter(this.value)">
+      <option value="">All statuses</option>
+      ${['Active','Paused','Cancelled','Completed','Paid Off'].map(x => `<option value="${x}"${x===sf?' selected':''}>${x}</option>`).join('')}
+    </select>
+    ${(q||af||sf) ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblClearFilters()">Clear</button>` : ''}
+  </div>`;
+}
+function oblApplyFilters(rows) {
+  const q  = (UI.oblSearch||'').trim().toLowerCase();
+  const af = (UI.oblAcctFilter||'').trim().toLowerCase();
+  const sf = UI.oblStatusFilter || '';
+  return rows.filter(r => {
+    if (q  && !(oblName(r)+' '+(r.notes||'')+' '+(r.assignedTo||'')+' '+(txnCatLabel(r.expenseTypeId)||'')).toLowerCase().includes(q)) return false;
+    if (af && (r.paymentMethod||'').trim().toLowerCase() !== af) return false;
+    if (sf && (r.status||'Active') !== sf) return false;
+    return true;
+  });
 }
 
 function renderOblSubscriptions() {
@@ -11674,38 +12396,46 @@ function renderOblSubscriptions() {
   // KPIs based on active subscriptions only
   const monthlyTotal = activeSubs.reduce((s, sub) => s + oblToMonthly(+sub.cost, sub.billingCycle), 0);
   const annualTotal  = monthlyTotal * 12;
-  const upcomingSoon = activeSubs.filter(s => { const d = oblDaysDiff(oblNextRenewal(s.startDate, s.billingCycle)); return d >= 0 && d <= 7; }).length;
-  const overdue      = activeSubs.filter(s => oblDaysDiff(oblNextRenewal(s.startDate, s.billingCycle)) < 0).length;
+  const upcomingSoon = activeSubs.filter(s => { const n = oblNextChargeDate(s, 'subscription'); if (!n) return false; const d = oblDaysDiff(n); return d >= 0 && d <= 7; }).length;
+  // Real overdue: a pending row past its date that you have neither approved nor
+  // rejected. The old figure compared renewal dates that oblNextRenewal() rolls
+  // forward until they are >= today, so it could never be anything but zero.
+  const overdue      = oblOverdueCount('subscription');
   const pausedMonthly = pausedSubs.reduce((s, sub) => s + oblToMonthly(+sub.cost, sub.billingCycle), 0);
 
   // ── Shared row builder ─────────────────────────────────────
+  const _dupWarn = oblDuplicateWarnings();
   const makeSubRow = (sub, opts = {}) => {
     const { dimmed = false, struck = false } = opts;
-    const renewal = oblNextRenewal(sub.startDate, sub.billingCycle);
-    const days    = oblDaysDiff(renewal);
-    const urgCol  = oblUrgencyColor(days);
-    const urgLbl  = oblUrgencyLabel(days);
+    const renewal = oblNextChargeDate(sub, 'subscription');
+    const days    = renewal ? oblDaysDiff(renewal) : null;
+    const urgCol  = days === null ? 'var(--text3)' : oblUrgencyColor(days);
+    const urgLbl  = days === null ? 'not scheduled' : oblUrgencyLabel(days);
     const monthly = oblToMonthly(+sub.cost, sub.billingCycle);
     const nameStyle = struck ? 'text-decoration:line-through;color:var(--text3)' : '';
     const rowStyle  = dimmed ? 'opacity:.6' : '';
+    const endNote = sub.endDate ? `<div style="font-size:.68rem;color:var(--warn);margin-top:1px">ends ${fmtDate(sub.endDate)}</div>` : '';
     return `<tr style="${rowStyle}">
-      <td><span class="obl-pill purple" style="margin-right:5px">${esc(sub.category||'Other')}</span><span style="${nameStyle}">${esc(sub.name)}</span></td>
+      <td>${oblCatPill(sub)}<span style="${nameStyle}">${esc(sub.name)}</span>${oblDupBadge(_dupWarn, sub.id)}${oblPriceBadge(sub)}
+        <div style="margin-top:2px">${oblPostBadges(sub)}</div>${endNote}</td>
       <td class="r">${fmtCurrency(sub.cost)}</td>
       <td>${sub.billingCycle}</td>
       <td class="r" style="color:var(--text3)">${fmtCurrency(monthly)}/mo</td>
-      <td>${struck ? '<span style="color:var(--text3)">—</span>' : `<span style="color:${urgCol};font-weight:600">${urgLbl}</span><br><span style="font-size:.72rem;color:var(--text3)">${fmtDate(renewal)}</span>`}</td>
+      <td>${struck || !renewal ? '<span style="color:var(--text3)">—</span>' : `<span style="color:${urgCol};font-weight:600">${urgLbl}</span><br><span style="font-size:.72rem;color:var(--text3)">${fmtDate(renewal)}</span>`}</td>
       <td>${(() => {
         const pm = sub.paymentMethod||'';
         const warn = pm && oblPayAcctMismatch(pm) ? ' <span title="Account not found in Transactions" style="color:var(--warn);cursor:default">⚠️</span>' : '';
         return esc(pm||'—') + warn;
       })()}</td>
       <td>${esc(sub.assignedTo||'—')}</td>
-      <td><span class="obl-pill ${sub.status==='Active'?'green':sub.status==='Paused'?'orange':'red'}">${sub.status||'Active'}</span></td>
-      <td>
-        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblEditSub('${sub.id}')">✎</button>
-        <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="oblDeleteSub('${sub.id}')">✕</button>
+      <td><span class="obl-pill ${sub.status==='Active'?'green':sub.status==='Paused'?'orange':'red'}" style="cursor:pointer" title="Click to cycle Active → Paused → Cancelled" onclick="BA.oblCycleStatus('${sub.id}')">${sub.status||'Active'}</span></td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblToggleHistory('${sub.id}')" title="Posted history — expected vs actual">🕐</button>
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblEditSub('${sub.id}')" title="Edit">✎</button>
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblDuplicate('${sub.id}')" title="Duplicate">⧉</button>
+        <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="oblDeleteSub('${sub.id}')" title="Delete">✕</button>
       </td>
-    </tr>`;
+    </tr>${oblHistRow(sub.id, 'subscription', 9)}`;
   };
 
   const thead = `<thead><tr>
@@ -11718,7 +12448,7 @@ function renderOblSubscriptions() {
   </div>`;
 
   // ── Active section ─────────────────────────────────────────
-  const activeRows = oblSortArr(activeSubs, 'sub').map(s => makeSubRow(s)).join('')
+  const activeRows = oblSortArr(oblApplyFilters(activeSubs), 'sub').map(s => makeSubRow(s)).join('')
     || `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text3)">No active subscriptions yet — add one above</td></tr>`;
 
   // ── Paused section ─────────────────────────────────────────
@@ -11728,7 +12458,7 @@ function renderOblSubscriptions() {
         <span style="font-size:.78rem;font-weight:400;color:var(--text3)">${pausedSubs.length} subscription${pausedSubs.length>1?'s':''} · ${fmtCurrency(pausedMonthly)}/mo if reactivated</span>
       </h3>
     </div>
-    ${wrapTable(oblSortArr(pausedSubs, 'sub').map(s => makeSubRow(s, { dimmed: true })).join(''))}` : '';
+    ${wrapTable(oblSortArr(oblApplyFilters(pausedSubs), 'sub').map(s => makeSubRow(s, { dimmed: true })).join(''))}` : '';
 
   // ── Cancelled section ──────────────────────────────────────
   const cancelledSection = cancelledSubs.length ? `
@@ -11737,7 +12467,7 @@ function renderOblSubscriptions() {
         <span style="font-size:.78rem;font-weight:400">${cancelledSubs.length} subscription${cancelledSubs.length>1?'s':''}</span>
       </h3>
     </div>
-    ${wrapTable(oblSortArr(cancelledSubs, 'sub').map(s => makeSubRow(s, { dimmed: true, struck: true })).join(''))}` : '';
+    ${wrapTable(oblSortArr(oblApplyFilters(cancelledSubs), 'sub').map(s => makeSubRow(s, { dimmed: true, struck: true })).join(''))}` : '';
 
   pane.innerHTML = `
     <div class="sum-row kpi-sticky-obl">
@@ -11745,8 +12475,9 @@ function renderOblSubscriptions() {
       <div class="sum-card"><div class="sum-lbl">Monthly Cost</div><div class="sum-val">${fmtCurrency(monthlyTotal)}</div><div class="sum-sub">active only</div></div>
       <div class="sum-card"><div class="sum-lbl">Annual Cost</div><div class="sum-val">${fmtCurrency(annualTotal)}</div><div class="sum-sub">active projected</div></div>
       <div class="sum-card ${upcomingSoon>0?'c-warn':''}"><div class="sum-lbl">Renewing Soon</div><div class="sum-val">${upcomingSoon}</div><div class="sum-sub">within 7 days</div></div>
-      <div class="sum-card ${overdue>0?'c-danger':''}"><div class="sum-lbl">Overdue</div><div class="sum-val">${overdue}</div><div class="sum-sub">past renewal date</div></div>
+      <div class="sum-card ${overdue>0?'c-danger':''}"><div class="sum-lbl">Overdue</div><div class="sum-val">${overdue}</div><div class="sum-sub">posted, past due, unapproved</div></div>
     </div>
+    ${oblFilterBar('subscriptions', all)}
     <div class="obl-section-hdr">
       <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">✅ Active Subscriptions</h3>
       <button class="btn btn-primary btn-sm" onclick="oblAddSubModal()">＋ Add Subscription</button>
@@ -11764,13 +12495,15 @@ function oblAddSubModal(id_) {
     <div class="modal-title">${sub?'Edit':'Add'} Subscription</div>
     <div class="form-grid">
       <div class="fg"><label class="flbl">Name *</label><input id="osub-name" class="finput" value="${v('name')}" placeholder="e.g. Netflix"></div>
-      <div class="fg"><label class="flbl">Category</label>
-        <select id="osub-cat" class="finput">${OBL_SUB_CATS.map(c=>`<option${sel('category',c)}>${c}</option>`).join('')}</select></div>
-      <div class="fg"><label class="flbl">Cost *</label><input id="osub-cost" class="finput" type="number" step="0.01" min="0" value="${sub?sub.cost:''}" placeholder="0.00"></div>
+      <div class="fg"><label class="flbl">Expense Type *<span style="font-size:.7rem;color:var(--text3)"> — also sets the category pill</span></label>
+        <select id="osub-exptype" class="finput">${txnCatOptions(sub?.expenseTypeId||null)}</select></div>
+      <div class="fg"><label class="flbl">Cost *</label><input id="osub-cost" class="finput" type="number" step="0.01" min="0" value="${sub?sub.cost:''}" placeholder="0.00" oninput="oblRenderSplitEditor()"></div>
+      ${oblAmountTypeField(sub)}
       <div class="fg"><label class="flbl">Billing Cycle</label>
-        <select id="osub-cycle" class="finput">${OBL_SUB_CYCLES.map(c=>`<option${sel('billingCycle',c)}>${c}</option>`).join('')}</select></div>
-      <div class="fg"><label class="flbl">Start Date</label><input id="osub-start" class="finput" type="date" value="${v('startDate')}"></div>
-      <div class="fg"><label class="flbl">Next Renewal</label><input id="osub-renewal" class="finput" type="date" value="${v('nextRenewalDate')}"></div>
+        <select id="osub-cycle" class="finput" onchange="oblUpdatePreview('subscription')">${OBL_SUB_CYCLES.map(c=>`<option${sel('billingCycle',c)}>${c}</option>`).join('')}</select></div>
+      <div class="fg"><label class="flbl">First Charge Date *<span style="font-size:.7rem;color:var(--text3)"> — sets the day of the month</span></label>
+        <input id="osub-start" class="finput" type="date" value="${v('startDate')}" onchange="oblUpdatePreview('subscription')"></div>
+      ${oblEndDateField(sub)}
       <div class="fg"><label class="flbl">Payment Account</label>
         <select id="osub-pay" class="finput">${oblTxnAcctOptions(sub?.paymentMethod||null)}</select></div>
       <div class="fg"><label class="flbl">Assigned To</label><input id="osub-assign" class="finput" value="${v('assignedTo')}" placeholder="e.g. Family"></div>
@@ -11780,15 +12513,16 @@ function oblAddSubModal(id_) {
           <option${sel('status','Paused')}>Paused</option>
           <option${sel('status','Cancelled')}>Cancelled</option>
         </select></div>
-      <div class="fg"><label class="flbl">Expense Type <span style="font-size:.7rem;color:var(--text3)">(for Transactions)</span></label>
-        <select id="osub-exptype" class="finput">${txnCatOptions(sub?.expenseTypeId||null)}</select></div>
+      ${oblSplitEditor(sub)}
+      ${oblPreviewLine()}
+      ${oblPostingFields(sub)}
       <div class="fg" style="grid-column:1/-1"><label class="flbl">Notes</label><input id="osub-notes" class="finput" value="${v('notes')}"></div>
     </div>
     <div class="mfoot">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="oblSaveSub('${id_||''}')">Save</button>
     </div>`);
-  setTimeout(() => id('osub-name')?.focus(), 50);
+  setTimeout(() => { id('osub-name')?.focus(); oblRenderSplitEditor(); oblUpdatePreview('subscription'); }, 50);
 }
 
 function oblSaveSub(editId) {
@@ -11796,20 +12530,29 @@ function oblSaveSub(editId) {
   const cost = parseFloat(id('osub-cost').value);
   if (!name) { toast('Name is required','err'); return; }
   if (isNaN(cost) || cost < 0) { toast('Enter a valid cost','err'); return; }
+  const _autoPost = !!id('obl-autopost')?.checked;
+  const _expType  = id('osub-exptype')?.value || null;
+  const _splitTpl = oblGatherSplitTemplate();
+  // An obligation that posts to Transactions with no expense type puts real
+  // money in the ledger and in no budget category — T-Mobile at $327/mo did
+  // exactly that. A split template satisfies this just as well as a single type.
+  if (_autoPost && !_expType && !_splitTpl.length) { toast('Pick an expense type, or split the charge across categories — an auto-posting obligation has to land in the budget','err'); return; }
   const obj = {
     id: editId || uid(), name,
-    category: id('osub-cat').value,
     cost, billingCycle: id('osub-cycle').value,
+    amountType: id('obl-amttype')?.value || 'fixed',
     startDate: id('osub-start').value || ymNow() + '-01',
-    nextRenewalDate: id('osub-renewal').value || '',
+    endDate: id('obl-enddate')?.value || '',
     paymentMethod: id('osub-pay').value.trim(),
     assignedTo: id('osub-assign').value.trim(),
     status: id('osub-status').value,
-    expenseTypeId: id('osub-exptype')?.value || null,
+    expenseTypeId: _expType,
+    splitTemplate: _splitTpl,
+    autoPost: _autoPost,
+    trackInMonthly: !!id('obl-trackmonthly')?.checked,
     notes: id('osub-notes').value.trim(),
     dateAdded: editId ? undefined : ymNow() + '-01'
   };
-  if (!obj.nextRenewalDate) obj.nextRenewalDate = oblNextRenewal(obj.startDate, obj.billingCycle);
   if (editId) {
     const idx = D.obligations.subscriptions.findIndex(s => s.id === editId);
     if (idx >= 0) D.obligations.subscriptions[idx] = { ...D.obligations.subscriptions[idx], ...obj };
@@ -11839,26 +12582,25 @@ function renderOblEmis() {
   const totalOutstanding = enriched.reduce((s,e) => s + e.remainingBalance, 0);
   const fullPaidCt = all.filter(e => e.status === 'Paid Off' || e.status === 'Completed').length;
 
-  const enrichedSorted = oblSortArr(enriched, 'emi');
+  const enrichedSorted = oblSortArr(oblApplyFilters(enriched), 'emi');
+  const _dupWarnE = oblDuplicateWarnings();
 
   const freqLabel = f => f === 'Bi-weekly' ? '2wk' : f === 'Quarterly' ? 'qtr' : 'mo';
 
   const rows = enrichedSorted.length ? enrichedSorted.map(e => {
     const pct       = e.totalInstallments > 0 ? Math.round((e.installmentsPaid / e.totalInstallments) * 100) : 0;
     const fillColor = pct >= 80 ? 'var(--ok)' : pct >= 40 ? 'var(--warn)' : 'var(--info)';
-    const badge     = e.generateMonthly === false
-      ? `<span title="Auto-debit: excluded from Monthly tab" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:#f0f0f0;color:#888;border:1px solid #ddd;white-space:nowrap">Auto-debit</span>`
-      : `<span title="Generated in Monthly tab" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:var(--primary);color:#fff;opacity:.85;white-space:nowrap">Monthly</span>`;
     return `<tr>
       <td>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          <span>${esc(e.itemName||e.name||'Loan')}</span>${badge}
+          ${oblCatPill(e)}<span>${esc(e.itemName||e.name||'Loan')}</span>${oblDupBadge(_dupWarnE, e.id)}${oblPriceBadge(e)}
         </div>
-        <div style="font-size:.7rem;color:var(--text3);margin-top:1px">${esc(e.category||'Other')}${e.lender?' · '+esc(e.lender):''}</div>
+        <div style="margin-top:2px">${oblPostBadges(e)}</div>
+        ${e.lender?`<div style="font-size:.7rem;color:var(--text3);margin-top:1px">${esc(e.lender)}</div>`:''}
       </td>
       <td class="r">${fmtCurrency(e.loanAmount)}</td>
       <td class="r" style="color:var(--info)">${fmtCurrency(e.emiAmount)}<span style="font-size:.7rem;color:var(--text3)">/${freqLabel(e.frequency)}</span></td>
-      <td>${e.dueDateEachMonth ? e.dueDateEachMonth+'th' : '—'}</td>
+      <td>${(e.frequency||'Monthly')==='Bi-weekly' ? '<span style="font-size:.72rem;color:var(--text3)">every 14d</span>' : oblOrdinal(e.dueDateEachMonth)}</td>
       <td class="r" style="font-weight:600">${fmtCurrency(e.remainingBalance)}</td>
       <td style="font-size:.75rem;color:var(--text3)">${e.interestRate ? e.interestRate+'%' : '—'}</td>
       <td>
@@ -11875,11 +12617,13 @@ function renderOblEmis() {
         const warn = pm && oblPayAcctMismatch(pm) ? ' <span title="Account not found in Transactions" style="color:var(--warn);cursor:default">⚠️</span>' : '';
         return esc(pm||'—') + warn;
       })()}</td>
-      <td>
-        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblEditEmi('${e.id}')">✎</button>
-        <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="oblDeleteEmi('${e.id}')">✕</button>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblToggleHistory('${e.id}')" title="Posted history — expected vs actual">🕐</button>
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblEditEmi('${e.id}')" title="Edit">✎</button>
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblDuplicate('${e.id}')" title="Duplicate">⧉</button>
+        <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="oblDeleteEmi('${e.id}')" title="Delete">✕</button>
       </td>
-    </tr>`;
+    </tr>${oblHistRow(e.id, 'emi', 10)}`;
   }).join('') : `<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--text3)">No active loans — add one above</td></tr>`;
 
   const paidRows = fullPaidCt > 0 ? (all.filter(e => e.status === 'Paid Off' || e.status === 'Completed')).map(e => `
@@ -11890,7 +12634,7 @@ function renderOblEmis() {
       </td>
       <td class="r">${fmtCurrency(e.loanAmount)}</td>
       <td class="r">${fmtCurrency(e.emiAmount)}<span style="font-size:.7rem;color:var(--text3)">/${freqLabel(e.frequency)}</span></td>
-      <td>${e.dueDateEachMonth ? e.dueDateEachMonth+'th' : '—'}</td>
+      <td>${(e.frequency||'Monthly')==='Bi-weekly' ? '<span style="font-size:.72rem;color:var(--text3)">every 14d</span>' : oblOrdinal(e.dueDateEachMonth)}</td>
       <td class="r" style="color:var(--ok)">$0</td>
       <td style="font-size:.75rem;color:var(--text3)">${e.interestRate ? e.interestRate+'%' : '—'}</td>
       <td><span style="font-size:.7rem;color:var(--ok)">100%</span></td>
@@ -11903,7 +12647,9 @@ function renderOblEmis() {
       <div class="sum-card"><div class="sum-lbl">Active Loans</div><div class="sum-val">${emis.length}</div><div class="sum-sub">${fullPaidCt} paid off</div></div>
       <div class="sum-card c-warn"><div class="sum-lbl">Monthly Payments</div><div class="sum-val">${fmtCurrency(totalMonthly)}</div><div class="sum-sub">total due each month</div></div>
       <div class="sum-card c-danger"><div class="sum-lbl">Total Outstanding</div><div class="sum-val">${fmtCurrency(totalOutstanding)}</div><div class="sum-sub">remaining balance</div></div>
+      ${oblOverdueCount('emi') > 0 ? `<div class="sum-card c-danger"><div class="sum-lbl">Overdue</div><div class="sum-val">${oblOverdueCount('emi')}</div><div class="sum-sub">posted, past due, unapproved</div></div>` : ''}
     </div>
+    ${oblFilterBar('loans', all)}
     <div class="obl-section-hdr">
       <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">Active Loans &amp; Financing</h3>
       <button class="btn btn-primary btn-sm" onclick="oblAddEmiModal()">＋ Add Loan</button>
@@ -11927,15 +12673,17 @@ function oblAddEmiModal(editId) {
     <div class="modal-title">${e?'Edit':'Add'} Loan</div>
     <div class="form-grid">
       <div class="fg"><label class="flbl">Loan Name *</label><input id="oemi-name" class="finput" value="${v('itemName')}" placeholder="e.g. Car Loan"></div>
-      <div class="fg"><label class="flbl">Category</label>
-        <select id="oemi-cat" class="finput">${OBL_EMI_CATS.map(c=>`<option${sel('category',c)}>${c}</option>`).join('')}</select></div>
+      <div class="fg"><label class="flbl">Expense Type *<span style="font-size:.7rem;color:var(--text3)"> — also sets the category pill</span></label>
+        <select id="oemi-exptype" class="finput">${txnCatOptions(e?.expenseTypeId||null)}</select></div>
       <div class="fg"><label class="flbl">Loan Amount *</label><input id="oemi-amt" class="finput" type="number" step="100" min="0" value="${e?e.loanAmount:''}" placeholder="0"></div>
-      <div class="fg"><label class="flbl">Payment Amount *</label><input id="oemi-emi" class="finput" type="number" step="0.01" min="0" value="${e?e.emiAmount:''}" placeholder="0.00"></div>
+      <div class="fg"><label class="flbl">Payment Amount *</label><input id="oemi-emi" class="finput" type="number" step="0.01" min="0" value="${e?e.emiAmount:''}" placeholder="0.00" oninput="oblRenderSplitEditor()"></div>
       <div class="fg"><label class="flbl">Frequency</label>
-        <select id="oemi-freq" class="finput">${OBL_EMI_FREQS.map(f=>`<option${sel('frequency',f)}>${f}</option>`).join('')}</select></div>
-      <div class="fg"><label class="flbl">Due Day (1–31)</label><input id="oemi-day" class="finput" type="number" min="1" max="31" value="${e?e.dueDateEachMonth:''}" placeholder="e.g. 15"></div>
-      <div class="fg"><label class="flbl">Start Date *</label><input id="oemi-start" class="finput" type="date" value="${v('startDate')}"></div>
-      <div class="fg"><label class="flbl">Maturity Date *</label><input id="oemi-end" class="finput" type="date" value="${v('maturityDate')}"></div>
+        <select id="oemi-freq" class="finput" onchange="oblUpdatePreview('emi')">${OBL_EMI_FREQS.map(f=>`<option${sel('frequency',f)}>${f}</option>`).join('')}</select>
+        <div style="font-size:.7rem;color:var(--text3);margin-top:3px">Bi-weekly posts every 14 days from the start date — roughly 2.17 payments a month, not one.</div></div>
+      <div class="fg"><label class="flbl">Due Day (1–31)<span style="font-size:.7rem;color:var(--text3)"> — monthly &amp; quarterly only</span></label>
+        <input id="oemi-day" class="finput" type="number" min="1" max="31" value="${e?e.dueDateEachMonth:''}" placeholder="e.g. 15" onchange="oblUpdatePreview('emi')"></div>
+      <div class="fg"><label class="flbl">Start Date *</label><input id="oemi-start" class="finput" type="date" value="${v('startDate')}" onchange="oblUpdatePreview('emi')"></div>
+      <div class="fg"><label class="flbl">Maturity Date *</label><input id="oemi-end" class="finput" type="date" value="${v('maturityDate')}" onchange="oblUpdatePreview('emi')"></div>
       <div class="fg"><label class="flbl">Interest Rate (%)</label><input id="oemi-rate" class="finput" type="number" step="0.01" min="0" max="100" value="${e?e.interestRate||'':''}" placeholder="0 for 0%"></div>
       <div class="fg"><label class="flbl">Lender</label><input id="oemi-lender" class="finput" value="${v('lender')}" placeholder="e.g. Chase Bank"></div>
       <div class="fg"><label class="flbl">Payment Account</label>
@@ -11946,25 +12694,17 @@ function oblAddEmiModal(editId) {
           <option${sel('status','Paid Off')}>Paid Off</option>
           <option${sel('status','Completed')}>Completed</option>
         </select></div>
-      <div class="fg"><label class="flbl">Expense Type <span style="font-size:.7rem;color:var(--text3)">(for Transactions)</span></label>
-        <select id="oemi-exptype" class="finput">${txnCatOptions(e?.expenseTypeId||null)}</select></div>
+      ${oblAmountTypeField(e)}
+      ${oblSplitEditor(e)}
+      ${oblPreviewLine()}
+      ${oblPostingFields(e)}
       <div class="fg" style="grid-column:1/-1"><label class="flbl">Notes</label><input id="oemi-notes" class="finput" value="${v('notes')}"></div>
-      <div class="fg" style="grid-column:1/-1">
-        <label class="flbl">Monthly Tab Tracking</label>
-        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);user-select:none">
-          <input type="checkbox" id="oemi-gen-monthly" style="margin-top:2px;width:16px;height:16px;cursor:pointer;accent-color:var(--primary)" ${e&&e.generateMonthly===false?'':'checked'}>
-          <span>
-            <span style="display:block;font-size:.83rem;font-weight:600;color:var(--text)">Generate in Monthly tab</span>
-            <span style="display:block;font-size:.75rem;color:var(--text3);margin-top:2px">When enabled, "Generate from Templates" will create a Monthly payment entry each month. Disable for auto-debited loans that don't need manual tracking.</span>
-          </span>
-        </label>
-      </div>
     </div>
     <div class="mfoot">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="oblSaveEmi('${editId||''}')">Save</button>
     </div>`);
-  setTimeout(() => id('oemi-name')?.focus(), 50);
+  setTimeout(() => { id('oemi-name')?.focus(); oblRenderSplitEditor(); oblUpdatePreview('emi'); }, 50);
 }
 
 function oblSaveEmi(editId) {
@@ -11977,20 +12717,27 @@ function oblSaveEmi(editId) {
   if (isNaN(loanAmt))      { toast('Enter a valid loan amount','err'); return; }
   if (isNaN(emiAmt))       { toast('Enter a valid payment amount','err'); return; }
   if (!start || !end)      { toast('Start and maturity dates are required','err'); return; }
+  const _autoPost = !!id('obl-autopost')?.checked;
+  const _expType  = id('oemi-exptype')?.value || null;
+  const _splitTpl = oblGatherSplitTemplate();
+  if (_autoPost && !_expType && !_splitTpl.length) { toast('Pick an expense type, or split the charge across categories — an auto-posting obligation has to land in the budget','err'); return; }
   const obj = {
     id: editId || uid(), itemName: name,
-    category: id('oemi-cat').value,
     loanAmount: loanAmt, emiAmount: emiAmt,
+    amountType: id('obl-amttype')?.value || 'fixed',
     frequency: id('oemi-freq').value,
     dueDateEachMonth: parseInt(id('oemi-day').value) || 1,
     startDate: start, maturityDate: end,
+    endDate: id('obl-enddate')?.value || '',
     interestRate: parseFloat(id('oemi-rate').value) || 0,
     lender: id('oemi-lender').value.trim(),
     paymentMethod: id('oemi-pay').value.trim(),
     status: id('oemi-status').value,
-    expenseTypeId: id('oemi-exptype')?.value || null,
+    expenseTypeId: _expType,
+    splitTemplate: _splitTpl,
     notes: id('oemi-notes').value.trim(),
-    generateMonthly: !!id('oemi-gen-monthly')?.checked,
+    autoPost: _autoPost,
+    trackInMonthly: !!id('obl-trackmonthly')?.checked,
   };
   if (editId) {
     const idx = D.obligations.emis.findIndex(x => x.id === editId);
@@ -12017,9 +12764,10 @@ function renderOblSplits() {
   const active = splits.filter(s => s.status !== 'Completed');
   const pane   = id('obl-pane-splits');
   const totalOutstanding = active.reduce((s,sp) => s + ((sp.totalInstallments - (sp.installmentsPaid||0)) * (+sp.installmentAmount||0)), 0);
-  const dueThisMonth = active.filter(sp => oblSplitDueInMonth(sp, ymNow())).length;
+  const dueThisMonth = active.filter(sp => oblDueDatesInMonth(sp, 'split', ymNow()).length > 0).length;
 
-  const sorted = oblSortArr(splits, 'split');
+  const sorted = oblSortArr(oblApplyFilters(splits), 'split');
+  const _dupWarnS = oblDuplicateWarnings();
   const rows = sorted.length ? sorted.map(sp => {
     const paid     = sp.installmentsPaid || 0;
     const total    = sp.totalInstallments || 1;
@@ -12032,7 +12780,8 @@ function renderOblSplits() {
       return `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
     })();
     return `<tr style="${isComplete?'opacity:.55':''}">
-      <td><span class="obl-pill blue" style="margin-right:5px">${esc(sp.category||'Other')}</span>${esc(sp.name)}</td>
+      <td>${oblCatPill(sp)}${esc(sp.name)}${oblDupBadge(_dupWarnS, sp.id)}${oblPriceBadge(sp)}
+        <div style="margin-top:2px">${oblPostBadges(sp)}</div></td>
       <td class="r">${fmtCurrency(sp.installmentAmount)}</td>
       <td>${paid} / ${total}</td>
       <td class="r">${fmtCurrency(sp.totalAmount)}</td>
@@ -12045,18 +12794,19 @@ function renderOblSplits() {
           <span style="font-size:.7rem;color:var(--text3);white-space:nowrap">${pct}%</span>
         </div>
       </td>
-      <td>${isComplete?'<span class="obl-pill green">Done</span>':fmtDate(nextDue)}</td>
+      <td>${isComplete?'<span class="obl-pill green">Done</span>':fmtDate(oblNextChargeDate(sp,'split')||nextDue)}</td>
       <td style="font-size:.78rem">${(() => {
         const pm = sp.paymentMethod||'';
         const warn = pm && oblPayAcctMismatch(pm) ? ' <span title="Account not found in Transactions" style="color:var(--warn);cursor:default">⚠️</span>' : '';
         return esc(pm||'—') + warn;
       })()}</td>
-      <td>
-        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblMarkSplitPaid('${sp.id}')" ${isComplete?'disabled':''} title="Mark one installment paid">✓</button>
-        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblEditSplit('${sp.id}')">✎</button>
-        <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="oblDeleteSplit('${sp.id}')">✕</button>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblMarkSplitPaid('${sp.id}')" ${isComplete?'disabled':''} title="Mark one installment paid by hand — approving its transaction already does this">✓</button>
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblToggleHistory('${sp.id}')" title="Posted history — expected vs actual">🕐</button>
+        <button class="btn btn-sm btn-ghost btn-xs" onclick="oblEditSplit('${sp.id}')" title="Edit">✎</button>
+        <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="oblDeleteSplit('${sp.id}')" title="Delete">✕</button>
       </td>
-    </tr>`;
+    </tr>${oblHistRow(sp.id, 'split', 9)}`;
   }).join('') : `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text3)">No split payments yet — add one above</td></tr>`;
 
   pane.innerHTML = `
@@ -12064,7 +12814,9 @@ function renderOblSplits() {
       <div class="sum-card"><div class="sum-lbl">Active Splits</div><div class="sum-val">${active.length}</div><div class="sum-sub">${splits.length-active.length} completed</div></div>
       <div class="sum-card c-warn"><div class="sum-lbl">Total Outstanding</div><div class="sum-val">${fmtCurrency(totalOutstanding)}</div><div class="sum-sub">remaining to pay</div></div>
       <div class="sum-card"><div class="sum-lbl">Due This Month</div><div class="sum-val">${dueThisMonth}</div><div class="sum-sub">installment due</div></div>
+      ${oblOverdueCount('split') > 0 ? `<div class="sum-card c-danger"><div class="sum-lbl">Overdue</div><div class="sum-val">${oblOverdueCount('split')}</div><div class="sum-sub">posted, past due, unapproved</div></div>` : ''}
     </div>
+    ${oblFilterBar('split payments', splits)}
     <div class="obl-section-hdr">
       <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">Split Payments</h3>
       <button class="btn btn-primary btn-sm" onclick="oblAddSplitModal()">＋ Add Split Payment</button>
@@ -12088,26 +12840,28 @@ function oblAddSplitModal(editId) {
     <div class="modal-title">${sp?'Edit':'Add'} Split Payment</div>
     <div class="form-grid">
       <div class="fg"><label class="flbl">Name *</label><input id="ospl-name" class="finput" value="${v('name')}" placeholder="e.g. School Tuition"></div>
-      <div class="fg"><label class="flbl">Category</label>
-        <select id="ospl-cat" class="finput">${OBL_SPLIT_CATS.map(c=>`<option${sel('category',c)}>${c}</option>`).join('')}</select></div>
+      <div class="fg"><label class="flbl">Expense Type *<span style="font-size:.7rem;color:var(--text3)"> — also sets the category pill</span></label>
+        <select id="ospl-exptype" class="finput">${txnCatOptions(sp?.expenseTypeId||null)}</select></div>
       <div class="fg"><label class="flbl">Total Amount *</label><input id="ospl-total" class="finput" type="number" step="0.01" min="0" value="${sp?sp.totalAmount:''}" oninput="oblSplitCalc()"></div>
-      <div class="fg"><label class="flbl">Total Installments *</label><input id="ospl-count" class="finput" type="number" min="1" value="${sp?sp.totalInstallments:''}" oninput="oblSplitCalc()"></div>
+      <div class="fg"><label class="flbl">Total Installments *</label><input id="ospl-count" class="finput" type="number" min="1" value="${sp?sp.totalInstallments:''}" oninput="oblSplitCalc();oblUpdatePreview('split')"></div>
       <div class="fg"><label class="flbl">Per Installment</label><input id="ospl-inst" class="finput" type="number" step="0.01" min="0" value="${sp?sp.installmentAmount:''}" placeholder="Auto-calculated"></div>
-      <div class="fg"><label class="flbl">Installments Paid</label><input id="ospl-paid" class="finput" type="number" min="0" value="${sp?sp.installmentsPaid||0:0}"></div>
-      <div class="fg"><label class="flbl">Start Date *</label><input id="ospl-start" class="finput" type="date" value="${v('startDate')}"></div>
-      <div class="fg"><label class="flbl">Due Day (1–31) *</label><input id="ospl-day" class="finput" type="number" min="1" max="31" value="${sp?sp.dueDateEachMonth:''}" placeholder="e.g. 15"></div>
+      <div class="fg"><label class="flbl">Installments Paid <span style="font-size:.7rem;color:var(--text3)">(counted on approval)</span></label><input id="ospl-paid" class="finput" type="number" min="0" value="${sp?sp.installmentsPaid||0:0}"></div>
+      <div class="fg"><label class="flbl">Start Date *</label><input id="ospl-start" class="finput" type="date" value="${v('startDate')}" onchange="oblUpdatePreview('split')"></div>
+      <div class="fg"><label class="flbl">Due Day (1–31) *</label><input id="ospl-day" class="finput" type="number" min="1" max="31" value="${sp?sp.dueDateEachMonth:''}" placeholder="e.g. 15" onchange="oblUpdatePreview('split')"></div>
       <div class="fg"><label class="flbl">Payment Account</label>
         <select id="ospl-pay" class="finput">${oblTxnAcctOptions(sp?.paymentMethod||null)}</select></div>
       <div class="fg"><label class="flbl">Assigned To</label><input id="ospl-assign" class="finput" value="${v('assignedTo')}" placeholder="e.g. Family"></div>
-      <div class="fg"><label class="flbl">Expense Type <span style="font-size:.7rem;color:var(--text3)">(for Transactions)</span></label>
-        <select id="ospl-exptype" class="finput">${txnCatOptions(sp?.expenseTypeId||null)}</select></div>
+      ${oblAmountTypeField(sp)}
+      ${oblSplitEditor(sp)}
+      ${oblPreviewLine()}
+      ${oblPostingFields(sp)}
       <div class="fg" style="grid-column:1/-1"><label class="flbl">Notes</label><input id="ospl-notes" class="finput" value="${v('notes')}"></div>
     </div>
     <div class="mfoot">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="oblSaveSplit('${editId||''}')">Save</button>
     </div>`);
-  setTimeout(() => id('ospl-name')?.focus(), 50);
+  setTimeout(() => { id('ospl-name')?.focus(); oblRenderSplitEditor(); oblUpdatePreview('split'); }, 50);
 }
 
 function oblSplitCalc() {
@@ -12132,17 +12886,25 @@ function oblSaveSplit(editId) {
   if (isNaN(day)||day<1)    { toast('Enter a valid due day','err'); return; }
   const instAmt = parseFloat(id('ospl-inst').value) || +(total/count).toFixed(2);
   const paid    = Math.min(parseInt(id('ospl-paid').value)||0, count);
+  const _autoPost = !!id('obl-autopost')?.checked;
+  const _expType  = id('ospl-exptype')?.value || null;
+  const _splitTpl = oblGatherSplitTemplate();
+  if (_autoPost && !_expType && !_splitTpl.length) { toast('Pick an expense type, or split the charge across categories — an auto-posting obligation has to land in the budget','err'); return; }
   const obj = {
     id: editId || uid(), name,
-    category: id('ospl-cat').value,
     totalAmount: total, installmentAmount: instAmt,
+    amountType: id('obl-amttype')?.value || 'fixed',
     totalInstallments: count, installmentsPaid: paid,
     startDate: start, dueDateEachMonth: day,
+    endDate: '',
     paymentMethod: id('ospl-pay').value.trim(),
     assignedTo: id('ospl-assign').value.trim(),
-    expenseTypeId: id('ospl-exptype')?.value || null,
+    expenseTypeId: _expType,
+    splitTemplate: _splitTpl,
     notes: id('ospl-notes').value.trim(),
     status: paid >= count ? 'Completed' : 'Active',
+    autoPost: _autoPost,
+    trackInMonthly: !!id('obl-trackmonthly')?.checked,
   };
   if (editId) {
     const idx = D.obligations.splits.findIndex(x => x.id === editId);
@@ -12189,28 +12951,25 @@ function renderOblCalendar() {
   };
 
   // Subscriptions renewing this month
-  (D.obligations.subscriptions||[]).filter(s=>s.status==='Active').forEach(sub => {
-    const renewal = oblNextRenewal(sub.startDate, sub.billingCycle);
-    if (renewal.startsWith(UI.oblCalMonth)) {
-      const day = parseInt(renewal.split('-')[2]);
-      addEv(day, 'sub', sub.name, sub.cost);
-    }
+  (D.obligations.subscriptions||[]).filter(s=>oblIsActive(s)).forEach(sub => {
+    oblDueDatesInMonth(sub, 'subscription', UI.oblCalMonth).forEach(d => {
+      addEv(parseInt(d.split('-')[2]), 'sub', sub.name, oblExpectedAmount(sub, 'subscription'));
+    });
   });
 
-  // Loans due this month
-  (D.obligations.emis||[]).filter(e=>e.status==='Active').forEach(emi => {
-    if (oblEmiDueInMonth(emi, UI.oblCalMonth)) {
-      const day = Math.min(+emi.dueDateEachMonth||1, daysInMonth);
-      addEv(day, 'emi', emi.itemName||emi.name, emi.emiAmount);
-    }
+  // Loans due this month — a bi-weekly loan draws two or three markers, which
+  // is the point: the calendar used to show one, on a day it may not fall on.
+  (D.obligations.emis||[]).filter(e=>oblIsActive(e)).forEach(emi => {
+    oblDueDatesInMonth(emi, 'emi', UI.oblCalMonth).forEach(d => {
+      addEv(parseInt(d.split('-')[2]), 'emi', oblName(emi), oblExpectedAmount(emi, 'emi'));
+    });
   });
 
   // Splits due this month
-  (D.obligations.splits||[]).filter(s=>s.status==='Active').forEach(sp => {
-    if (oblSplitDueInMonth(sp, UI.oblCalMonth)) {
-      const day = Math.min(+sp.dueDateEachMonth||1, daysInMonth);
-      addEv(day, 'split', sp.name, sp.installmentAmount);
-    }
+  (D.obligations.splits||[]).filter(s=>oblIsActive(s)).forEach(sp => {
+    oblDueDatesInMonth(sp, 'split', UI.oblCalMonth).forEach(d => {
+      addEv(parseInt(d.split('-')[2]), 'split', sp.name, oblExpectedAmount(sp, 'split'));
+    });
   });
 
   const today = new Date(); today.setHours(0,0,0,0);
@@ -12253,9 +13012,10 @@ function renderOblCalendar() {
 // ── Obligations Analytics ─────────────────────────────────────
 function renderOblAnalytics() {
   const pane   = id('obl-pane-analytics');
-  const subs   = (D.obligations.subscriptions||[]).filter(s=>s.status==='Active');
-  const emis   = (D.obligations.emis||[]).filter(e=>e.status==='Active').map(oblEnrichEmi);
-  const splits = (D.obligations.splits||[]).filter(s=>s.status==='Active');
+  if (!pane) return;
+  const subs   = (D.obligations.subscriptions||[]).filter(s=>oblIsActive(s));
+  const emis   = (D.obligations.emis||[]).filter(e=>oblIsActive(e)).map(oblEnrichEmi);
+  const splits = (D.obligations.splits||[]).filter(s=>oblIsActive(s));
 
   const subMonthly   = subs.reduce((s,sub)=>s+oblToMonthly(+sub.cost,sub.billingCycle),0);
   const emiMonthly   = emis.reduce((s,e)=>s+(+e.emiAmount||0),0);
@@ -12265,10 +13025,14 @@ function renderOblAnalytics() {
   const totalDebt    = emis.reduce((s,e)=>s+e.remainingBalance,0)
                      + splits.reduce((s,sp)=>s+((sp.totalInstallments-(sp.installmentsPaid||0))*(+sp.installmentAmount||0)),0);
 
-  // Subscription by category donut
+  // Subscriptions by BUDGET GROUP. This donut was keyed on the old SubTrack
+  // `category` field, which had drifted so far that pest control, septic, home
+  // security and two card membership fees all read as "Streaming" — so the
+  // chart was confidently wrong. It also rendered into #obl-pane-analytics,
+  // an element that did not exist and a tab that was never in the bar.
   const catTotals = {};
   subs.forEach(s => {
-    const cat = s.category || 'Other';
+    const cat = oblGroupLabel(s.expenseTypeId);
     catTotals[cat] = (catTotals[cat]||0) + oblToMonthly(+s.cost, s.billingCycle);
   });
   const catEntries = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]);
@@ -12347,7 +13111,7 @@ function renderOblAnalytics() {
         <div style="margin-top:6px;flex-wrap:wrap">${burnLegends}</div>
       </div>
       <div class="obl-burndown-wrap">
-        <div class="obl-burndown-title">🥧 Subscriptions by Category</div>
+        <div class="obl-burndown-title">🥧 Subscriptions by Budget Group</div>
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
           ${donutSvg}
           <div style="flex:1;min-width:120px">${legends}</div>
@@ -12356,47 +13120,10 @@ function renderOblAnalytics() {
     </div>`;
 }
 
-// ── Obligations Import ────────────────────────────────────────
-function oblImportFromOldApp() {
-  const data = {
-    subscriptions: (() => { try { return JSON.parse(localStorage.getItem('subtrack_subscriptions')||'[]'); } catch{return[];} })(),
-    emis:          (() => { try { return JSON.parse(localStorage.getItem('subtrack_emis')||'[]'); } catch{return[];} })(),
-    splits:        (() => { try { return JSON.parse(localStorage.getItem('subtrack_splits')||'[]'); } catch{return[];} })(),
-  };
-  const totalFound = data.subscriptions.length + data.emis.length + data.splits.length;
-  if (!totalFound) {
-    showModal(`
-      <div class="modal-title">Import from Subscription App</div>
-      <p style="color:var(--text2);margin-bottom:16px">No data found in localStorage from the old app (<code>subtrack_*</code> keys). Make sure you run this import from the same browser where SubTrack was used, or paste JSON below.</p>
-      <div class="fg"><label class="flbl">Paste exported JSON (optional)</label><textarea id="obl-import-json" class="finput" rows="5" style="font-size:.72rem;font-family:monospace" placeholder='{"subscriptions":[...],"emis":[...],"splits":[]}'></textarea></div>
-      <div class="mfoot"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="oblImportJSON()">Import JSON</button></div>`);
-    return;
-  }
-  if (!confirm(`Found ${data.subscriptions.length} subscriptions, ${data.emis.length} loans, ${data.splits.length} splits.\n\nImport all? Existing entries with the same ID won't be duplicated.`)) return;
-  oblMergeImportedData(data);
-}
+// The SubTrack localStorage importer that used to live here is gone — it was a
+// one-time migration from the standalone app, completed long ago, and it read
+// `subtrack_*` keys that no longer exist in any browser this app runs in.
 
-function oblImportJSON() {
-  try {
-    const raw = id('obl-import-json').value.trim();
-    const data = JSON.parse(raw);
-    oblMergeImportedData(data);
-  } catch(e) { toast('Invalid JSON: ' + e.message, 'err'); }
-}
-
-function oblMergeImportedData(data) {
-  let added = 0;
-  const merge = (key, dest) => {
-    (data[key]||[]).forEach(item => {
-      if (!dest.find(x => x.id === item.id)) { dest.push(item); added++; }
-    });
-  };
-  merge('subscriptions', D.obligations.subscriptions);
-  merge('emis',          D.obligations.emis);
-  merge('splits',        D.obligations.splits);
-  dirty(); closeModal(); renderObligations();
-  toast(`Imported ${added} item${added!==1?'s':''} ✓`, 'ok');
-}
 
 // ── BA object: Budget & Annual actions ──────────────────────
 
@@ -12530,6 +13257,12 @@ function mobNeedsYou(month) {
     if (c.reimbursable || (D.budget.trackingCats || []).includes(c.id)) return;
     if (plan > 0 && spent > plan + 0.005) out.push({ kind: 'over', name: c.name, by: spent - plan, rank: 3, sub: -(spent - plan) });
   });
+  // A posted obligation whose date has passed and which you have not actioned
+  // is exactly the kind of thing this list is for.
+  try {
+    const late = oblOverdueCount();
+    if (late) out.push({ kind: 'obl', name: `${late} obligation${late!==1?'s':''} past due and unapproved`, rank: 1, sub: -late });
+  } catch (e) {}
   try {
     payCardStates().filter(s => s.limit && s.balance / s.limit >= 0.88)
       .sort((a, b) => b.balance / b.limit - a.balance / a.limit).slice(0, 2)
@@ -12833,6 +13566,9 @@ function renderMobileView() {
         <div class="mob-row1-l"><b>${esc(x.name)}</b> <span style="color:${x.bad ? 'var(--danger)' : 'var(--text3)'}">${x.when}</span></div>
         <span class="mob-row1-r" style="font-size:.66rem;font-weight:700;padding:3px 9px;border-radius:99px;background:${x.ok ? 'var(--ok-bg)' : 'var(--danger-bg)'};color:${x.ok ? 'var(--ok)' : 'var(--danger)'}">${x.ok ? 'min met' : 'min due'}</span>
       </div>`;
+      if (x.kind === 'obl') return `<div class="mob-row1" style="cursor:pointer" onclick="BA.setMobileTab('home')">
+        <div class="mob-row1-l">${esc(x.name)}</div>
+        <span class="mob-row1-r" style="font-weight:700;color:var(--danger)">review ↑</span></div>`;
       if (x.kind === 'over') return `<div class="mob-row1">
         <div class="mob-row1-l">${esc(x.name)} over budget</div>
         <span class="mob-row1-r" style="font-weight:700;color:var(--danger)">+${mobWhole(x.by)}</span></div>`;
@@ -12851,6 +13587,35 @@ function renderMobileView() {
         <div style="font-size:.85rem;color:var(--text)">Nothing needs you right now.</div>
       </div>`;
 
+    // ── Obligations awaiting approval ──────────────────────────
+    const _pend = oblPendingRows();
+    const _pAccts = {}; (D.txnAccounts||[]).forEach(a => { _pAccts[a.id] = a.name; });
+    const _pIco = { subscription:'📦', emi:'🏦', split:'✂️' };
+    const _pShown = _pend.slice(0, UI.mobPendAll ? 99 : 4);
+    const pendHTML = _pend.length ? `
+      <div class="mob-summary-card" style="border-color:color-mix(in srgb,#f59e0b 40%,transparent);background:color-mix(in srgb,#f59e0b 5%,transparent)">
+        <div style="font-size:.75rem;font-weight:700;color:#b45309;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">⏳ To approve · ${_pend.length}</div>
+        ${_pShown.map(t => {
+          const amt = (+t.debit||0) || (+t.credit||0);
+          const late = (t.date||'') < centralToday();
+          return `<div class="mob-row1" style="align-items:center">
+            <div class="mob-row1-l" style="min-width:0">
+              <b>${_pIco[t.oblType]||'🔁'} ${esc(t.payee||'')}</b>
+              <div style="font-size:.7rem;color:${late?'var(--danger)':'var(--text3)'}">${mobShortDate(t.date)} · ${esc(_pAccts[t.accountId]||'')}${late?' · past due':''}</div>
+            </div>
+            <div class="mob-row1-r" style="gap:6px;align-items:center">
+              <span style="font-weight:700">${mobWhole(amt)}</span>
+              <button onclick="BA.mobApproveObl('${t.id}')" title="Approve as posted"
+                style="min-width:38px;min-height:34px;border:1px solid color-mix(in srgb,var(--ok) 40%,transparent);background:var(--ok-bg);color:var(--ok);border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer">✓</button>
+              <button onclick="BA.mobRejectObl('${t.id}')" title="Reject"
+                style="min-width:34px;min-height:34px;border:1px solid var(--border);background:var(--surface);color:var(--text3);border-radius:8px;font-size:.85rem;cursor:pointer">✕</button>
+            </div>
+          </div>`;
+        }).join('')}
+        ${_pend.length > _pShown.length ? `<button onclick="BA.mobPendMore()" style="width:100%;margin-top:6px;padding:9px;min-height:40px;border:none;background:none;color:var(--primary);font-size:.78rem;font-weight:700;cursor:pointer">Show ${_pend.length - _pShown.length} more</button>` : ''}
+        <div style="font-size:.68rem;color:var(--text3);margin-top:6px">Approves at the posted amount. To change the figure, use the Review tab on desktop.</div>
+      </div>` : '';
+
     const safeColor = !R ? 'var(--text3)' : R.safe > 250 ? 'var(--ok)' : R.safe > 0 ? '#d97706' : 'var(--danger)';
     homeHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0 12px">
@@ -12864,6 +13629,7 @@ function renderMobileView() {
         <div style="font-size:.75rem;color:var(--text3);margin-top:2px">${fmtC(R.cash)} in ${esc(payBankLabel())} · dips to ${fmtC(R.trough)} on ${mobShortDate(R.troughDate)}</div>
       </div>` : ''}
       ${sinceHTML}
+      ${pendHTML}
       ${weekHTML}
       ${needsHTML}`;
       // The Budget / Cards / All button row that used to sit here is gone: the
@@ -13936,7 +14702,137 @@ const BA = {
     UI.oblCalMonth = m === 12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
     renderOblCalendar();
   },
-  oblImport() { oblImportFromOldApp(); },
+
+  // ── Approval queue ───────────────────────────────────────────
+  oblOpenReview() {
+    UI.oblTab = 'review';
+    switchView('obligations');
+  },
+  oblSplitAdd() {
+    if (!UI._oblSplitLines) UI._oblSplitLines = [];
+    UI._oblSplitLines.push({ categoryId: '', amount: 0, remainder: UI._oblSplitLines.length === 0, notes: '' });
+    oblRenderSplitEditor();
+  },
+  oblSplitRemove(i) {
+    UI._oblSplitLines.splice(i, 1);
+    if (UI._oblSplitLines.length && !UI._oblSplitLines.some(l => l.remainder)) UI._oblSplitLines[UI._oblSplitLines.length-1].remainder = true;
+    oblRenderSplitEditor();
+  },
+  oblSplitClear() { UI._oblSplitLines = []; oblRenderSplitEditor(); },
+  oblSplitSet(i, key, val) {
+    if (!UI._oblSplitLines[i]) return;
+    UI._oblSplitLines[i][key] = key === 'amount' ? (parseFloat(val)||0) : val;
+    oblRenderSplitEditor();
+  },
+  oblSplitSetRemainder(i) {
+    UI._oblSplitLines.forEach((l, j) => { l.remainder = (j === i); });
+    oblRenderSplitEditor();
+  },
+  oblToggleHistory(oblId) {
+    UI.oblHistOpen = (UI.oblHistOpen === oblId) ? null : oblId;
+    renderObligations();
+  },
+  mobPendMore() { UI.mobPendAll = true; renderMobileView(); },
+  mobApproveObl(txnId) {
+    const t = (D.transactions||[]).find(x => x.id === txnId);
+    if (!t) return;
+    if (!oblApproveTxn(t, t.date, (+t.debit||0) || (+t.credit||0), null)) { toast('No amount on that row', 'err'); return; }
+    recomputeTxnActuals(); dirty(); renderMobileView();
+    toast(`${t.payee||'Obligation'} approved ✓`, 'ok');
+  },
+  mobRejectObl(txnId) {
+    const t = (D.transactions||[]).find(x => x.id === txnId);
+    if (!t) return;
+    oblUncountSplit(t); t.status = 'rejected';
+    recomputeTxnActuals(); dirty(); renderMobileView();
+    toast('Rejected', 'ok');
+  },
+  oblOpenFromTxn(oblId) {
+    const o = oblFind(oblId);
+    if (!o) { toast('That obligation no longer exists', 'err'); return; }
+    UI.oblTab = o.type === 'emi' ? 'emis' : o.type === 'split' ? 'splits' : 'subscriptions';
+    UI.oblSearch = oblName(o.obj);
+    UI.oblAcctFilter = ''; UI.oblStatusFilter = '';
+    switchView('obligations');
+  },
+  oblReviewApprove(txnId) {
+    const t = (D.transactions||[]).find(x => x.id === txnId);
+    if (!t) return;
+    const d = (id('oblrv-date-'+txnId)?.value || t.date || '').trim();
+    const a = parseFloat(id('oblrv-amt-'+txnId)?.value);
+    if (!d)            { toast('Enter a date', 'err'); return; }
+    if (!(a > 0))      { toast('Enter an amount', 'err'); return; }
+    oblApproveTxn(t, d, a, null);
+    recomputeTxnActuals(); dirty(); renderObligations();
+    toast(`${t.payee||'Obligation'} approved ✓`, 'ok');
+  },
+  // Only the rows nothing was changed on. A row you edited is a row you were
+  // still thinking about, so it is deliberately left for you to approve by hand.
+  oblReviewApproveAll() {
+    const rows = oblPendingRows();
+    let n = 0, skipped = 0;
+    rows.forEach(t => {
+      const d = (id('oblrv-date-'+t.id)?.value || '').trim();
+      const a = parseFloat(id('oblrv-amt-'+t.id)?.value);
+      const genAmt = (+t.debit||0) || (+t.credit||0);
+      if (d !== (t.date||'') || Math.abs((a||0) - genAmt) > 0.005) { skipped++; return; }
+      if (oblApproveTxn(t, d, a, null)) n++;
+    });
+    if (!n) { toast(skipped ? 'Every row has been edited — approve those individually' : 'Nothing to approve', 'err'); return; }
+    recomputeTxnActuals(); dirty(); renderObligations();
+    toast(`Approved ${n} unchanged row${n!==1?'s':''}${skipped?` · ${skipped} edited, left for you`:''} ✓`, 'ok');
+  },
+  oblReviewReject(txnId) {
+    const t = (D.transactions||[]).find(x => x.id === txnId);
+    if (!t) return;
+    oblUncountSplit(t); t.status = 'rejected';
+    recomputeTxnActuals(); dirty(); renderObligations();
+  },
+  oblReviewRestore(txnId) {
+    const t = (D.transactions||[]).find(x => x.id === txnId);
+    if (!t) return;
+    oblUncountSplit(t); t.status = 'pending';
+    recomputeTxnActuals(); dirty(); renderObligations();
+  },
+  oblReviewDismiss(txnId) {
+    const t = (D.transactions||[]).find(x => x.id === txnId);
+    if (!t) return;
+    t.dismissed = true; dirty(); renderObligations();
+  },
+  oblSetStartMonth(v) {
+    if (!/^\d{4}-\d{2}$/.test(v||'')) return;
+    D.settings.oblStartMonth = v;
+    dirty(); oblAutoGenerateTxns(); recomputeTxnActuals(); renderObligations();
+    toast(`Generating obligations from ${v}`, 'ok');
+  },
+
+  // ── Grid ergonomics ──────────────────────────────────────────
+  oblSetSearch(v)       { UI.oblSearch = v;       renderObligations(); const el = id('obl-search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } },
+  oblSetAcctFilter(v)   { UI.oblAcctFilter = v;   renderObligations(); },
+  oblSetStatusFilter(v) { UI.oblStatusFilter = v; renderObligations(); },
+  oblClearFilters()     { UI.oblSearch = ''; UI.oblAcctFilter = ''; UI.oblStatusFilter = ''; renderObligations(); },
+  // Click the status pill to cycle it — the common edit, without opening a form
+  oblCycleStatus(oblId) {
+    const o = oblFind(oblId);
+    if (!o) return;
+    const order = o.type === 'emi' ? ['Active','Paid Off','Completed'] : ['Active','Paused','Cancelled'];
+    const cur = o.obj.status || 'Active';
+    o.obj.status = order[(order.indexOf(cur) + 1) % order.length];
+    dirty(); oblAutoGenerateTxns(); recomputeTxnActuals(); renderObligations();
+    toast(`${oblName(o.obj)} → ${o.obj.status}`, 'ok');
+  },
+  oblDuplicate(oblId) {
+    const o = oblFind(oblId);
+    if (!o) return;
+    const copy = JSON.parse(JSON.stringify(o.obj));
+    copy.id = uid();
+    if (copy.name) copy.name = copy.name + ' (copy)'; else copy.itemName = (copy.itemName||'Loan') + ' (copy)';
+    delete copy.costHistory; delete copy.priceChange;
+    const bucket = o.type === 'emi' ? D.obligations.emis : o.type === 'split' ? D.obligations.splits : D.obligations.subscriptions;
+    bucket.push(copy);
+    dirty(); renderObligations();
+    toast('Duplicated — edit the copy', 'ok');
+  },
 
   toggleAnnualGroup(groupId) {
     _annualCollapsed[groupId] = !_annualCollapsed[groupId];
@@ -15104,204 +16000,163 @@ function txnCurrentBalance(acct) {
 }
 
 // ── Obligations → Transactions auto-population ───────────────
-const TXN_OBL_START = '2026-04';
+// Rewritten 2026-09-05. Three things changed, all of them about the same idea:
+// an obligation does not fall due once a month — it falls due on a LIST of
+// dates, and how much it charges is not always the number typed on the form.
+//   • Dedup key is obligationId::YYYY-MM::occurrence, so a Weekly subscription
+//     (which used to post nothing at all) and a Bi-weekly loan (which used to
+//     post one row where ~2.17 payments are due) both post correctly.
+//   • endDate stops generation without waiting for you to cancel it.
+//   • A Variable obligation posts its most recent ACTUAL charge, not a stale
+//     stored cost — 22 of the 32 with history charge something different.
+const TXN_OBL_START_DEFAULT = '2026-04';
+function oblStartMonth() {
+  const v = D.settings && D.settings.oblStartMonth;
+  return /^\d{4}-\d{2}$/.test(v || '') ? v : TXN_OBL_START_DEFAULT;
+}
 
 function oblAutoGenerateTxns() {
   if (!D.obligations) return;
   if (!D.txnAccounts || !D.txnAccounts.length) return;
 
-  // Build account lookup: name (lowercase) → id (closed accounts excluded so obligations
-  // never silently auto-post pending transactions against a historical/closed account)
+  // Account lookup by name. Closed accounts are excluded so an obligation never
+  // silently auto-posts against a historical account.
   const acctMap = {};
   (D.txnAccounts || []).forEach(a => { if (a.status !== 'closed') acctMap[a.name.trim().toLowerCase()] = a.id; });
 
-  // ── Fix-up pass: correct wrong dates on existing pending obligation transactions ──
-  // Obligation lookup maps
   const oblById = {};
-  (D.obligations.subscriptions || []).forEach(s => { oblById[s.id] = { obj: s, type: 'subscription' }; });
-  (D.obligations.emis            || []).forEach(e => { oblById[e.id] = { obj: e, type: 'emi' };          });
-  (D.obligations.splits          || []).forEach(s => { oblById[s.id] = { obj: s, type: 'split' };        });
-  // Remove any pending transactions for loans with generateMonthly=false (auto-debit)
-  const autoDebitIds = new Set(
-    (D.obligations.emis || []).filter(e => e.generateMonthly === false).map(e => e.id)
-  );
+  oblAll().forEach(({obj, type}) => { oblById[obj.id] = { obj, type }; });
   const beforeLen = (D.transactions || []).length;
 
   // ── Drop pending rows that no longer represent a real upcoming charge ──────
-  // Generation already refuses to CREATE rows for non-Active obligations
-  // (`if (sub.status !== 'Active') return`), but nothing used to REMOVE a row
-  // that was generated while the obligation was still Active and then cancelled
-  // or paused. Worse, the fix-up pass below looks obligations up in `oblById`,
-  // which is built without a status filter — so it kept refreshing those
-  // orphans' date and amount, making a cancelled subscription look like a live
-  // upcoming charge indefinitely.
+  // Generation refuses to CREATE rows for non-Active obligations, but nothing
+  // used to REMOVE a row generated while it was still Active and then cancelled
+  // or paused — and the fix-up pass below kept refreshing those orphans, so a
+  // cancelled subscription looked like a live upcoming charge indefinitely.
   //
-  // Only `pending` rows are eligible. Anything already approved is a real
-  // recorded payment and must never be touched. Re-activating an obligation
-  // regenerates its row on the next pass, so this is reversible.
+  // Only `pending` rows are eligible. Anything approved is a real recorded
+  // payment and must never be touched. Re-activating regenerates the row on the
+  // next pass, so this is reversible.
   const _removedPending = [];
   D.transactions = (D.transactions || []).filter(t => {
     if (t.status !== 'pending' || !t.obligationId) return true;
-    // Auto-debit loans: existing rule, kept as-is
-    if (t.oblType === 'emi' && autoDebitIds.has(t.obligationId)) return false;
     const entry = oblById[t.obligationId];
-    // Obligation deleted outright — an unactioned row for it represents nothing
     if (!entry) { _removedPending.push(t.payee || 'obligation'); return false; }
+    // Posting switched off (the old generateMonthly=false rule, renamed)
+    if (!oblAutoPost(entry.obj)) return false;
     // Cancelled / Paused → not being billed, so an upcoming charge is a phantom.
     // Missing status is treated as Active so older records are never culled.
-    if ((entry.obj.status || 'Active') !== 'Active') {
-      _removedPending.push(t.payee || entry.obj.name || entry.obj.itemName || 'obligation');
+    if (!oblIsActive(entry.obj)) {
+      _removedPending.push(t.payee || oblName(entry.obj) || 'obligation');
       return false;
     }
+    // Past its end date, or no longer due on that date at all (cycle edited)
+    const dues = oblDueDatesInMonth(entry.obj, entry.type, t.oblMonth || (t.date||'').slice(0,7));
+    if (!dues.length) { _removedPending.push(t.payee || oblName(entry.obj) || 'obligation'); return false; }
     return true;
   });
-  let fixedCount = (D.transactions.length !== beforeLen) ? 1 : 0; // flag dirty if removed
+  let fixedCount = (D.transactions.length !== beforeLen) ? 1 : 0;
   if (_removedPending.length) {
     console.info('[obligations] removed stale pending rows:', _removedPending.join(', '));
     // Deleting financial rows silently would be the wrong default — say so.
     try {
-      toast(`Removed ${_removedPending.length} pending charge${_removedPending.length !== 1 ? 's' : ''} for cancelled/paused obligations: ${_removedPending.slice(0, 3).join(', ')}${_removedPending.length > 3 ? '…' : ''}`, 'ok');
+      toast(`Removed ${_removedPending.length} pending charge${_removedPending.length !== 1 ? 's' : ''} for cancelled/paused/ended obligations: ${_removedPending.slice(0, 3).join(', ')}${_removedPending.length > 3 ? '…' : ''}`, 'ok');
     } catch (e) { /* toast container not mounted yet during early load — non-fatal */ }
   }
 
-  // Back-fill oblMonth on any obligation txn that's missing it (prevents duplicates on due-date changes)
+  // Back-fill oblMonth / oblOcc on older rows so the occurrence-aware dedup key
+  // matches what previous versions wrote (all of which were occurrence 0).
   (D.transactions || []).forEach(t => {
-    if (t.obligationId && !t.oblMonth && t.date) {
-      t.oblMonth = t.date.slice(0, 7);
-      fixedCount++;
-    }
+    if (!t.obligationId) return;
+    if (!t.oblMonth && t.date) { t.oblMonth = t.date.slice(0, 7); fixedCount++; }
+    if (t.oblOcc === undefined) { t.oblOcc = 0; fixedCount++; }
   });
 
+  // ── Fix-up pass: keep un-actioned pending rows in step with the obligation ──
   (D.transactions || []).forEach(t => {
     if (t.status !== 'pending' || !t.obligationId || !t.oblMonth) return;
     const entry = oblById[t.obligationId];
     if (!entry) return;
-    const [y, mo] = t.oblMonth.split('-').map(Number);
-    function correctDay(rawDay) {
-      const d = Math.min(rawDay || 1, new Date(y, mo, 0).getDate());
-      return t.oblMonth + '-' + String(d).padStart(2, '0');
-    }
-    let correctDate = null;
-    let correctDebit = null;
-    if (entry.type === 'subscription') {
-      const subDay = entry.obj.startDate ? parseInt(entry.obj.startDate.split('-')[2]) || 1 : 1;
-      correctDate  = correctDay(subDay);
-      correctDebit = parseFloat(entry.obj.cost) || 0;
-    } else if (entry.type === 'emi') {
-      correctDate  = correctDay(parseInt(entry.obj.dueDateEachMonth) || 1);
-      correctDebit = parseFloat(entry.obj.emiAmount) || 0;
-      const correctPayee = entry.obj.itemName || entry.obj.name || null;
+    const dues = oblDueDatesInMonth(entry.obj, entry.type, t.oblMonth);
+    const correctDate  = dues[t.oblOcc || 0] || dues[0] || null;
+    const correctDebit = oblExpectedAmount(entry.obj, entry.type);
+    if (entry.type === 'emi') {
+      const correctPayee = oblName(entry.obj);
       if (correctPayee && !t.payee) { t.payee = correctPayee; fixedCount++; }
-    } else if (entry.type === 'split') {
-      correctDate  = correctDay(parseInt(entry.obj.dueDateEachMonth) || 1);
-      correctDebit = parseFloat(entry.obj.installmentAmount) || 0;
     }
     if (correctDate && t.date !== correctDate) { t.date = correctDate; fixedCount++; }
-    if (correctDebit !== null && t.debit !== correctDebit) { t.debit = correctDebit; fixedCount++; }
-    // Back-fill expenseTypeId → categoryId if obligation now has one
-    const expTypeId = entry.obj.expenseTypeId || null;
-    if (expTypeId && !t.categoryId) { t.categoryId = expTypeId; fixedCount++; }
+    if (correctDebit > 0 && t.debit !== correctDebit) { t.debit = correctDebit; fixedCount++; }
+    // Split template added or edited after the row was posted — re-cut it.
+    const lines = oblSplitLinesFor(entry.obj, (+t.debit||0) || (+t.credit||0));
+    if (lines) {
+      if (JSON.stringify(lines) !== JSON.stringify(t.splits || null)) { t.splits = lines; fixedCount++; }
+      if (t.categoryId) { t.categoryId = null; fixedCount++; }
+    } else {
+      if (t.splits) { delete t.splits; fixedCount++; }
+      const expTypeId = entry.obj.expenseTypeId || null;
+      if (expTypeId && !t.categoryId) { t.categoryId = expTypeId; fixedCount++; }
+    }
   });
   if (fixedCount > 0) dirty();
 
-  // Build dedup set: "obligationId::oblMonth"
+  // Dedup set: "obligationId::YYYY-MM::occurrence"
   const existing = new Set();
   (D.transactions || []).forEach(t => {
-    if (t.obligationId && t.oblMonth) existing.add(t.obligationId + '::' + t.oblMonth);
+    if (t.obligationId && t.oblMonth) existing.add(t.obligationId + '::' + t.oblMonth + '::' + (t.oblOcc || 0));
   });
 
-  // Determine month range: TXN_OBL_START → current month
   const today = new Date();
   const currentYM = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0');
   function ymRange(start, end) {
     const months = [];
     let [y, m] = start.split('-').map(Number);
     const [ey, em] = end.split('-').map(Number);
-    while (y < ey || (y === ey && m <= em)) {
+    let guard = 0;
+    while ((y < ey || (y === ey && m <= em)) && guard++ < 600) {
       months.push(y + '-' + String(m).padStart(2, '0'));
       m++; if (m > 12) { m = 1; y++; }
     }
     return months;
   }
-  const months = ymRange(TXN_OBL_START, currentYM);
+  const months = ymRange(oblStartMonth(), currentYM);
 
-  let added = 0;
+  const NOTE = { subscription: 'Auto: subscription', emi: 'Auto: loan/EMI', split: 'Auto: split payment' };
+  let added = 0, skippedNoType = 0;
 
   months.forEach(ym => {
-    const [y, mo] = ym.split('-').map(Number);
-    // Day defaults to 1st; if obligation has a specific day use it
-    function ymDate(day) {
-      const d = Math.min(day || 1, new Date(y, mo, 0).getDate());
-      return ym + '-' + String(d).padStart(2, '0');
-    }
-
-    // ── Subscriptions ──
-    (D.obligations.subscriptions || []).forEach(sub => {
-      if (sub.status !== 'Active') return;
-      if (!oblSubRenewsInMonthAny(sub, ym)) return;
-      const key = sub.id + '::' + ym;
-      if (existing.has(key)) return;
-      const acctId = sub.paymentMethod ? acctMap[sub.paymentMethod.trim().toLowerCase()] : null;
-      if (!acctId) return; // no matching account – skip
-      // Subscription due day = same day-of-month as the original start date
-      const subDay = sub.startDate ? parseInt(sub.startDate.split('-')[2]) || 1 : 1;
-      const txn = {
-        id: uid(), accountId: acctId,
-        obligationId: sub.id, oblMonth: ym, oblType: 'subscription',
-        date: ymDate(subDay), payee: sub.name,
-        debit: parseFloat(sub.cost) || 0, credit: 0,
-        categoryId: sub.expenseTypeId || null, notes: 'Auto: subscription',
-        cleared: false, status: 'pending'
-      };
-      D.transactions.push(txn);
-      existing.add(key);
-      added++;
-    });
-
-    // ── EMIs / Loans ──
-    (D.obligations.emis || []).forEach(emi => {
-      if (emi.status !== 'Active') return;
-      if (emi.generateMonthly === false) return; // "Auto-debit" loans excluded
-      if (!oblEmiDueInMonth(emi, ym)) return;
-      const key = emi.id + '::' + ym;
-      if (existing.has(key)) return;
-      const acctId = emi.paymentMethod ? acctMap[emi.paymentMethod.trim().toLowerCase()] : null;
-      if (!acctId) return;
-      const txn = {
-        id: uid(), accountId: acctId,
-        obligationId: emi.id, oblMonth: ym, oblType: 'emi',
-        date: ymDate(parseInt(emi.dueDateEachMonth) || 1), payee: emi.itemName || emi.name,
-        debit: parseFloat(emi.emiAmount) || parseFloat(emi.amount) || 0, credit: 0,
-        categoryId: emi.expenseTypeId || null, notes: 'Auto: loan/EMI',
-        cleared: false, status: 'pending'
-      };
-      D.transactions.push(txn);
-      existing.add(key);
-      added++;
-    });
-
-    // ── Splits ──
-    (D.obligations.splits || []).forEach(split => {
-      if (split.status !== 'Active') return;
-      if (!oblSplitDueInMonth(split, ym)) return;
-      const key = split.id + '::' + ym;
-      if (existing.has(key)) return;
-      const acctId = split.paymentMethod ? acctMap[split.paymentMethod.trim().toLowerCase()] : null;
-      if (!acctId) return;
-      const txn = {
-        id: uid(), accountId: acctId,
-        obligationId: split.id, oblMonth: ym, oblType: 'split',
-        date: ymDate(parseInt(split.dueDateEachMonth) || 1), payee: split.name,
-        debit: parseFloat(split.installmentAmount) || 0, credit: 0,
-        categoryId: split.expenseTypeId || null, notes: 'Auto: split payment',
-        cleared: false, status: 'pending'
-      };
-      D.transactions.push(txn);
-      existing.add(key);
-      added++;
+    oblAll().forEach(({obj, type}) => {
+      if (!oblIsActive(obj)) return;
+      if (!oblAutoPost(obj)) return;
+      // Posting real money into no budget category is worse than not posting.
+      // T-Mobile at $327/mo did exactly that before this guard existed. A split
+      // template satisfies the rule — the money still lands in the budget, just
+      // across several categories.
+      if (!obj.expenseTypeId && !oblHasSplitTemplate(obj)) { skippedNoType++; return; }
+      const acctId = obj.paymentMethod ? acctMap[obj.paymentMethod.trim().toLowerCase()] : null;
+      if (!acctId) return; // no matching account — skip
+      const dues = oblDueDatesInMonth(obj, type, ym);
+      dues.forEach((dueISO, occ) => {
+        const key = obj.id + '::' + ym + '::' + occ;
+        if (existing.has(key)) return;
+        const amt   = oblExpectedAmount(obj, type);
+        const lines = oblSplitLinesFor(obj, amt);
+        D.transactions.push({
+          id: uid(), accountId: acctId,
+          obligationId: obj.id, oblMonth: ym, oblOcc: occ, oblType: type,
+          date: dueISO, payee: oblName(obj),
+          debit: amt, credit: 0,
+          categoryId: lines ? null : (obj.expenseTypeId || null),
+          ...(lines ? { splits: lines } : {}),
+          notes: NOTE[type] + (dues.length > 1 ? ` (${occ+1} of ${dues.length})` : ''),
+          cleared: false, status: 'pending'
+        });
+        existing.add(key);
+        added++;
+      });
     });
   });
 
+  if (skippedNoType > 0) console.info('[obligations] %d obligation-months not posted: no expense type set', skippedNoType);
   if (added > 0) dirty();
 }
 
@@ -15775,8 +16630,10 @@ function renderTxnKpis() {
     const _futN    = _futList.length;
     const _futAmt  = _futList.reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
     const futureTile = _futN > 0 ? `<div class="sum-card" style="border-color:var(--info);background:color-mix(in srgb,var(--info) 6%,transparent)"><div class="sum-lbl" style="color:var(--info)">\ud83d\udcc5 Dated Ahead</div><div class="sum-val" style="color:var(--info)">${_futN} item${_futN!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(_futAmt)} scheduled \u00b7 not counted yet</div></div>` : '';
+    // Clickable: the tile used to tell you there was work and give you no way
+    // to reach it, while the All-Accounts ledger filtered pending rows out.
     const pendingTile = totalPending > 0
-      ? `<div class="sum-card" style="border-color:#f59e0b;background:color-mix(in srgb,#f59e0b 6%,transparent)"><div class="sum-lbl" style="color:#b45309">⏳ Pending Approval</div><div class="sum-val" style="color:#b45309">${totalPending} item${totalPending!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(pendingAmt)} to review</div></div>`
+      ? `<div class="sum-card" style="border-color:#f59e0b;background:color-mix(in srgb,#f59e0b 6%,transparent);cursor:pointer" title="Open the approval queue" onclick="BA.oblOpenReview()"><div class="sum-lbl" style="color:#b45309">⏳ Pending Approval</div><div class="sum-val" style="color:#b45309">${totalPending} item${totalPending!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(pendingAmt)} to review · click to review</div></div>`
       : '';
     const loanTile = accounts.some(a => a.type === 'Loans')
       ? `<div class="sum-card c-danger"><div class="sum-lbl">🏠 Loans Owed</div><div class="sum-val mono" style="color:${loanBal>0?'var(--danger)':'var(--ok)'}">${fmtCurrency(Math.abs(loanBal))}</div><div class="sum-sub">${accounts.filter(a=>a.type==='Loans').length} loan${accounts.filter(a=>a.type==='Loans').length!==1?'s':''}</div></div>`
@@ -16103,6 +16960,7 @@ function _renderAllAccountsView(panel) {
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
+    if (t.obligationId) catBadge += `<span title="Posted by an obligation — click to open it" style="margin-left:5px;cursor:pointer" onclick="BA.oblOpenFromTxn('${t.obligationId}')">🔁</span>`;
     const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;font-size:.85rem;margin-left:4px;opacity:.85" title="Added from mobile — review, split, or assign as needed">📱</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
@@ -16427,6 +17285,7 @@ function _renderTxnSearchResults(panel, query) {
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
     else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
+    if (t.obligationId) catBadge += `<span title="Posted by an obligation — click to open it" style="margin-left:5px;cursor:pointer" onclick="BA.oblOpenFromTxn('${t.obligationId}')">🔁</span>`;
     const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;font-size:.85rem;margin-left:4px;opacity:.85" title="Added from mobile — review, split, or assign as needed">📱</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
@@ -16573,11 +17432,14 @@ function renderTxnRight() {
           <div class="txn-pending-row">
             <span style="color:var(--text3);font-size:.75rem">${fmtDate(t.date||t.oblMonth)}</span>
             <span class="ppayee">${typeIcon} ${esc(t.payee||'')}</span>
-            <span class="pcat">${esc(catLabel || t.notes || '')}</span>
+            <span class="pcat">${t.splits && t.splits.length
+              ? `<span class="txn-split-pill" title="${esc(t.splits.map(l => (txnCatLabel(l.categoryId)||'?') + ' ' + fmtCurrency(l.amount)).join(' · '))}">✂ Split (${t.splits.length})</span>`
+              : esc(catLabel || t.notes || '')}</span>
             <span class="pamt">${amtFmt}</span>
             <span style="font-size:.7rem;color:var(--text3);text-transform:capitalize">${t.oblType||'obligation'}</span>
             <span style="display:flex;gap:4px;justify-content:flex-end">
-              <button class="txn-pact-btn approve" onclick="BA.txnApproveModal('${t.id}')" title="Approve — confirm date &amp; amount then record">✓ Approve</button>
+              <button class="txn-pact-btn approve" onclick="BA.txnApprove('${t.id}')" title="Approve as generated — no dialog">✓</button>
+              <button class="txn-pact-btn approve" style="opacity:.8" onclick="BA.txnApproveModal('${t.id}')" title="Approve after changing the date or amount">✎</button>
               <button class="txn-pact-btn reject" onclick="BA.txnReject('${t.id}')" title="Reject — dismiss without recording">✕</button>
             </span>
           </div>`;
@@ -16590,6 +17452,7 @@ function renderTxnRight() {
           ⏳ Pending Approval
           <span class="badge">${pendingTxns.length}</span>
           <span style="font-weight:400;font-size:.72rem;color:var(--text3);margin-left:4px">— obligations awaiting your review</span>
+          <button class="btn btn-sm btn-ghost btn-xs" style="margin-left:auto" onclick="event.stopPropagation();BA.oblOpenReview()" title="Review every pending obligation across all accounts in one place">Review all →</button>
         </div>
         ${isCollapsed ? '' : `<div class="txn-pending-scroll">${pendingRows}</div>`}
       </div>`;
@@ -20876,6 +21739,23 @@ Object.assign(BA, {
       const existing = (D.transactions||[]).find(t => t.id === editId);
       const idx = (D.transactions||[]).findIndex(t => t.id === editId);
       if (idx >= 0) {
+        // ── Merge, never replace ────────────────────────────────────────────
+        // This used to do `D.transactions[idx] = obj`, throwing away every field
+        // the inline form does not rebuild. That silently destroyed `reconciled`
+        // on 14,394 rows, `status` on 12,167, and the whole obligation linkage
+        // (`obligationId`, `oblMonth`, `oblOcc`, `oblType`) on every generated
+        // row — which is why editing an approved obligation made it come back:
+        // with its dedup key gone, the next generation pass saw the month as
+        // unfilled and posted a fresh pending charge.
+        //
+        // The form owns exactly the keys it renders. Everything else on the row
+        // is metadata it never showed and must not touch.
+        const merged = { ...existing, ...obj };
+        // These four are form-owned by ABSENCE as well as by value: not sending
+        // them means "no longer set", so a plain spread would keep a stale one.
+        if (!obj.splits) delete merged.splits;
+        if (splitLines || !obj.familyMemberId) { delete merged.familyMemberId; delete merged.famEntryId; }
+        Object.assign(obj, merged);
         // Preserve transfer metadata when editing a transfer leg
         if (existing?.isTransfer) {
           obj.isTransfer         = true;
@@ -21136,12 +22016,19 @@ Object.assign(BA, {
       return;
     }
 
-    // Add to transactions
+    // Match incoming bank rows against pending obligation rows first, so the
+    // same charge never lands twice (see oblReconcileImported).
     if (!D.transactions) D.transactions = [];
-    finalTxns.forEach(t => { delete t._importSource; D.transactions.push(t); });
+    const _rec = oblReconcileImported(finalTxns);
+    const stillNew = _rec.stillNew;
+    const reconciled = _rec.matched.length;
+    if (reconciled) console.info('[obligations] reconciled imported rows into pending:', _rec.matched.join(', '));
+
+    // Add to transactions
+    stillNew.forEach(t => { delete t._importSource; D.transactions.push(t); });
 
     recomputeTxnActuals(); dirty(); closeModal(); renderTransactions();
-    toast(`✓ Imported ${finalTxns.length} transaction${finalTxns.length!==1?'s':''}${dupeCount?' ('+dupeCount+' duplicate'+( dupeCount!==1?'s':'')+' skipped)':''}`, 'ok');
+    toast(`✓ Imported ${stillNew.length} transaction${stillNew.length!==1?'s':''}${reconciled?' · '+reconciled+' matched to pending obligation'+(reconciled!==1?'s':''):''}${dupeCount?' ('+dupeCount+' duplicate'+( dupeCount!==1?'s':'')+' skipped)':''}`, 'ok');
     window._txnImportRows = null;
   },
 
@@ -21598,6 +22485,21 @@ Object.assign(BA, {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
     const oblTypeName = t.oblType === 'emi' ? 'Loan/EMI' : t.oblType === 'subscription' ? 'Subscription' : t.oblType === 'split' ? 'Split Payment' : 'Obligation';
+    const o    = oblFind(t.obligationId);
+    const hist = oblKnownCharges(t.obligationId, 3);
+    const avg  = hist.length ? hist.reduce((a,h)=>a+h.amount,0)/hist.length : 0;
+    // What this thing has ACTUALLY charged. The dialog used to pre-fill the
+    // stored cost — the one number you already know is wrong for the 22 of 32
+    // obligations whose real charge differs — and offer no context at all.
+    const chips = hist.length ? `
+      <div style="margin:-6px 0 16px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Last charged</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          ${hist.map(h => `<button type="button" class="btn btn-sm btn-ghost btn-xs" style="font-variant-numeric:tabular-nums" title="${esc(fmtDate(h.date))}" onclick="id('obl-approve-amount').value='${h.amount}'">${fmtCurrency(h.amount)}</button>`).join('')}
+          ${hist.length > 1 ? `<span style="font-size:.72rem;color:var(--text3);margin-left:2px">avg ${fmtCurrency(avg)}</span>` : ''}
+          ${o && o.obj.amountType === 'variable' ? `<span style="font-size:.66rem;font-weight:700;padding:1px 6px;border-radius:99px;background:color-mix(in srgb,var(--info) 14%,transparent);color:var(--info)">variable</span>` : ''}
+        </div>
+      </div>` : '';
     showModal(`
       <div class="modal-title">Approve ${esc(oblTypeName)}</div>
       <div style="font-size:.83rem;color:var(--text2);margin-bottom:16px">
@@ -21613,6 +22515,11 @@ Object.assign(BA, {
           <input type="number" id="obl-approve-amount" class="finput" value="${t.debit > 0 ? t.debit : t.credit}" step="0.01" min="0">
         </div>
       </div>
+      ${chips}
+      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem;color:var(--text2);margin-bottom:16px;cursor:pointer">
+        <input type="checkbox" id="obl-approve-cleared" style="width:15px;height:15px;accent-color:var(--primary)">
+        Mark cleared — this has already left the account
+      </label>
       <div style="display:flex;justify-content:flex-end;gap:8px">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
         <button class="btn btn-primary" onclick="BA.txnApproveConfirm('${txnId}')">✓ Confirm &amp; Approve</button>
@@ -21628,11 +22535,9 @@ Object.assign(BA, {
     const newAmount = parseFloat(id('obl-approve-amount')?.value) || 0;
     if (!newDate)   { toast('Please enter a date', 'err'); return; }
     if (!newAmount) { toast('Please enter an amount', 'err'); return; }
-    // Apply edits — preserve oblMonth so dedup key is unchanged (won't re-trigger)
-    t.date  = newDate;
-    if (t.debit > 0 || t.credit === 0) { t.debit = newAmount; t.credit = 0; }
-    else { t.credit = newAmount; t.debit = 0; }
-    t.status = 'approved';
+    // oblMonth / oblOcc are preserved, so the dedup key is unchanged and this
+    // row is never regenerated.
+    oblApproveTxn(t, newDate, newAmount, { cleared: !!id('obl-approve-cleared')?.checked });
     recomputeTxnActuals();
     dirty();
     closeModal();
@@ -21640,21 +22545,28 @@ Object.assign(BA, {
     toast('Obligation approved ✓', 'ok');
   },
 
+  // Approve exactly as generated — no dialog. This existed as a function but
+  // nothing in the UI ever called it, so every approval cost a two-field modal
+  // even when both fields were already right.
   txnApprove(txnId) {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
-    t.status  = 'approved';
-    // Do NOT auto-clear — user should manually mark cleared when confirmed
+    if (!oblApproveTxn(t, t.date, (+t.debit||0) || (+t.credit||0), null)) {
+      toast('Nothing to approve — this row has no amount', 'err'); return;
+    }
     recomputeTxnActuals();
     dirty();
     renderTransactions();
+    toast(`${t.payee||'Obligation'} approved ✓`, 'ok');
   },
 
   // Reject a pending obligation transaction → mark rejected (hidden from ledger)
   txnReject(txnId) {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
+    oblUncountSplit(t);
     t.status = 'rejected';
+    recomputeTxnActuals();
     dirty();
     renderTransactions();
   },
@@ -21663,7 +22575,9 @@ Object.assign(BA, {
   txnRestoreObligation(txnId) {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
+    oblUncountSplit(t);
     t.status = 'pending';
+    recomputeTxnActuals();
     dirty();
     renderTxnRight();
     renderTxnKpis();
