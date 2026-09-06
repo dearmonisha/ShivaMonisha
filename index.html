@@ -164,6 +164,19 @@ body{font-family:'Aptos','Calibri',-apple-system,BlinkMacSystemFont,'Segoe UI',s
 .txn-flag{display:inline-block;width:10px;height:10px;border-radius:50%;cursor:pointer;flex-shrink:0;border:1px solid rgba(0,0,0,.15)}
 .txn-flag.none{background:var(--surface2);border:1px dashed var(--border)}
 .txn-flag-picker{position:fixed;z-index:1000;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);padding:6px 8px;display:flex;flex-direction:column;gap:5px;align-items:center}
+/* Row actions, collapsed behind one ⋯ button. Four buttons per row cost ~110px
+   of every ledger and pushed themselves off the right edge on a tablet. */
+.txn-row-menu{position:fixed;z-index:1000;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);box-shadow:var(--sh2);padding:4px;min-width:186px;display:flex;flex-direction:column}
+.txn-row-menu button{display:flex;align-items:center;gap:9px;width:100%;padding:7px 10px;border:none;background:none;
+  border-radius:6px;font-size:.8rem;color:var(--text);cursor:pointer;text-align:left;font-family:inherit;white-space:nowrap}
+.txn-row-menu button .k{width:16px;text-align:center;flex:none;font-size:.85rem}
+.txn-row-menu button.danger{color:var(--danger)}
+.txn-row-menu hr{border:none;border-top:1px solid var(--border);margin:4px 2px}
+.txn-row-menu .hint{padding:3px 10px 5px;font-size:.66rem;color:var(--text3);white-space:nowrap}
+@media (hover:hover) and (pointer:fine){
+  .txn-row-menu button:hover{background:color-mix(in srgb,var(--primary) 10%,transparent)}
+  .txn-row-menu button.danger:hover{background:var(--danger-bg)}
+}
 .txn-flag-swatch{width:18px;height:18px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .1s}
 .txn-flag-swatch:hover{transform:scale(1.25);border-color:rgba(0,0,0,.2)}
 .txn-cat-pill{display:inline-block;max-width:100%;vertical-align:middle;padding:1px 7px;border-radius:99px;font-size:.7rem;font-weight:600;background:var(--surface2);border:1px solid var(--border);color:var(--text3);white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none}
@@ -215,10 +228,19 @@ tr.txn-today-row>td{padding:0!important;border:none!important;background:none!im
 .txn-split-link{font-size:.71rem;color:var(--primary);cursor:pointer;background:none;border:none;padding:0;text-decoration:underline;display:inline-block}
 .txn-split-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:99px;font-size:.7rem;font-weight:600;background:color-mix(in srgb,var(--primary) 12%,transparent);border:1px solid color-mix(in srgb,var(--primary) 30%,transparent);color:var(--primary);cursor:pointer;user-select:none}
 .txn-split-pill:hover{background:color-mix(in srgb,var(--primary) 20%,transparent)}
-.txn-split-expand{background:color-mix(in srgb,var(--primary) 4%,transparent)}
-.txn-split-expand td{padding:4px 8px 8px 32px;font-size:.76rem;color:var(--text2)}
-.txn-split-line-row{display:flex;gap:16px;align-items:baseline;padding:2px 0;border-bottom:1px dashed var(--border-light)}
-.txn-split-line-row:last-child{border-bottom:none}
+/* A split line is a transaction line. It used to render as one colspan cell
+   holding a flex list, so nothing lined up with the columns above it and the
+   amounts sat in the middle of the row. Now each line is a real <tr> on the
+   same grid, tinted and marked with ↳ so it still reads as a child.
+   NB: `txn-split-line` is ALREADY TAKEN by the inline split editor above as a
+   display:grid class — reusing it laid these rows out on a 4-column grid. */
+.txn-split-row{background:color-mix(in srgb,var(--primary) 4%,transparent)}
+.txn-split-row td{border-bottom:1px dashed var(--border-light);font-size:.78rem;color:var(--text2);padding-top:5px;padding-bottom:5px}
+.txn-split-row .sl-mark{color:var(--primary);opacity:.5;text-align:right;padding-right:4px;font-size:.8rem}
+.txn-split-rollup{background:color-mix(in srgb,var(--primary) 7%,transparent)}
+.txn-split-rollup td{font-size:.72rem;color:var(--text3);padding-top:5px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.txn-split-rollup .sl-total{font-weight:800;color:var(--text2);font-variant-numeric:tabular-nums}
+.txn-split-rollup .sl-off{color:var(--danger);font-weight:700}
 .txn-transfer-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:99px;font-size:.7rem;font-weight:600;background:color-mix(in srgb,#8b5cf6 10%,transparent);border:1px solid color-mix(in srgb,#8b5cf6 30%,transparent);color:#7c3aed;cursor:default;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sum-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:10px 14px;flex:1;min-width:130px;max-width:190px}
 .sum-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;font-weight:600}
@@ -17949,7 +17971,9 @@ function setTxnSearchPage(p) {
 
 // ── Column resize defaults & init ────────────────────────────────────────────
 const TXN_COL_DEFAULTS = {
-  'txn-date':    110,
+  // "09/06/26" plus the dated-ahead pill underneath; 110 was sized for a header
+  // that no longer needs it.
+  'txn-date':     86,
   'txn-acct':    120,
   'txn-payee':   160,
   // Expense Type carries a pill that WRAPS, so a column too narrow for the
@@ -17962,7 +17986,7 @@ const TXN_COL_DEFAULTS = {
   'txn-debit':    95,
   'txn-credit':   95,
   'txn-bal':     105,
-  'txn-clr':      70,
+  'txn-clr':      54,
 };
 
 // `table-layout:fixed` means these widths ARE the columns, so their sum decides
@@ -18002,6 +18026,24 @@ function _txnFitColumns(table) {
   });
   // Cell padding is outside the declared width, so count it per column.
   const pad = 20 * table.querySelectorAll('thead th').length;
+  // A money column must never be scaled below its widest figure. Text columns
+  // ellipsis when squeezed; a right-aligned number just overflows its cell and
+  // sits on top of the neighbour — "$2,744.79" was landing across the Balance
+  // column's "$3,192.69". Measure what each one actually needs.
+  const NUMERIC = new Set(['txn-debit', 'txn-credit', 'txn-bal']);
+  const minW = {};
+  ths.forEach(th => {
+    if (!NUMERIC.has(th.dataset.col)) { minW[th.dataset.col] = 0; return; }
+    let need = 0;
+    // Index by the header's real position, so moving a column (as the flag was)
+    // cannot mis-target the cells being measured.
+    const pos = [...th.parentNode.children].indexOf(th) + 1;
+    table.querySelectorAll(`tbody tr[data-txn-id] td:nth-child(${pos})`).forEach(td => {
+      need = Math.max(need, td.scrollWidth);
+    });
+    minW[th.dataset.col] = need ? Math.ceil(need) : 0;
+  });
+
   let flexPx = 0;
   ths.forEach(th => { if (UI.txnColWidths[th.dataset.col] == null) flexPx += TXN_COL_DEFAULTS[th.dataset.col] || 100; });
   let userPx = 0;
@@ -18016,7 +18058,7 @@ function _txnFitColumns(table) {
     const u   = UI.txnColWidths[col];
     // floor, not round: rounding nine columns up can add ~4px and put the last
     // button back over the edge — the exact thing this is here to prevent.
-    const w   = u != null ? u : Math.floor((TXN_COL_DEFAULTS[col] || 100) * scale);
+    const w   = u != null ? u : Math.max(minW[col] || 0, Math.floor((TXN_COL_DEFAULTS[col] || 100) * scale));
     if (w) th.style.width = w + 'px';
   });
 
@@ -18028,7 +18070,7 @@ function _txnFitColumns(table) {
   if (!wrap) return;
   const over = wrap.scrollWidth - wrap.clientWidth;
   if (over <= 0) return;
-  const flex = ths.filter(th => UI.txnColWidths[th.dataset.col] == null);
+  const flex = ths.filter(th => UI.txnColWidths[th.dataset.col] == null && !NUMERIC.has(th.dataset.col));
   if (!flex.length) return;
   const widest = flex.reduce((a, th) =>
     (parseFloat(th.style.width) || 0) > (parseFloat(a.style.width) || 0) ? th : a, flex[0]);
@@ -18586,24 +18628,48 @@ function renderTxnRight() {
         <td style="text-align:center">
           <span class="txn-pill-clr ${t.reconciled?'rec':t.cleared?'yes':'no'}" onclick="${t.reconciled?'':'BA.txnToggleCleared(\''+t.id+'\')'}" title="${t.reconciled?'Reconciled (locked)':t.cleared?'Cleared — click to unmark':'Uncleared — click to mark cleared'}" style="${t.reconciled?'cursor:default':''}">${t.reconciled?'R':t.cleared?'✓':'○'}</span>
         </td>
-        <td style="white-space:nowrap">
-          ${_canReimb ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnToggleReimbursement('${t.id}')" title="${_isReimb?'Remove reimbursement flag':'Mark as reimbursement received — offsets pending balance'}" style="color:${_isReimb?'var(--info)':'var(--text3)'};font-weight:${_isReimb?'700':'400'}">♻</button>` : ''}
-          <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnStartEdit('${t.id}')" title="Edit (or double-click row)">✎</button>
-          ${!t.isTransfer ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnMoveModal('${t.id}')" title="Move to another account" style="color:var(--primary)">➤</button>` : ''}
-          <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="BA.txnDelete('${t.id}')">✕</button>
+        <td style="text-align:center;padding:0 2px">
+          <button class="btn btn-sm btn-ghost btn-xs" onclick="event.stopPropagation();BA.txnRowMenu('${t.id}',this)" title="Actions — edit, move, delete" style="font-weight:700;letter-spacing:1px;padding:2px 6px">⋯</button>
         </td>
       </tr>
-      ${isSplit && (UI._splitExpanded||{})[t.id] ? `<tr class="txn-split-expand"><td colspan="2"></td><td colspan="9"><div style="padding:2px 0">
-        ${t.splits.map(s => {
-          const lbl = txnCatLabel(s.categoryId)||s.categoryId||'—';
-          const notesHtml = s.notes ? `<span style="color:var(--text3);margin-left:8px;font-style:italic">${esc(s.notes)}</span>` : '';
-          const splitFamPerson = s.familyMemberId ? famPersons().find(p => p.id === s.familyMemberId) : null;
-          const splitFamBadge = splitFamPerson
-            ? `<span style="font-size:.65rem;font-weight:600;padding:1px 6px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 28%,transparent);border-radius:99px;margin-left:6px;cursor:pointer;white-space:nowrap" onclick="BA.txnNavToLinkedFamily('${s.familyMemberId}')" title="Family: ${esc(splitFamPerson.name)}">👤 ${esc(splitFamPerson.name)}</span>`
+      ${isSplit && (UI._splitExpanded||{})[t.id] ? (() => {
+        // Which money column the lines belong in follows the PARENT: split
+        // amounts are stored unsigned, so a credit row's lines are credits.
+        const _pIsDebit = (parseFloat(t.debit) || 0) > 0;
+        const _sum = t.splits.reduce((a, l) => a + (parseFloat(l.amount) || 0), 0);
+        const _parent = Math.abs((parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0));
+        const _off = Math.round((_sum - _parent) * 100) / 100;
+        const lines = t.splits.map(sl => {
+          const full = txnCatLabel(sl.categoryId) || sl.categoryId || '—';
+          const leaf = txnCatLeaf(sl.categoryId) || full;
+          const p    = sl.familyMemberId ? famPersons().find(x => x.id === sl.familyMemberId) : null;
+          const fam  = p
+            ? `<span style="font-size:.65rem;font-weight:600;padding:1px 6px;background:color-mix(in srgb,#8b5cf6 12%,transparent);color:#7c3aed;border:1px solid color-mix(in srgb,#8b5cf6 28%,transparent);border-radius:99px;cursor:pointer;white-space:nowrap" onclick="BA.txnNavToLinkedFamily('${sl.familyMemberId}')" title="Family: ${esc(p.name)}">👤 ${esc(p.name)}</span>`
             : '';
-          return `<div class="txn-split-line-row"><span style="min-width:120px;font-weight:500">${esc(lbl)}</span><span style="color:var(--primary);font-weight:600">${fmtCurrency(s.amount)}</span>${notesHtml}${splitFamBadge}</div>`;
-        }).join('')}
-      </div></td></tr>` : ''}`;
+          const amt = fmtCurrency(sl.amount);
+          return `<tr class="txn-split-row">
+            <td></td><td></td>
+            <td class="sl-mark">↳</td>
+            <td style="overflow:hidden">${fam}</td>
+            <td style="overflow:hidden"><span class="txn-cat-pill" title="${esc(full)}">${esc(leaf)}</span></td>
+            <td style="overflow:hidden;text-overflow:ellipsis;font-size:.74rem;color:var(--text3);font-style:italic" title="${esc(sl.notes||'')}">${esc(sl.notes||'')}</td>
+            <td class="r">${_pIsDebit ? `<span class="txn-debit">${amt}</span>` : ''}</td>
+            <td class="r">${_pIsDebit ? '' : `<span class="txn-credit">${amt}</span>`}</td>
+            <td></td><td></td><td></td>
+          </tr>`;
+        }).join('');
+        const sumRow = `<tr class="txn-split-rollup">
+          <td></td><td></td><td class="sl-mark"></td>
+          <td colspan="3" style="overflow:hidden">${t.splits.length} split line${t.splits.length!==1?'s':''}${
+            Math.abs(_off) > 0.005
+              ? ` · <span class="sl-off">${_off > 0 ? '+' : '−'}${fmtCurrency(Math.abs(_off))} against the ${fmtCurrency(_parent)} on the row above</span>`
+              : ` · reconciles to the ${fmtCurrency(_parent)} above`}</td>
+          <td class="r">${_pIsDebit ? `<span class="sl-total">${fmtCurrency(_sum)}</span>` : ''}</td>
+          <td class="r">${_pIsDebit ? '' : `<span class="sl-total">${fmtCurrency(_sum)}</span>`}</td>
+          <td></td><td></td><td></td>
+        </tr>`;
+        return lines + sumRow;
+      })() : ''}`;
   }).join('');
 
   const hasRows = filteredRows.length > 0 || UI.txnNewRow;
@@ -18687,7 +18753,7 @@ function renderTxnRight() {
             <th class="r" data-col="txn-debit">Debit</th>
             <th class="r" data-col="txn-credit">Credit</th>
             <th class="r" data-col="txn-bal">Balance</th>
-            <th style="text-align:center" data-col="txn-clr">Cleared</th>
+            <th style="text-align:center" data-col="txn-clr">Clr</th>
             <th style="width:70px"></th>
           </tr>
         </thead>
@@ -22647,6 +22713,50 @@ Object.assign(BA, {
     setTimeout(() => document.addEventListener('click', function h(e) {
       if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', h); }
     }), 10);
+  },
+  // Row actions, behind one ⋯ button. Which items appear depends on the row:
+  // a transfer cannot be moved, and only an incoming credit on a non-card
+  // account can be a reimbursement — the same conditions the four inline
+  // buttons used to encode by simply not rendering.
+  txnRowMenu(txnId, anchorEl) {
+    document.querySelectorAll('.txn-row-menu,.txn-flag-picker').forEach(p => p.remove());
+    const t = (D.transactions || []).find(x => x.id === txnId);
+    if (!t) return;
+    const acct     = (D.txnAccounts || []).find(a => a.id === t.accountId);
+    const isCC     = acct ? acct.type === 'Credit Card' : false;
+    const canReimb = (parseFloat(t.credit) || 0) > 0 && !isCC;
+    const isReimb  = !!t.isReimbursement;
+
+    const menu = document.createElement('div');
+    menu.className = 'txn-row-menu';
+    const item = (key, label, handler, cls) =>
+      `<button class="${cls || ''}" onclick="this.closest('.txn-row-menu').remove();${handler}"><span class="k">${key}</span>${label}</button>`;
+    menu.innerHTML =
+      item('✎', 'Edit', `BA.txnStartEdit('${txnId}')`) +
+      `<div class="hint">or double-click the row</div>` +
+      (t.isTransfer ? '' : item('➤', 'Move to another account…', `BA.txnMoveModal('${txnId}')`)) +
+      (canReimb ? item('♻', isReimb ? 'Not a reimbursement' : 'Mark as reimbursement',
+                       `BA.txnToggleReimbursement('${txnId}')`) : '') +
+      '<hr>' +
+      item('✕', 'Delete', `BA.txnDelete('${txnId}')`, 'danger');
+    document.body.appendChild(menu);
+
+    // Right-aligned to the anchor and flipped above when it would run off the
+    // bottom — the ⋯ button sits at the right edge of a scrolling table.
+    const rect = anchorEl.getBoundingClientRect();
+    const mh   = menu.offsetHeight || 170;
+    const mw   = menu.offsetWidth  || 186;
+    const top  = (window.innerHeight - rect.bottom >= mh + 8) ? rect.bottom + 4 : Math.max(6, rect.top - mh - 4);
+    const left = Math.min(Math.max(rect.right - mw, 6), window.innerWidth - mw - 6);
+    menu.style.top  = top  + 'px';
+    menu.style.left = left + 'px';
+
+    setTimeout(() => {
+      const close = e => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', close); } };
+      document.addEventListener('click', close);
+      const esc = e => { if (e.key === 'Escape') { menu.remove(); document.removeEventListener('keydown', esc); } };
+      document.addEventListener('keydown', esc);
+    }, 10);
   },
   txnSetFlag(txnId, flagName) {
     const t = (D.transactions||[]).find(x => x.id === txnId);
