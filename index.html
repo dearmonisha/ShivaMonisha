@@ -8562,6 +8562,9 @@ function payDefaults() {
   // Utilisation floor for the balanced strategy. 30% is the conventional scoring
   // threshold; below roughly 10% the benefit is largely exhausted.
   if (p.utilTarget == null)       p.utilTarget = 0.30;
+  // Fund this month's own charges before paying down old balances. Off = the
+  // pre-2026-09 behaviour (minimums, then straight to the strategy).
+  if (p.fundCurrentSpend == null) p.fundCurrentSpend = true;
   if (!p.bankAccountId) {
     const bank = (D.txnAccounts || []).find(a => a.type === 'Bank' && a.status !== 'closed');
     p.bankAccountId = bank ? bank.id : '';
@@ -8740,6 +8743,81 @@ function payProjectNext(tpl, afterDue) {
   return { statementDate: payISO(stmt), dueDate: payISO(due), projected: true };
 }
 
+// ══════════════════════════════════════════════════════════════
+// "DON'T GROW" — funding this month's own charges before old debt
+// ══════════════════════════════════════════════════════════════
+// Sorting payments by APR minimises interest on a FIXED debt. It never asks
+// whether the pot covers what was just charged, so it can execute a perfect
+// month while every balance climbs. Mar–Aug 2026: $163,832 charged to the
+// cards, $124,491 paid, balances up $39,342 — which is exactly the difference.
+//
+// August is the case in point. $7,690 went to JCP (33.24%) and Macys (31.90%),
+// correctly by rate, while six cards Shiva actively spends on grew by $5,364.
+// Covering those six first would still have left $2,326 for JCP.
+//
+// So: charges first, old balances second. The rate ordering is not discarded —
+// it just cannot jump the queue.
+
+// New (non-transfer) charges on a card within a budget month, net of refunds.
+function payChargesInMonth(acctId, ym) {
+  return (D.transactions || []).reduce((s, t) => {
+    if (t.accountId !== acctId || t.isTransfer || !txnCounts(t)) return s;
+    if ((t.date || '').slice(0, 7) !== ym) return s;
+    return s + (+t.debit || 0) - (+t.credit || 0);
+  }, 0);
+}
+// Payments landing on the card within the same month, whatever cycle they belong to.
+function payPaymentsInMonth(acctId, ym) {
+  return (D.transactions || []).reduce((s, t) => {
+    if (t.accountId !== acctId || !t.isTransfer || !txnCounts(t)) return s;
+    if ((t.date || '').slice(0, 7) !== ym) return s;
+    return s + (+t.credit || 0);
+  }, 0);
+}
+// Planned vs actual for the month, and — the part that matters — how that
+// compares to where the month SHOULD be by today.
+//
+// The obvious reading of "the money I save over the budgeted amounts" is
+// planned − actual. That is wrong mid-month: on the 5th of September it made
+// $23,037 look like surplus when it is simply the rest of the month's living
+// costs, not yet spent. Underspend is only knowable against elapsed time, so
+// the ceiling is measured against PACE — planned prorated to today — and the
+// full-month figures are reported alongside for context.
+function payBudgetSnapshot(ym) {
+  const month   = ym || ymNow();
+  const planned = (D.budget?.plans || [])
+    .filter(p => p.month === month).reduce((s, p) => s + (+p.amount || 0), 0);
+  const actual  = (D.budget?.txnActuals || [])
+    .filter(a => a.month === month).reduce((s, a) => s + (+a.amount || 0), 0);
+  const today   = centralToday();
+  const [y, mo] = month.split('-').map(Number);
+  const daysIn  = new Date(y, mo, 0).getDate();
+  // Elapsed fraction of the month being viewed: a past month is fully elapsed,
+  // a future one not at all.
+  const curYM   = today.slice(0, 7);
+  const elapsed = month < curYM ? 1
+                : month > curYM ? 0
+                : Math.min(1, parseInt(today.slice(8, 10), 10) / daysIn);
+  const onPace  = planned * elapsed;
+  return { month, planned, actual, daysIn, elapsed, onPace,
+           // free to deploy: how far UNDER the run-rate you are right now
+           headroom:  Math.max(0, onPace - actual),
+           // running hot: how far over the run-rate you are right now
+           overPace:  Math.max(0, actual - onPace),
+           // full-month position, for display rather than for the ceiling
+           fullHeadroom:  Math.max(0, planned - actual),
+           overspend:     Math.max(0, actual - planned) };
+}
+// What this card needs so its balance does not end the month higher than it
+// started. Pay-in-full cards are excluded: their statement is funded at tier 0
+// and counting the same charges again would double-fund them.
+function payGrowthNeed(x, ym, alreadyAllocated) {
+  if (!x || x.role === 'pay-in-full') return 0;
+  const charged = x.chargesMTD != null ? x.chargesMTD : payChargesInMonth(x.acct.id, ym || ymNow());
+  const paid    = x.paidMTD    != null ? x.paidMTD    : payPaymentsInMonth(x.acct.id, ym || ymNow());
+  return Math.max(0, charged - paid - (alreadyAllocated || 0));
+}
+
 function payCardStates() {
   payDefaults();
   const today = centralToday();
@@ -8797,9 +8875,12 @@ function payCardStates() {
                         minFloor: minRef.value })
         : null;
 
+      const _ym = today.slice(0, 7);
       return {
         id: c.id, name: c.name, card: c, acct, tpl, projected,
         balance, stmtDate, dueDate, stmtBal, minDue, paid,
+        chargesMTD: payChargesInMonth(acct.id, _ym),
+        paidMTD:    payPaymentsInMonth(acct.id, _ym),
         minUnfunded: minUnf,
         apr, goToApr, limit, planned,
         util: limit ? balance / limit : 0,
@@ -9307,7 +9388,9 @@ function payAllocate(pot, strategy, states, runway) {
   const m = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
   let left = Math.max(0, +pot || 0);
   const R = runway || null;
-  const parts = { minimums: 0, promo: 0, pifEarly: 0, discretionary: 0, minSkipped: [] };
+  const parts = { minimums: 0, promo: 0, pifEarly: 0, growth: 0, discretionary: 0, minSkipped: [] };
+  const P0 = payDefaults();
+  const ym = centralToday().slice(0, 7);
 
   // A pay-in-full card's minimum is subsumed by its own statement payment: both
   // fall on the same due date and the statement is the larger of the two. Where
@@ -9373,6 +9456,44 @@ function payAllocate(pot, strategy, states, runway) {
   // (The separate pay-in-full pass that used to sit here is gone — requiredNow()
   // above funds issued statements in the same due-date-ordered pass as the
   // minimums, ahead of the promo catch-up and everything discretionary.)
+  // ── Tier 2: this month's own charges ─────────────────────────────────────
+  // Ordered by rate so that when the pot cannot cover every card, the money
+  // holds the line on the expensive ones first. Pay-in-full cards are already
+  // settled at tier 0; a card with no charges this month asks for nothing.
+  const growthOf = x => payGrowthNeed(x, ym, x.pay);
+  if (P0.fundCurrentSpend) {
+    m.filter(x => growthOf(x) > 0.005)
+     .sort((a, b) => b.apr - a.apr)
+     .forEach(x => {
+       if (left < 1) return;
+       const p = Math.min(growthOf(x), left, Math.max(0, x.balance - x.pay));
+       x.pay += p; left -= p; parts.growth += p;
+     });
+  }
+  // What is still unfunded after the pot ran out — the month's financed spending,
+  // stated plainly rather than left to show up as a bigger balance next month.
+  parts.growthShortfalls = m.filter(x => growthOf(x) > 0.005)
+    .map(x => ({ name: x.name, short: growthOf(x), apr: x.apr, charged: x.chargesMTD }))
+    .sort((a, b) => b.short - a.short);
+  parts.growthShort = parts.growthShortfalls.reduce((s2, x) => s2 + x.short, 0);
+  parts.growthTarget = m.reduce((s2, x) => s2 + payGrowthNeed(x, ym, 0), 0);
+
+  // ── Tier 3's pot is bounded by the BUDGET, not just by cash ──────────────
+  // Shiva's rule: what he saved against plan is what is genuinely free to throw
+  // at old debt. Minimums and statements are never subject to this — they are
+  // funded above, from cash, whatever the budget says.
+  parts.budget = payBudgetSnapshot(ym);
+  const budgetCap = P0.fundCurrentSpend ? parts.budget.headroom : Infinity;
+  // Old balances wait until this month's spending is covered. This is the guard
+  // that would have stopped August's $7,690 going to JCP and Macys while six
+  // actively-used cards grew.
+  const growthClear = !P0.fundCurrentSpend || parts.growthShort <= 0.005;
+  const discretionaryPot = growthClear ? Math.min(left, budgetCap) : 0;
+  const reserved = left - discretionaryPot;   // held back, not lost
+  left = discretionaryPot;
+  parts.heldBack = reserved;
+  parts.heldReason = !growthClear ? 'growth' : (budgetCap < Infinity && reserved > 0.005 ? 'budget' : null);
+
   parts.discretionary = left;
   // Anything still owed after the pot ran dry. Shiva asked why Chase got its
   // full $300 while Apple sat below its minimum; the answer was that the pot was
@@ -9424,6 +9545,9 @@ function payAllocate(pot, strategy, states, runway) {
   }
 
   const saved = m.reduce((s, x) => s + x.pay * x.apr / 1200, 0);
+  // `left` has to describe the whole pot again, or the caller under-reports what
+  // is still sitting in the bank.
+  left += (parts.heldBack || 0);
   return {
     all: m,
     alloc: m.filter(x => x.pay >= 0.5).sort((a, b) => b.pay - a.pay),
@@ -9858,7 +9982,7 @@ function renderPayments() {
   // number and the buttons look broken. Say so, and say what took the money —
   // otherwise the only way to find out is to read the allocator.
   const PA = A.parts || {};
-  const committedTotal = (PA.minimums || 0) + (PA.promo || 0) + (PA.pifEarly || 0);
+  const committedTotal = (PA.minimums || 0) + (PA.promo || 0) + (PA.pifEarly || 0) + (PA.growth || 0);
   const bits = [];
   // Report what was REQUIRED, not merely what fitted — the funded figure hid a
   // card sitting below its minimum.
@@ -9869,6 +9993,7 @@ function renderPayments() {
   // Wording follows the rule, not the old one: an issued pay-in-full statement is
   // funded from cash already held, without counting salary still to arrive.
   if (PA.pifEarly > 0.005) bits.push(`${payFmt2(PA.pifEarly)} of pay-in-full statements due`);
+  if (PA.growth   > 0.005) bits.push(`${payFmt2(PA.growth)} covering this month's own charges`);
   const shortNote = (PA.shortTotal > 0.005) ? `
      <div style="font-size:.7rem;line-height:1.6;background:var(--danger-bg);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);border-radius:6px;padding:9px 12px;margin-bottom:10px;color:var(--text)">
        <b style="color:var(--danger)">${payFmt2(PA.shortTotal)} short of everything due.</b>
@@ -9888,7 +10013,59 @@ function renderPayments() {
        the strategy orders the remaining <b style="color:var(--text2)">${payFmt(PA.discretionary)}</b>.
      </div>` : '';
 
+  // Everything that must move today (minimums, statements, promo catch-up) plus
+  // every charge made this month — computed at an unbounded pot so it describes
+  // the requirement, not what happens to fit.
+  const _uncapped   = payAllocate(1e9, UI.payStrategy, st, R);
+  const _coverMonth = (_uncapped.parts.minimums || 0) + (_uncapped.parts.pifEarly || 0)
+                    + (_uncapped.parts.promo || 0) + (_uncapped.parts.growth || 0);
+
+  // ── This month first ──────────────────────────────────────────────────
+  // The panel that answers the question the allocator used to skip: is this
+  // month's own spending covered before a dollar goes to old debt?
+  const BS = PA.budget || payBudgetSnapshot(centralToday().slice(0, 7));
+  const _growthTarget = PA.growthTarget || 0;
+  const _growthShort  = PA.growthShort || 0;
+  const _growthOK     = _growthShort <= 0.005;
+  const _pace = BS.overPace > 0.005
+    ? `<span style="color:var(--danger);font-weight:600">${payFmt(BS.overPace)} over pace</span>`
+    : `<span style="color:var(--ok);font-weight:600">${payFmt(BS.headroom)} under pace</span>`;
+  const spendFirst = P.fundCurrentSpend ? `
+   <div style="${card};padding:13px 15px;margin-bottom:14px;border-color:${_growthOK ? 'color-mix(in srgb,var(--ok) 35%,var(--border))' : 'color-mix(in srgb,var(--warn) 45%,var(--border))'}">
+     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+       <div style="${lbl}">This month first</div>
+       <span style="font-size:.68rem;color:var(--text3)">charges land on the card, so they are paid before old balances</span>
+       <button onclick="PAY.toggleFundCurrent()" title="Turn off to go back to minimums-then-strategy"
+         style="margin-left:auto;font-size:.66rem;padding:3px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text3);cursor:pointer">on</button>
+     </div>
+     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:${_growthShort>0.005?'10':'0'}px">
+       <div><div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Charged this month</div>
+         <div style="font-size:1.1rem;font-weight:700;color:var(--text)">${payFmt(_growthTarget)}</div>
+         <div style="font-size:.66rem;color:var(--text3)">on ${st.filter(x => (x.chargesMTD||0) > 0.005).length} card${st.filter(x => (x.chargesMTD||0) > 0.005).length===1?'':'s'} this month</div></div>
+       <div><div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Covered by this plan</div>
+         <div style="font-size:1.1rem;font-weight:700;color:${_growthOK?'var(--ok)':'var(--warn)'}">${payFmt(PA.growth || 0)}</div>
+         <div style="font-size:.66rem;color:var(--text3)">${_growthOK ? 'nothing financed' : payFmt(_growthShort) + ' will be financed'}</div></div>
+       <div><div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Budget pace</div>
+         <div style="font-size:1.1rem;font-weight:700;color:var(--text)">${payFmt(BS.actual)}</div>
+         <div style="font-size:.66rem;color:var(--text3)">of ${payFmt(BS.onPace)} by today · ${_pace}</div></div>
+       <div><div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Free for old debt</div>
+         <div style="font-size:1.1rem;font-weight:700;color:${(PA.discretionary||0)>0.005?'var(--ok)':'var(--text3)'}">${payFmt(PA.discretionary || 0)}</div>
+         <div style="font-size:.66rem;color:var(--text3)">${
+           PA.heldReason === 'growth' ? 'held: this month not covered yet'
+           : PA.heldReason === 'budget' ? payFmt(PA.heldBack) + ' held — not saved against plan yet'
+           : 'the lower of cash and budget'}</div></div>
+     </div>
+     ${_growthShort > 0.005 ? `
+       <div style="font-size:.7rem;line-height:1.6;background:var(--warn-bg);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);border-radius:6px;padding:9px 12px;color:var(--text)">
+         <b>${payFmt(_growthShort)} of this month's spending will be carried.</b>
+         ${(PA.growthShortfalls||[]).slice(0,5).map(x => `${esc(x.name)} ${payFmt(x.short)} at ${x.apr.toFixed(2)}%`).join(' · ')}${(PA.growthShortfalls||[]).length>5?' …':''}.
+         Old balances are held back until this is covered — that is the rule that stops a
+         high-rate paydown while the cards you use keep growing.
+       </div>` : ''}
+   </div>` : '';
+
   const allocator = `
+   ${spendFirst}
    <div style="${card};padding:13px 15px;margin-bottom:14px">
      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
        <div style="${lbl}">Deploy</div>
@@ -9899,6 +10076,9 @@ function renderPayments() {
          oninput="PAY.setAmount(this.value)" style="flex:1;min-width:150px;accent-color:var(--primary)">
        <button onclick="PAY.setAmount(${Math.floor(R.safe)})" title="Rounded down — never above the safe limit" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Safe max</button>
        <button onclick="PAY.setAmount(${payUp(minDueNow)})" title="Rounded up — never short of a minimum that needs cash today" style="font-size:.7rem;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer">Minimums only</button>
+       ${P.fundCurrentSpend && _coverMonth > 0.5 ? `<button onclick="PAY.setAmount(${payUp(_coverMonth)})"
+         title="Everything due now plus every charge made this month — the figure that leaves no balance higher than it started"
+         style="font-size:.7rem;padding:4px 9px;border:1px solid ${_coverMonth > R.safe + 0.5 ? 'color-mix(in srgb,var(--warn) 50%,var(--border))' : 'var(--border)'};border-radius:6px;background:var(--surface);color:var(--text2);cursor:pointer;white-space:nowrap">Cover this month${_coverMonth > R.safe + 0.5 ? ` <span style="color:var(--warn)">${payFmt(_coverMonth)}</span>` : ''}</button>` : ''}
      </div>
      <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
@@ -10134,6 +10314,14 @@ function payPrompt(title, msg, defVal) {
 
 const PAY = {
   setStrategy(s) { UI.payStrategy = s; payDefaults().strategy = s; dirty(); renderPayments(); },
+  toggleFundCurrent() {
+    const P = payDefaults();
+    P.fundCurrentSpend = !P.fundCurrentSpend;
+    dirty(); renderPayments();
+    toast(P.fundCurrentSpend
+      ? "This month's charges are funded before old balances"
+      : "Back to minimums, then strategy — balances may grow", P.fundCurrentSpend ? 'ok' : 'err');
+  },
   setUtilTarget(t) { payDefaults().utilTarget = t; dirty(); renderPayments(); },
   toggleSafeMath() { UI.paySafeMathOpen = !UI.paySafeMathOpen; renderPayments(); },
   setAmount(v)   { UI.payAmount = Math.max(0, parseFloat(String(v).replace(/[^0-9.]/g,'')) || 0); renderPayments(); },
