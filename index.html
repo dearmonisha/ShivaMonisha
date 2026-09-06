@@ -116,6 +116,11 @@ body{font-family:'Aptos','Calibri',-apple-system,BlinkMacSystemFont,'Segoe UI',s
 /* Obligations pane KPI — sits below the sticky sub-tabs bar (~45px tall) */
 .kpi-sticky-obl{position:sticky;top:95px;z-index:35;background:var(--bg);padding:10px 0 6px;margin-bottom:4px;box-shadow:0 4px 8px -4px rgba(0,0,0,.08)}
 /* ── Transactions tab ── */
+/* Height is MEASURED by txnSizeLayout(), not guessed. The 270px here is only a
+   pre-paint fallback: it was tuned to a header that has since changed twice,
+   and by 2026-09-06 it was leaving 159px of dead space under the pagination on
+   a 1050px screen. A magic offset cannot survive an edit to the header above
+   it, so the real value comes from the element's own top edge. */
 .txn-layout{display:flex;gap:0;border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;height:calc(100vh - 270px);min-height:420px;background:var(--surface)}
 .txn-left{width:230px;min-width:190px;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface);flex-shrink:0;overflow:hidden}
 .txn-left-hdr{padding:10px 14px 6px;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);border-bottom:1px solid var(--border)}
@@ -17316,6 +17321,22 @@ function txnShowImportPreview(rows, filename) {
 
 // ── Execute Import ─────────────────────────────────────────────────
 // ── Render ────────────────────────────────────────────────────
+// ── Fit the ledger to whatever is actually above it ────────────────────────
+// The layout used a hardcoded calc(100vh - 270px). Every change to the header
+// above it silently turned into dead space at the bottom — 56px before the
+// 2026-09-06 header rebuild, 159px after. Measuring the element's own top edge
+// costs one reflow and cannot drift.
+const TXN_LAYOUT_BOTTOM_GAP = 12;
+function txnSizeLayout() {
+  const lay = document.querySelector('#view-transactions .txn-layout');
+  // offsetParent is null while the view is display:none, and getBoundingClientRect
+  // would then report 0 and collapse the pane to its min-height.
+  if (!lay || !lay.offsetParent) return;
+  const top = lay.getBoundingClientRect().top;
+  const h   = Math.round(window.innerHeight - top - TXN_LAYOUT_BOTTOM_GAP);
+  lay.style.height = Math.max(320, h) + 'px';
+}
+
 function renderTransactions() {
   oblAutoGenerateTxns(); // idempotent — fill any newly-due obligations
   renderTxnLeftNav();
@@ -17324,6 +17345,9 @@ function renderTransactions() {
   // Restore search input value after re-render
   const sinp = document.getElementById('txn-search-input');
   if (sinp && UI.txnSearch) sinp.value = UI.txnSearch;
+  // After the KPI strip has painted — its height decides where the ledger starts,
+  // and it changes with the selected account (0, 1 or 2 pills).
+  requestAnimationFrame(txnSizeLayout);
 }
 
 function renderTxnLeftNav() {
@@ -17458,26 +17482,27 @@ function renderTxnKpis() {
     const allTxns  = D.transactions || [];
     const totalPending = allTxns.filter(t => t.status === 'pending').length;
     const pendingAmt   = allTxns.filter(t => t.status === 'pending').reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
-    const LIQUID_TYPES = ['Bank','Savings','Cash','Investment'];
-    const liquid   = accounts.filter(a => LIQUID_TYPES.includes(a.type));
-    const cards    = accounts.filter(a => a.type === 'Credit Card');
-    const loans    = accounts.filter(a => a.type === 'Loans');
-    const bankBal  = liquid.reduce((s,a) => s + txnCurrentBalance(a), 0);
-    const ccOwed   = cards.reduce((s,a) => s + txnCurrentBalance(a), 0);
-    const loanBal  = loans.reduce((s,a) => s + txnCurrentBalance(a), 0);
     const unclr    = allTxns.filter(t => txnCounts(t) && !t.cleared).length;
     const moDebits = allTxns.filter(t => txnCounts(t) && !t.isTransfer && (t.date||'').startsWith(curYM)).reduce((s,t)=>s+(parseFloat(t.debit)||0),0);
     const _futList = allTxns.filter(txnIsFuture);
     const _futAmt  = _futList.reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
 
-    pills.push(kpiPill('Bank', fmtCurrency(Math.abs(bankBal)), `${liquid.length} acct${liquid.length!==1?'s':''}`,
-      bankBal >= 0 ? 'var(--ok)' : 'var(--danger)'));
-    pills.push(kpiPill('Cards', fmtCurrency(Math.abs(ccOwed)), `${cards.length} card${cards.length!==1?'s':''}`,
-      ccOwed > 0 ? 'var(--danger)' : 'var(--ok)'));
-    if (loans.length) pills.push(kpiPill('Loans', fmtCurrency(Math.abs(loanBal)), `${loans.length}`,
-      loanBal > 0 ? 'var(--danger)' : 'var(--ok)'));
+    // Bank / Cards / Loans totals are NOT here. The left nav already renders a
+    // subtotal and a count per account type — 🏦 Bank $301.04 (2), 💳 Credit
+    // Card $144,310.56 (14) — three inches to the left, so repeating them was
+    // the same redundancy as the old Cleared tile, and it wrapped the strip
+    // onto a second line even at 2000px.
+    //
+    // The "Bank" pill was also wrong in a way the nav is not: it summed Bank +
+    // Savings + Cash + Investment into $673,314.47 under the word "Bank", which
+    // reads as spendable cash when most of it is retirement. The nav's $301.04
+    // is the honest figure and it was already on screen.
+    //
+    // What stays is what the nav does NOT say: the month's spend, and the three
+    // things waiting for attention.
     pills.push(kpiPill(bFmtMonth(curYM), fmtCurrency(moDebits), 'spent'));
-    if (unclr) pills.push(kpiPill('Uncleared', unclr, 'rows', 'var(--warn)'));
+    if (unclr) pills.push(kpiPill('○ Uncleared', unclr, '', 'var(--warn)',
+      null, `${unclr} posted transaction${unclr!==1?'s':''} across all accounts have not cleared yet`));
     if (_futList.length) pills.push(kpiPill('📅 Dated ahead', `${_futList.length}`,
       `${fmtCurrency(_futAmt)} · not counted yet`, 'var(--info)'));
     if (totalPending) pills.push(kpiPill('⏳ To approve', `${totalPending}`,
@@ -23799,8 +23824,12 @@ window.addEventListener('beforeunload', e => {
 
 // Re-sync the budget right-panel sticky offset whenever the window resizes
 // (e.g. sticky bar wraps to a second line on narrow windows)
+let _txnSizeTimer = null;
 window.addEventListener('resize', () => {
   if (id('budgetPanelWrap')) _syncBudgetPanelSticky();
+  // Debounced: the pills can rewrap at a new width, which moves the ledger's top.
+  clearTimeout(_txnSizeTimer);
+  _txnSizeTimer = setTimeout(txnSizeLayout, 80);
 });
 
 // ── Build the desktop view lazily when the viewport grows past the breakpoint ──
