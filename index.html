@@ -166,7 +166,7 @@ body{font-family:'Aptos','Calibri',-apple-system,BlinkMacSystemFont,'Segoe UI',s
 .txn-flag-picker{position:fixed;z-index:1000;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);padding:6px 8px;display:flex;flex-direction:column;gap:5px;align-items:center}
 .txn-flag-swatch{width:18px;height:18px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .1s}
 .txn-flag-swatch:hover{transform:scale(1.25);border-color:rgba(0,0,0,.2)}
-.txn-cat-pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:.7rem;font-weight:600;background:var(--surface2);border:1px solid var(--border);color:var(--text3);white-space:normal;word-break:break-word}
+.txn-cat-pill{display:inline-block;max-width:100%;vertical-align:middle;padding:1px 7px;border-radius:99px;font-size:.7rem;font-weight:600;background:var(--surface2);border:1px solid var(--border);color:var(--text3);white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none}
 #budget-cat-popup{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);box-shadow:var(--sh3);padding:12px 14px;min-width:190px;max-width:240px;font-family:inherit}
 .txn-missing-cat{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:99px;font-size:.7rem;font-weight:600;background:color-mix(in srgb,#f59e0b 12%,transparent);border:1px solid color-mix(in srgb,#f59e0b 40%,transparent);color:#b45309;cursor:pointer}
 .txn-missing-cat:hover{background:color-mix(in srgb,#f59e0b 20%,transparent)}
@@ -17116,6 +17116,20 @@ function txnCatOptions(selectedId) {
   return html;
 }
 
+// The LEAF category only — "Band Travel/Registration", not "Education › Band
+// Travel/Registration". Used in the ledger's Expense Type cell, where the group
+// prefix doubled the column's width, wrapped every pill onto two lines and
+// pushed the row-action buttons off the right edge on an iPad. The group is not
+// lost: it stays in the cell's tooltip, and the Budget tab is where the
+// hierarchy actually matters. txnCatLabel() keeps the full path for search,
+// CSV export, split lines and everywhere else that needs it unambiguous.
+function txnCatLeaf(catId) {
+  if (!catId) return '';
+  const full = txnCatLabel(catId);
+  const i = full.lastIndexOf(' › ');
+  return i >= 0 ? full.slice(i + 3) : full;
+}
+
 function txnCatLabel(catId) {
   if (!catId) return '';
   if (catId === '__income__') return '💰 Income';
@@ -17812,7 +17826,7 @@ function _renderAllAccountsView(panel) {
     let catBadge   = '';
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
-    else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
+    else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}" title="${esc(txnCatLabel(t.categoryId)||t.categoryId)}">${esc(txnCatLeaf(t.categoryId)||t.categoryId)}</span>`;
     if (t.obligationId) catBadge += `<span title="Posted by an obligation — click to open it" style="margin-left:5px;cursor:pointer" onclick="BA.oblOpenFromTxn('${t.obligationId}')">🔁</span>`;
     const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;font-size:.85rem;margin-left:4px;opacity:.85" title="Added from mobile — review, split, or assign as needed">📱</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
@@ -17820,7 +17834,7 @@ function _renderAllAccountsView(panel) {
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
       <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
       <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span>${_mobBadge}</td>
-      <td>${catBadge}</td>
+      <td style="overflow:hidden">${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
       <td class="r">${t.debit>0?`<span class="txn-debit">${fmtCurrency(t.debit)}</span>`:''}</td>
       <td class="r">${t.credit>0?`<span class="txn-credit">${fmtCurrency(t.credit)}</span>`:''}</td>
@@ -17938,13 +17952,89 @@ const TXN_COL_DEFAULTS = {
   'txn-date':    110,
   'txn-acct':    120,
   'txn-payee':   160,
-  'txn-exptype': 120,
-  'txn-notes':   200,
+  // Expense Type carries a pill that WRAPS, so a column too narrow for the
+  // longest leaf name ("Band Travel/Registration") breaks it mid-word. Notes is
+  // a single truncated line with the full text in its tooltip, so it is the one
+  // that can afford to give room up. Weighted accordingly — the fit-to-width
+  // scale below is uniform, so the ratio here is what decides the split.
+  'txn-exptype': 150,
+  'txn-notes':   165,
   'txn-debit':    95,
   'txn-credit':   95,
   'txn-bal':     105,
   'txn-clr':      70,
 };
+
+// `table-layout:fixed` means these widths ARE the columns, so their sum decides
+// whether the row-action buttons (✎ ➤ ✕) sit off the right edge. On an iPad in
+// landscape 1,079px of columns had ~940px of space, so they fell off and the
+// only way to reach them was a horizontal scroll.
+//
+// A breakpoint just moves the cliff — 1300 fixed the iPad and left a 14" MacBook
+// clipped by 7px. So: scale the DEFAULTS to whatever room the table actually
+// has, smoothly, at every width. A column the user has resized by hand keeps the
+// width they chose, verbatim — their setting is not a suggestion.
+const TXN_COL_MIN_SCALE = 0.5;
+function _txnFitColumns(table) {
+  const ths  = [...table.querySelectorAll('thead th[data-col]')];
+  if (!ths.length) return;
+  const wrap = table.closest('.txn-tbl-wrap');
+  const avail = wrap ? wrap.clientWidth : 0;
+  if (!avail) return;
+  // The action column is declared 70px but holds up to four buttons (♻ ✎ ➤ ✕).
+  // Under table-layout:fixed the buttons simply overflow the cell and widen the
+  // scroll area, which no amount of shrinking the OTHER columns can fix — that
+  // was the last stubborn 2px. Size it to its own content first.
+  const lastTh = table.querySelector('thead th:last-child');
+  if (lastTh && !lastTh.hasAttribute('data-col')) {
+    let need = 0;
+    // Only real transaction rows: divider and split-expand rows use colspan, so
+    // their last cell spans the whole table and reported 857px.
+    table.querySelectorAll('tbody tr[data-txn-id] td:last-child')
+         .forEach(td => { need = Math.max(need, td.scrollWidth); });
+    if (need) lastTh.style.width = Math.ceil(need) + 'px';
+  }
+
+  // Checkbox, flag and the action column are not resizable and not scaled.
+  let fixedPx = 0;
+  table.querySelectorAll('thead th:not([data-col])').forEach(th => {
+    fixedPx += th.getBoundingClientRect().width || 0;
+  });
+  // Cell padding is outside the declared width, so count it per column.
+  const pad = 20 * table.querySelectorAll('thead th').length;
+  let flexPx = 0;
+  ths.forEach(th => { if (UI.txnColWidths[th.dataset.col] == null) flexPx += TXN_COL_DEFAULTS[th.dataset.col] || 100; });
+  let userPx = 0;
+  ths.forEach(th => { const u = UI.txnColWidths[th.dataset.col]; if (u != null) userPx += u; });
+  // 10px of slack: cell padding is an estimate and a 1px border per column adds
+  // up, and being a few px short still clips the last button.
+  const room  = avail - fixedPx - userPx - pad - 10;
+  const scale = (flexPx > 0 && room > 0 && room < flexPx)
+    ? Math.max(TXN_COL_MIN_SCALE, room / flexPx) : 1;
+  ths.forEach(th => {
+    const col = th.dataset.col;
+    const u   = UI.txnColWidths[col];
+    // floor, not round: rounding nine columns up can add ~4px and put the last
+    // button back over the edge — the exact thing this is here to prevent.
+    const w   = u != null ? u : Math.floor((TXN_COL_DEFAULTS[col] || 100) * scale);
+    if (w) th.style.width = w + 'px';
+  });
+
+  // The arithmetic above is an estimate — cell padding, per-column borders and
+  // a scrollbar are all approximated, and it was landing 2px over on the
+  // 11-column per-account table. Rather than tune the constants forever, ask
+  // the browser what actually overflowed and take it off the widest flexible
+  // column. One corrective pass, exact by construction.
+  if (!wrap) return;
+  const over = wrap.scrollWidth - wrap.clientWidth;
+  if (over <= 0) return;
+  const flex = ths.filter(th => UI.txnColWidths[th.dataset.col] == null);
+  if (!flex.length) return;
+  const widest = flex.reduce((a, th) =>
+    (parseFloat(th.style.width) || 0) > (parseFloat(a.style.width) || 0) ? th : a, flex[0]);
+  const cur = parseFloat(widest.style.width) || 0;
+  widest.style.width = Math.max(48, Math.floor(cur - over - 1)) + 'px';
+}
 
 const TXN_COL_LS_KEY = 'acctmgr_txn_col_widths';
 
@@ -17963,13 +18053,10 @@ function initTxnColResize(panel) {
     } catch(e) { UI.txnColWidths = {}; }
   }
 
+  _txnFitColumns(table);
+
   const ths = table.querySelectorAll('thead th[data-col]');
   ths.forEach(th => {
-    const col = th.dataset.col;
-    // Apply stored width (user pref) or fall back to coded default
-    const w = UI.txnColWidths[col] ?? TXN_COL_DEFAULTS[col];
-    if (w) th.style.width = w + 'px';
-
     // Don't add duplicate handles on re-init
     if (th.querySelector('.txn-col-hdl')) return;
 
@@ -18137,7 +18224,7 @@ function _renderTxnSearchResults(panel, query) {
     let catBadge   = '';
     if (isSplit)     catBadge = `<span class="txn-split-pill">✂ Split (${t.splits.length})</span>`;
     else if (isXfer) catBadge = `<span class="txn-transfer-pill">${t.debit>0?'→':'←'} ${esc(acctMap[t.transferToAcctId||t.transferFromAcctId]?.name||'Transfer')}</span>`;
-    else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}">${esc(txnCatLabel(t.categoryId)||t.categoryId)}</span>`;
+    else if (t.categoryId) catBadge = `<span class="txn-cat-pill${t.categoryId==='__income__'?' income':''}" data-cat-id="${t.categoryId!=='__income__'?esc(t.categoryId):''}" title="${esc(txnCatLabel(t.categoryId)||t.categoryId)}">${esc(txnCatLeaf(t.categoryId)||t.categoryId)}</span>`;
     if (t.obligationId) catBadge += `<span title="Posted by an obligation — click to open it" style="margin-left:5px;cursor:pointer" onclick="BA.oblOpenFromTxn('${t.obligationId}')">🔁</span>`;
     const _mobBadge = t.source === 'mobile' ? `<span style="display:inline-flex;align-items:center;font-size:.85rem;margin-left:4px;opacity:.85" title="Added from mobile — review, split, or assign as needed">📱</span>` : '';
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
@@ -18145,7 +18232,7 @@ function _renderTxnSearchResults(panel, query) {
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
       <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
       <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span>${_mobBadge}</td>
-      <td>${catBadge}</td>
+      <td style="overflow:hidden">${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis">${esc(t.notes||'')}</td>
       <td class="r">${t.debit>0?`<span class="txn-debit">${fmtCurrency(t.debit)}</span>`:''}</td>
       <td class="r">${t.credit>0?`<span class="txn-credit">${fmtCurrency(t.credit)}</span>`:''}</td>
@@ -18459,7 +18546,7 @@ function renderTxnRight() {
         : `${dir} ${esc(linkedAcct?.name||'Transfer')}`;
       catCellContent = `<span class="txn-transfer-pill" title="${t.debit > 0 ? 'Transfer to' : 'Transfer from'} ${esc(linkedAcct?.name||'')}${xferSplits?' · '+t.splits.length+' savings splits':''}">${xferLabel}</span>`;
     } else if (catLabel) {
-      catCellContent = `<span class="txn-cat-pill${isIncome?' income':''}" style="${isIncome?'background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok);border-color:var(--ok)':''}cursor:default" data-cat-id="${isIncome?'':''+esc(t.categoryId)}">${esc(catLabel)}</span>`;
+      catCellContent = `<span class="txn-cat-pill${isIncome?' income':''}" style="${isIncome?'background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok);border-color:var(--ok)':''}cursor:default" data-cat-id="${isIncome?'':''+esc(t.categoryId)}" title="${esc(catLabel)}">${esc(txnCatLeaf(t.categoryId)||catLabel)}</span>`;
     } else if (!isTransfer && !isSplit && !(t.payee||'').toLowerCase().startsWith('transfer') && ['Bank','Credit Card','Savings','Cash'].includes(acct.type)) {
       // Not a transfer or split and has no expense type — show warning only for accounts that require it
       catCellContent = `<span class="txn-missing-cat" onclick="BA.txnStartEdit('${t.id}')" title="No expense type — click row to assign">⚠ Missing</span>`;
@@ -18486,18 +18573,18 @@ function renderTxnRight() {
     return `${_divider}
       <tr data-txn-id="${t.id}"${_fut?' class="txn-future"':''} ondblclick="BA.txnStartEdit('${t.id}')" style="${_rowTint}${_isHl?'background:color-mix(in srgb,var(--primary) 12%,transparent);outline:2px solid var(--primary);outline-offset:-2px;':_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
         <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
-        <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}${_futPill}</td>
+        <td style="text-align:center;position:relative;padding:0 2px">
+          <span class="txn-flag ${t.flag||'none'}" style="${t.flag&&TXN_FLAG_COLORS[t.flag]?'background:'+TXN_FLAG_COLORS[t.flag]+';border-color:'+TXN_FLAG_COLORS[t.flag]:''}" onclick="BA.txnFlagPicker('${t.id}',this)" title="${t.flag?'Flagged: '+t.flag+' — click to change':'Click to flag'}"></span>
+        </td>
+        <td style="color:var(--text3);font-size:.78rem;white-space:nowrap;overflow:hidden">${fmtDate(t.date)}${_futPill ? `<div style="margin-top:1px">${_futPill}</div>` : ''}</td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span></td>
-        <td>${catCellContent}${_famBadge}${_reimbBadge}${_mobBadge}</td>
+        <td style="overflow:hidden">${catCellContent}${_famBadge}${_reimbBadge}${_mobBadge}</td>
         <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;font-size:.75rem;color:var(--text3)" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
         <td class="r">${debitTd}</td>
         <td class="r">${creditTd}</td>
         <td class="r txn-bal" style="${_fut?'color:var(--text3)':(balColor?'color:'+balColor:'')}">${_fut?'—':fmtCurrency(Math.abs(t._bal))+(t._bal<0&&!isCC?' OD':'')}</td>
         <td style="text-align:center">
           <span class="txn-pill-clr ${t.reconciled?'rec':t.cleared?'yes':'no'}" onclick="${t.reconciled?'':'BA.txnToggleCleared(\''+t.id+'\')'}" title="${t.reconciled?'Reconciled (locked)':t.cleared?'Cleared — click to unmark':'Uncleared — click to mark cleared'}" style="${t.reconciled?'cursor:default':''}">${t.reconciled?'R':t.cleared?'✓':'○'}</span>
-        </td>
-        <td style="text-align:center;position:relative">
-          <span class="txn-flag ${t.flag||'none'}" style="${t.flag&&TXN_FLAG_COLORS[t.flag]?'background:'+TXN_FLAG_COLORS[t.flag]+';border-color:'+TXN_FLAG_COLORS[t.flag]:''}" onclick="BA.txnFlagPicker('${t.id}',this)" title="${t.flag?'Flagged: '+t.flag+' — click to change':'Click to flag'}"></span>
         </td>
         <td style="white-space:nowrap">
           ${_canReimb ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.txnToggleReimbursement('${t.id}')" title="${_isReimb?'Remove reimbursement flag':'Mark as reimbursement received — offsets pending balance'}" style="color:${_isReimb?'var(--info)':'var(--text3)'};font-weight:${_isReimb?'700':'400'}">♻</button>` : ''}
@@ -18506,7 +18593,7 @@ function renderTxnRight() {
           <button class="btn btn-sm btn-ghost btn-xs" style="color:var(--danger)" onclick="BA.txnDelete('${t.id}')">✕</button>
         </td>
       </tr>
-      ${isSplit && (UI._splitExpanded||{})[t.id] ? `<tr class="txn-split-expand"><td></td><td colspan="8"><div style="padding:2px 0">
+      ${isSplit && (UI._splitExpanded||{})[t.id] ? `<tr class="txn-split-expand"><td colspan="2"></td><td colspan="9"><div style="padding:2px 0">
         ${t.splits.map(s => {
           const lbl = txnCatLabel(s.categoryId)||s.categoryId||'—';
           const notesHtml = s.notes ? `<span style="color:var(--text3);margin-left:8px;font-style:italic">${esc(s.notes)}</span>` : '';
@@ -18592,6 +18679,7 @@ function renderTxnRight() {
         <thead>
           <tr>
             <th style="width:28px;text-align:center"><input type="checkbox" id="txn-chk-all" ${_allCheckedAcct?'checked':''} onchange="BA.txnSelectAllVisible(this.checked,${_visIdsJsonAcct.replace(/"/g,'&quot;')})" title="Select all visible"></th>
+            <th style="width:26px;text-align:center" title="Flag">🏳</th>
             <th data-col="txn-date">Date</th>
             <th data-col="txn-payee">Payee</th>
             <th data-col="txn-exptype">Expense Type</th>
@@ -18600,7 +18688,6 @@ function renderTxnRight() {
             <th class="r" data-col="txn-credit">Credit</th>
             <th class="r" data-col="txn-bal">Balance</th>
             <th style="text-align:center" data-col="txn-clr">Cleared</th>
-            <th style="width:28px;text-align:center" title="Flag">🏳</th>
             <th style="width:70px"></th>
           </tr>
         </thead>
@@ -23829,7 +23916,15 @@ window.addEventListener('resize', () => {
   if (id('budgetPanelWrap')) _syncBudgetPanelSticky();
   // Debounced: the pills can rewrap at a new width, which moves the ledger's top.
   clearTimeout(_txnSizeTimer);
-  _txnSizeTimer = setTimeout(txnSizeLayout, 80);
+  _txnSizeTimer = setTimeout(() => {
+    txnSizeLayout();
+    // Widths are inline styles and will not re-evaluate on their own, so a
+    // window drag or a tablet rotation has to re-fit them.
+    const panel = id('txn-right');
+    if (panel && panel.offsetParent && UI.txnColWidths) {
+      panel.querySelectorAll('.txn-tbl').forEach(_txnFitColumns);
+    }
+  }, 80);
 });
 
 // ── Build the desktop view lazily when the viewport grows past the breakpoint ──
