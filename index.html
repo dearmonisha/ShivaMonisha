@@ -222,6 +222,19 @@ tr.txn-today-row>td{padding:0!important;border:none!important;background:none!im
 .sum-card.c-danger .sum-val{color:var(--danger)}
 .sum-card.c-warn .sum-val{color:var(--warn)}
 .sum-card.c-ok .sum-val{color:var(--ok)}
+/* ── Transactions KPI strip ───────────────────────────────────────────────
+   Was six .sum-card tiles at ~76px tall plus wrapping, eating roughly a third
+   of the viewport above the ledger before a single row of data appeared. The
+   per-account figures already live as pills in the ledger header, so what is
+   left up here is one line. */
+.kpi-strip{display:flex;gap:7px;flex-wrap:wrap;align-items:center;min-height:0}
+.kpi-pill{display:inline-flex;align-items:baseline;gap:7px;padding:3px 11px;border-radius:99px;
+  border:1px solid var(--border);background:var(--surface);white-space:nowrap;line-height:1.5}
+.kpi-pill .kpi-k{font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.045em;color:var(--text3)}
+.kpi-pill .kpi-v{font-size:.84rem;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text)}
+.kpi-pill .kpi-s{font-size:.68rem;color:var(--text3)}
+.kpi-pill.act{cursor:pointer}
+@media (hover:hover) and (pointer:fine){ .kpi-pill.act:hover{filter:brightness(.97)} }
 
 /* ─── CATEGORY SECTION ─── */
 .cat-section{margin-bottom:16px}
@@ -787,8 +800,28 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .mob-row1-l{font-size:.87rem;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mob-row1-r{font-size:.85rem;white-space:nowrap;flex-shrink:0}
 .mob-row1-d{font-size:.78rem;color:var(--text3);margin-right:7px}
-.mob-txn-row.mob-fut{box-shadow:inset 2px 0 0 0 var(--info);padding-left:9px;background:color-mix(in srgb,var(--info) 4%,transparent)}
-.mob-txn-row.mob-fut .mob-txn-meta{font-style:italic}
+/* Budget category TYPE, carried by an accent stripe so it reads at a glance
+   down a long list rather than needing the sub-line to be read. */
+.mob-cat-card.mob-cat-track{box-shadow:inset 3px 0 0 0 var(--text3);background:color-mix(in srgb,var(--text3) 4%,var(--surface));border-style:dashed}
+.mob-cat-card.mob-cat-reimb{box-shadow:inset 3px 0 0 0 var(--info);background:color-mix(in srgb,var(--info) 5%,var(--surface))}
+.mob-cat-chip{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;font-size:.6rem;
+  font-weight:700;vertical-align:1px;white-space:nowrap}
+/* Dated ahead. The 2px hairline and 4% wash were too quiet to notice on a
+   phone in daylight, so a future row now carries a dashed outline, a stronger
+   wash and a dimmed amount — the money has not moved yet, and it should not
+   look as solid as money that has. */
+.mob-txn-row.mob-fut{box-shadow:inset 3px 0 0 0 var(--info);padding-left:10px;margin:2px -6px;padding-right:6px;
+  border-radius:8px;border:1px dashed color-mix(in srgb,var(--info) 38%,transparent);
+  border-bottom:1px dashed color-mix(in srgb,var(--info) 38%,transparent);
+  background:color-mix(in srgb,var(--info) 9%,transparent)}
+.mob-txn-row.mob-fut .mob-txn-meta{font-style:italic;color:var(--info)}
+.mob-txn-row.mob-fut .mob-txn-amt{opacity:.72}
+/* Cleared / uncleared marker on the phone. Desktop has had R / ✓ / ○ pills
+   since the register was built; mobile showed nothing at all. */
+.mob-clr{display:inline-block;width:13px;text-align:center;margin-right:5px;font-size:.66rem;font-weight:700;vertical-align:1px}
+.mob-clr.no{color:var(--warn)}
+.mob-clr.yes{color:var(--ok)}
+.mob-clr.rec{color:var(--text3)}
 .mob-fut-pill{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:99px;font-size:.6rem;
   font-weight:700;vertical-align:1px;background:color-mix(in srgb,var(--info) 14%,transparent);
   color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent)}
@@ -1120,24 +1153,23 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-ratios" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-home-cost" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-transactions" style="display:none">
+    <!-- Title, search and the KPI pills on ONE line. The search row was a
+         380px input against 1,500px of empty grey; the pills now live in it,
+         right-aligned, and the separate title row and KPI row are both gone. -->
     <div class="tab-sticky-top" id="txn-sticky-hdr">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px;padding-bottom:6px">
-        <span style="font-size:.95rem;font-weight:700;color:var(--text)">Transactions</span>
-        <div style="display:flex;gap:6px;align-items:center">
+      <div style="display:flex;align-items:center;gap:12px;padding:5px 0 6px">
+        <span style="font-size:.95rem;font-weight:700;color:var(--text);white-space:nowrap">Transactions</span>
+        <div style="position:relative;flex:0 1 340px;min-width:180px">
+          <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:.82rem;color:var(--text3);pointer-events:none">🔍</span>
+          <input type="text" id="txn-search-input" class="finput" placeholder="Search across all transactions…"
+            style="padding-left:28px;font-size:.82rem;width:100%"
+            value=""
+            oninput="BA.txnSetSearch(this.value)">
         </div>
+        <span id="txn-search-count" style="font-size:.75rem;color:var(--text3);white-space:nowrap;display:none"></span>
+        <button id="txn-search-clear" class="btn btn-xs btn-ghost" style="display:none;font-size:.73rem;padding:2px 8px" onclick="BA.txnClearSearch()">✕ Clear</button>
+        <div id="txn-kpi-row" class="kpi-strip" style="margin-left:auto;justify-content:flex-end"></div>
       </div>
-      <div id="txn-kpi-row" class="sum-row" style="margin-bottom:0;padding-top:4px"></div>
-    </div>
-    <div style="padding:6px 0 2px;display:flex;align-items:center;gap:8px">
-      <div style="position:relative;flex:1;max-width:380px">
-        <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:.82rem;color:var(--text3);pointer-events:none">🔍</span>
-        <input type="text" id="txn-search-input" class="finput" placeholder="Search across all transactions…"
-          style="padding-left:28px;font-size:.82rem;width:100%"
-          value=""
-          oninput="BA.txnSetSearch(this.value)">
-      </div>
-      <span id="txn-search-count" style="font-size:.75rem;color:var(--text3);white-space:nowrap;display:none"></span>
-      <button id="txn-search-clear" class="btn btn-xs btn-ghost" style="display:none;font-size:.73rem;padding:2px 8px" onclick="BA.txnClearSearch()">✕ Clear</button>
     </div>
     <div class="txn-layout">
       <div class="txn-left" id="txn-left-nav"></div>
@@ -1229,6 +1261,8 @@ let UI = {
   ccrSelectedCard: null,       // selected CC card id in repayment planner (null = show all)
   payAmount:   null,           // Payments tab: amount being allocated (null = default to safe-to-deploy)
   payStrategy: null,           // Payments tab: 'avalanche' | 'util' | 'snowball'
+  mobBudgetFilter: 'all',      // Mobile Budget tab: all | over | watch | track | reimb
+  mobTxnClr:       'all',      // Mobile All tab: all | uncleared | cleared
   payMode:        null,        // Payments tab: null = follow the date, else 'monitor' | 'assess'
   payAssessMonth: null,        // Payments tab: YYYY-MM being reviewed (null = the natural one)
   annualYear:  new Date().getFullYear(), // currently viewed year in Budget Grid
@@ -13866,19 +13900,19 @@ function renderMobileView() {
 
   // ── Pre-compute budget totals + overage count (used in tab badge + summary) ──
   const _mobTrackSet = new Set(D.budget.trackingCats || []);
-  let totalBudgeted = 0, totalSpent = 0, overBudgetCount = 0;
+  // ONE definition, shared with Home's "budget left" and the desktop Payments
+  // review: payBudgetSnapshot excludes reimbursable categories and keeps
+  // tracking-only ones. The phone used to roll its own — tracking out of the
+  // budget but in the spend, reimbursables in both — so Home could say $3,850
+  // spent while this card said $3,909 for the same month.
+  const _mobBS      = payBudgetSnapshot(month);
+  const totalBudgeted = _mobBS.planned;
+  const totalSpent    = _mobBS.actual;
   // Same rule as the desktop table — the badge excluded tracking-only
   // categories but still counted reimbursable ones, so the phone could show a
   // higher overspend count than the desktop for the same month.
   const _mobOverIds = budgetOverCatIdSet(month);
-  cats.forEach(cat => {
-    const isTracking = _mobTrackSet.has(cat.id);
-    const bud  = budgetGetAdjustedPlan(cat.id, month);
-    const spnt = budgetGetCatActuals(cat.id, month);
-    if (!isTracking) totalBudgeted += bud;
-    totalSpent += spnt;
-  });
-  overBudgetCount = _mobOverIds.size;
+  const overBudgetCount = _mobOverIds.size;
   const overBadge = overBudgetCount > 0
     ? `<span class="mob-tab-badge">${overBudgetCount}</span>` : '';
 
@@ -14004,26 +14038,97 @@ function renderMobileView() {
           <div style="font-size:.7rem;color:var(--text3);margin-top:5px;text-align:right">Budget: ${fmtCurrency(totalBudgeted)}</div>
         </div>`;
 
+      // ── Filter bar ──────────────────────────────────────────────────
+      // "Which ones are over?" was a scroll through eighty-five cards. Reading
+      // the type off a card was impossible too — tracking-only and reimbursable
+      // rendered exactly like a real budget line, so a reimbursable category
+      // sitting "over" looked like a problem when it is money someone repays.
+      const _mobReimbIds = new Set(cats.filter(c => c.reimbursable).map(c => c.id));
+      const _mobTrackIds = new Set(D.budget.trackingCats || []);
+      const _catType = c => _mobReimbIds.has(c.id) ? 'reimb' : _mobTrackIds.has(c.id) ? 'track' : 'plan';
+      const _isWatch = c => {
+        if (_catType(c) !== 'plan') return false;
+        const b = budgetGetAdjustedPlan(c.id, month); if (b <= 0) return false;
+        const p = budgetGetCatActuals(c.id, month) / b;
+        return p >= 0.8 && !_mobOverIds.has(c.id);
+      };
+      const _counts = {
+        all:   cats.filter(c => budgetGetAdjustedPlan(c.id, month) > 0 || budgetGetCatActuals(c.id, month) > 0).length,
+        over:  _mobOverIds.size,
+        watch: cats.filter(_isWatch).length,
+        // Membership, not spend. Counting only categories WITH spend hid the
+        // Tracking pill in any month those three happened to be at $0 — and
+        // with the pill gone there was no way back to the filter.
+        track: cats.filter(c => _catType(c) === 'track').length,
+        reimb: cats.filter(c => _catType(c) === 'reimb').length,
+      };
+      const _bf = UI.mobBudgetFilter || 'all';
+      const _filterDefs = [
+        ['all',   'All',           _counts.all,   'var(--text3)'],
+        ['over',  'Over',          _counts.over,  'var(--danger)'],
+        ['watch', '≥80%',          _counts.watch, '#d97706'],
+        ['track', '👁 Tracking',   _counts.track, 'var(--text3)'],
+        ['reimb', '↩ Reimbursed',  _counts.reimb, 'var(--info)'],
+      ];
+      budgetHTML += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px">
+        ${_filterDefs.filter(([k,,n]) => k === 'all' || n > 0).map(([k, label, n, clr]) => {
+          const on = _bf === k;
+          return `<button onclick="BA.setMobBudgetFilter('${k}')"
+            style="padding:5px 11px;min-height:32px;border-radius:99px;font-size:.72rem;font-weight:600;cursor:pointer;
+                   border:1px solid ${on ? clr : 'var(--border)'};
+                   background:${on ? clr : 'var(--surface)'};color:${on ? '#fff' : 'var(--text3)'}">
+            ${label}${n ? ` <span style="opacity:.8">${n}</span>` : ''}</button>`;
+        }).join('')}
+      </div>`;
+
       // ── Per-category cards ──
+      const _passes = c => {
+        if (_bf === 'over')  return _mobOverIds.has(c.id);
+        if (_bf === 'watch') return _isWatch(c);
+        if (_bf === 'track') return _catType(c) === 'track';
+        if (_bf === 'reimb') return _catType(c) === 'reimb';
+        return true;
+      };
+      let _shownAny = false;
       for (const group of groups) {
-        const gcats = cats.filter(c => c.groupId === group.id);
+        const gcats = cats.filter(c => c.groupId === group.id && _passes(c));
         if (!gcats.length) continue;
         hasAnyBudget = true;
         budgetHTML += `<div class="mob-group-hdr">${esc(group.name)}</div>`;
-        const _mobTrackingIds = new Set(D.budget.trackingCats || []);
         for (const cat of gcats) {
-          const isTracking = _mobTrackingIds.has(cat.id);
+          const type       = _catType(cat);
+          const isTracking = type === 'track';
+          const isReimb    = type === 'reimb';
           const budget = budgetGetAdjustedPlan(cat.id, month);
           const spent  = budgetGetCatActuals(cat.id, month);
           const remain = Math.round((budget - spent) * 100) / 100;
           const pct    = budget > 0 ? Math.min(100, spent / budget * 100) : (spent > 0 ? 100 : 0);
-          const isOver = !isTracking && remain < -0.005;
-          const isWarn = !isOver && !isTracking && pct >= 80;
-          const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706' : isTracking ? 'var(--text3)' : 'var(--ok)';
+          if (type === 'plan' && budget <= 0 && Math.abs(spent) <= 0.005 && _bf === 'all') continue;
+          _shownAny = true;
+          // budgetOverCatIdSet is the ONE definition of over-budget, shared with
+          // the tab badge and the desktop table. The phone used to compute its
+          // own (`!isTracking && remain < 0`), which painted reimbursable
+          // categories red while the badge refused to count them.
+          const isOver = _mobOverIds.has(cat.id);
+          const isWarn = !isOver && type === 'plan' && pct >= 80;
+          const color  = isOver ? 'var(--danger)' : isWarn ? '#d97706'
+                       : isReimb ? 'var(--info)' : isTracking ? 'var(--text3)' : 'var(--ok)';
           const borderColor = isOver ? 'color-mix(in srgb,var(--danger) 35%,transparent)'
-                            : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)' : 'var(--border)';
+                            : isWarn ? 'color-mix(in srgb,#d97706 35%,transparent)'
+                            : isReimb ? 'color-mix(in srgb,var(--info) 30%,transparent)'
+                            : 'var(--border)';
+          // Type is carried by an accent stripe plus a chip, so it survives a
+          // glance down a long list rather than needing the sub-line read.
+          const typeCls = isTracking ? ' mob-cat-track' : isReimb ? ' mob-cat-reimb' : '';
+          const typeChip = isTracking
+            ? `<span class="mob-cat-chip" style="background:var(--surface2);color:var(--text3)">👁 tracking</span>`
+            : isReimb
+            ? `<span class="mob-cat-chip" style="background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info)">↩ reimbursed</span>`
+            : '';
           const remainLabel = isTracking
-            ? `<span class="mob-cat-remain" style="color:var(--text3)">👁 tracking</span>`
+            ? `<span class="mob-cat-remain" style="color:var(--text3)">${fmtC(spent)}</span>`
+            : isReimb
+            ? `<span class="mob-cat-remain" style="color:var(--info)">${fmtC(spent)} out</span>`
             : isOver
             ? `<span class="mob-cat-remain" style="color:${color}">Over ${fmtC(Math.abs(remain))}</span>`
             : `<span class="mob-cat-remain" style="color:${color}">${fmtC(remain)} left</span>`;
@@ -14033,17 +14138,26 @@ function renderMobileView() {
           // for care originally paid from the pre-funded one — say it plainly
           // rather than printing "$-15.96 spent".
           const subLabel = (isTracking
-            ? `${fmtC(spent)} tracked (no budget target)`
+            ? 'watched only — no budget target, not counted as spending'
+            : isReimb
+            ? `paid out, recovered from the family ledger${budget > 0 ? ` · ${fmtC(budget)} planned` : ' · no target'}`
             : spent < -0.005
               ? `${fmtC(Math.abs(spent))} net refund · ${fmtC(budget)} planned`
               : `${fmtC(spent)} spent of ${fmtC(budget)} planned`) + _pfNote;
           budgetHTML += `
-            <div class="mob-cat-card" style="border-color:${borderColor};cursor:pointer" onclick="BA.mobileDrillCat('${cat.id}')">
-              <div class="mob-cat-row"><span class="mob-cat-name">${esc(cat.name)}</span>${remainLabel}</div>
+            <div class="mob-cat-card${typeCls}" style="border-color:${borderColor};cursor:pointer" onclick="BA.mobileDrillCat('${cat.id}')">
+              <div class="mob-cat-row"><span class="mob-cat-name">${esc(cat.name)}${typeChip}</span>${remainLabel}</div>
               <div class="mob-cat-sub">${subLabel}</div>
-              ${!isTracking ? `<div class="mob-bar-track"><div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div></div>` : ''}
+              ${type === 'plan' ? `<div class="mob-bar-track"><div class="mob-bar-fill" style="width:${pct}%;background:${color}"></div></div>` : ''}
             </div>`;
         }
+      }
+      if (!_shownAny && _bf !== 'all') {
+        hasAnyBudget = true;
+        budgetHTML += `<div style="color:var(--text3);padding:24px 0;text-align:center;font-size:.88rem">
+          Nothing in this filter for ${esc(monthLabel)}.
+          <div style="margin-top:8px"><button onclick="BA.setMobBudgetFilter('all')" style="padding:7px 14px;min-height:36px;border:1px solid var(--border);border-radius:99px;background:var(--surface);color:var(--primary);font-size:.78rem;font-weight:700;cursor:pointer">Show all</button></div>
+        </div>`;
       }
       if (!hasAnyBudget) budgetHTML += `<div style="color:var(--text3);padding:20px 0;text-align:center;font-size:.88rem">No budget categories set up yet</div>`;
     }
@@ -14056,8 +14170,35 @@ function renderMobileView() {
     const dateSub = new Date(centralToday() + 'T00:00:00')
       .toLocaleDateString('en-US', { day: 'numeric', month: 'long' });
     let R = null; try { R = payRunway(); } catch (e) { console.warn('runway', e); }
-    let perDay = 0;
-    try { perDay = payCardStates().reduce((s, x) => s + x.moInterest, 0) * 12 / 365; } catch (e) {}
+    // ── Interest, with its direction ────────────────────────────────────
+    // A bare "$96/day" is alarming and tells you nothing you can act on — the
+    // level barely moves week to week. What moves is the trend, and it has been
+    // one way: $76.57/day in April to $96.21 in August. Sourced from the
+    // Interest Expense category so it is the interest actually charged, not
+    // today's run rate applied backwards.
+    let perDay = 0, perDayThen = null, perDayThenLabel = '';
+    try {
+      perDay = payCardStates().reduce((s, x) => s + x.moInterest, 0) * 12 / 365;
+      const _ic = (D.budget?.categories || []).find(c => /interest expense/i.test(c.name || ''));
+      if (_ic) {
+        // The most recent COMPLETE month, falling back further only if it has
+        // no figure yet. Reaching back four months would have read "up from $78
+        // in May" while the honest recent comparison is August's $96 — down.
+        // A trend chip that can only ever say "up" is decoration, not signal.
+        for (let k = 1; k <= 4 && perDayThen == null; k++) {
+          const ym = bShiftMonth(centralToday().slice(0, 7), -k);
+          const v  = budgetGetCatActuals(_ic.id, ym);
+          if (v > 0.005) {
+            const [yy, mm] = ym.split('-').map(Number);
+            perDayThen = v / new Date(yy, mm, 0).getDate();
+            perDayThenLabel = new Date(yy, mm - 1, 1).toLocaleString('default', { month: 'long' });
+            break;
+          }
+        }
+      }
+    } catch (e) {}
+    const _intUp = perDayThen != null && perDay > perDayThen * 1.02;
+    const _intDn = perDayThen != null && perDay < perDayThen * 0.98;
 
     const since = mobSince();
     const sinceHTML = since ? `
@@ -14141,17 +14282,52 @@ function renderMobileView() {
       </div>` : '';
 
     const safeColor = !R ? 'var(--text3)' : R.safe > 250 ? 'var(--ok)' : R.safe > 0 ? '#d97706' : 'var(--danger)';
+    // ── The two limits, named ───────────────────────────────────────────
+    // The old single "Safe to spend" was payRunway().safe — cash that can leave
+    // the bank without breaching the floor inside the horizon. Two problems:
+    // 61-78% of Shiva's spending goes on a CARD, where the bank balance is not
+    // the constraint at all; and it is the identical figure the desktop
+    // Payments page calls "free to deploy", so the same $101 was being offered
+    // twice for two different purposes. Show both limits and let whichever
+    // binds first be the answer.
+    const _bs      = payBudgetSnapshot(month);
+    const _bLeftPace = Math.max(0, _bs.onPace - _bs.actual);     // room at today's run rate
+    const _bOverPace = Math.max(0, _bs.actual - _bs.onPace);
+    const _bLeftFull = Math.max(0, _bs.planned - _bs.actual);    // rest of the month's plan
+    const _bColor  = _bOverPace > 0.005 ? 'var(--danger)' : _bLeftPace > 200 ? 'var(--ok)' : '#d97706';
+    const limitCard = `
+      <div class="mob-summary-card" style="border-color:color-mix(in srgb,var(--primary) 30%,transparent);padding-bottom:10px">
+        ${R ? `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+          <div style="font-size:.7rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Cash free to move</div>
+          <div style="font-size:1.7rem;font-weight:800;letter-spacing:-.03em;color:${safeColor};line-height:1.15">${fmtCurrency(R.safe)}</div>
+        </div>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:1px">${fmtC(R.cash)} in ${esc(payBankLabel())} · dips to ${fmtC(R.trough)} on ${mobShortDate(R.troughDate)} · ${fmtC(R.floor)} floor</div>` : ''}
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:${R ? '10' : '0'}px;padding-top:${R ? '9' : '0'}px;${R ? 'border-top:1px solid var(--border-light)' : ''}">
+          <div style="font-size:.7rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Budget left ${_bOverPace > 0.005 ? '<span style="color:var(--danger)">· over pace</span>' : ''}</div>
+          <div style="font-size:1.7rem;font-weight:800;letter-spacing:-.03em;color:${_bColor};line-height:1.15">${_bOverPace > 0.005 ? '−' + fmtCurrency(_bOverPace) : fmtCurrency(_bLeftPace)}</div>
+        </div>
+        <div style="font-size:.72rem;color:var(--text3);margin-top:1px">
+          ${_bOverPace > 0.005
+            ? `${fmtC(_bs.actual)} spent against ${fmtC(_bs.onPace)} due by today · ${fmtC(_bLeftFull)} left of the full plan`
+            : `at today's pace · ${fmtC(_bLeftFull)} left of the full ${fmtC(_bs.planned)} plan`}
+        </div>
+        <div style="font-size:.66rem;color:var(--text3);margin-top:8px;line-height:1.5;border-top:1px solid var(--border-light);padding-top:7px">
+          Cash limits what you pay from the bank${R ? ' (and it is the same money Payments would deploy)' : ''}; budget limits what you put on a card.
+        </div>
+      </div>`;
     homeHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0 12px">
         <div><div style="font-size:1.15rem;font-weight:800;color:var(--text);letter-spacing:-.01em">${esc(greet)}</div>
           <div style="font-size:.76rem;color:var(--text3);margin-top:1px">${esc(dateSub)}${ghGetOwner() ? ' · ' + esc(ghGetOwner()) : ''}</div></div>
-        ${perDay > 0 ? `<span style="font-size:.68rem;font-weight:700;padding:4px 10px;border-radius:99px;background:var(--danger-bg);color:var(--danger);white-space:nowrap">${mobWhole(perDay)}/day interest</span>` : ''}
+        ${perDay > 0 ? `<span onclick="BA.setMobileTab('cards')" style="font-size:.66rem;font-weight:700;padding:5px 10px;border-radius:12px;background:var(--danger-bg);color:var(--danger);text-align:right;line-height:1.35;cursor:pointer">
+          ${mobWhole(perDay)}/day interest
+          ${perDayThen != null ? `<div style="font-weight:600;opacity:.85;font-size:.94em">${
+            _intUp ? `up from ${mobWhole(perDayThen)} in ${esc(perDayThenLabel)}`
+          : _intDn ? `down from ${mobWhole(perDayThen)} in ${esc(perDayThenLabel)}`
+                   : `flat since ${esc(perDayThenLabel)}`}</div>` : ''}
+        </span>` : ''}
       </div>
-      ${R ? `<div class="mob-summary-card" style="border-color:color-mix(in srgb,var(--primary) 30%,transparent)">
-        <div style="font-size:.75rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Safe to spend</div>
-        <div style="font-size:2rem;font-weight:800;letter-spacing:-.03em;color:${safeColor};line-height:1.1">${fmtCurrency(R.safe)}</div>
-        <div style="font-size:.75rem;color:var(--text3);margin-top:2px">${fmtC(R.cash)} in ${esc(payBankLabel())} · dips to ${fmtC(R.trough)} on ${mobShortDate(R.troughDate)}</div>
-      </div>` : ''}
+      ${limitCard}
       ${sinceHTML}
       ${pendHTML}
       ${weekHTML}
@@ -14274,7 +14450,11 @@ function renderMobileView() {
       ${searchQ ? `<button onclick="BA.setMobileTxnSearch('')" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text3);font-size:.85rem;cursor:pointer">✕</button>` : ''}
     </div>`;
 
-    // Balance pill
+    // ── Balance panel: cleared, uncleared, and the difference ──────────
+    // The phone showed one number and no way to tell what had actually hit the
+    // bank. The register has carried `cleared` (and `reconciled`, which locks
+    // it) since it was built; 23 of September's 50 rows are uncleared, so the
+    // gap is real money and worth naming rather than burying in one total.
     let pillHTML = '';
     if (selAcct) {
       const bal     = txnCurrentBalance(selAcct);
@@ -14282,11 +14462,39 @@ function renderMobileView() {
       const dispBal = isCC ? Math.max(0, bal) : bal;
       const label   = isCC ? (bal > 0 ? 'Amount Owed' : 'No Balance') : 'Current Balance';
       const pillClr = isCC ? (bal > 0 ? 'var(--danger)' : 'var(--ok)') : (bal >= 0 ? 'var(--ok)' : 'var(--danger)');
-      pillHTML = `<div style="display:flex;align-items:center;justify-content:space-between;
-        background:var(--surface);border:1px solid var(--border);border-radius:50px;
-        padding:7px 16px;margin-bottom:12px">
-        <span style="font-size:.78rem;color:var(--text3);font-weight:600">${label}</span>
-        <span style="font-size:1rem;font-weight:800;color:${pillClr}">${fmtCurrency(Math.abs(dispBal))}</span>
+      // Cleared balance = opening plus every counted row that has cleared. Same
+      // txnCounts() predicate as the running balance, so the two reconcile: the
+      // pending figure below is exactly what stands between them.
+      const _acctTxns = (D.transactions || []).filter(t => t.accountId === selAcct.id && txnCounts(t));
+      let _clrDelta = 0, _pendCount = 0, _pendDelta = 0;
+      _acctTxns.forEach(t => {
+        const amt = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
+        if (t.cleared || t.reconciled) _clrDelta += amt;
+        else { _pendCount++; _pendDelta += amt; }
+      });
+      // Mirrors txnRunningBalances exactly — liability is Credit Card OR Loans,
+      // keyed off acct.type, not ccCardId. A loan account has no ccCardId and
+      // would otherwise have its cleared balance computed backwards.
+      const _liab      = selAcct.type === 'Credit Card' || selAcct.type === 'Loans';
+      const _sign      = _liab ? 1 : -1;
+      const _open      = parseFloat(selAcct.openingBalance) || 0;
+      const _clearedBal = _open + _sign * _clrDelta;
+      const _pendMove   = _sign * _pendDelta;
+      const _dispCleared = isCC ? Math.max(0, _clearedBal) : _clearedBal;
+      pillHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);
+        padding:10px 14px;margin-bottom:12px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">
+          <span style="font-size:.78rem;color:var(--text3);font-weight:600">${label}</span>
+          <span style="font-size:1.05rem;font-weight:800;color:${pillClr}">${fmtCurrency(Math.abs(dispBal))}</span>
+        </div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:6px;padding-top:6px;border-top:1px solid var(--border-light)">
+          <span style="font-size:.75rem;color:var(--text3)"><span class="mob-clr yes">✓</span>Cleared</span>
+          <span style="font-size:.9rem;font-weight:700;color:var(--text2)">${fmtCurrency(Math.abs(_dispCleared))}</span>
+        </div>
+        ${_pendCount ? `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:4px">
+          <span style="font-size:.75rem;color:var(--warn)"><span class="mob-clr no">○</span>${_pendCount} not cleared</span>
+          <span style="font-size:.9rem;font-weight:700;color:var(--warn)">${_pendMove >= 0 ? '+' : '−'}${fmtC(Math.abs(_pendMove))}</span>
+        </div>` : `<div style="font-size:.7rem;color:var(--ok);margin-top:4px">Everything has cleared</div>`}
       </div>`;
     }
 
@@ -14297,7 +14505,22 @@ function renderMobileView() {
         && (!selAcctId || t.accountId === selAcctId))
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
-    const txns = searchQ ? allTxns.filter(t => {
+    // Cleared filter. "Which of these has actually hit the bank?" was
+    // unanswerable on the phone; now it is one tap.
+    const _clrF  = UI.mobTxnClr || 'all';
+    // A dated-ahead row is neither cleared nor uncleared — it is scheduled, and
+    // it does not touch the balance. Counting it as "not cleared" made the pill
+    // say 6 while the balance panel above said 4 for the same account.
+    const _futOf = t => txnIsFuture(t);
+    const _clrOf = t => !_futOf(t) && (t.cleared || t.reconciled);
+    const _uncOf = t => !_futOf(t) && !(t.cleared || t.reconciled);
+    const _clrCounts = { cleared:   allTxns.filter(_clrOf).length,
+                         uncleared: allTxns.filter(_uncOf).length,
+                         future:    allTxns.filter(_futOf).length };
+    const preTxns = _clrF === 'cleared'   ? allTxns.filter(_clrOf)
+                  : _clrF === 'uncleared' ? allTxns.filter(_uncOf)
+                  : allTxns;
+    const txns = searchQ ? preTxns.filter(t => {
       const acctName = (D.txnAccounts || []).find(a => a.id === t.accountId)?.name || '';
       const cat      = txnCatLabel ? txnCatLabel(t.categoryId) : '';
       const amt      = Math.abs((parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0));
@@ -14306,7 +14529,7 @@ function renderMobileView() {
           || cat.toLowerCase().includes(searchQ)
           || acctName.toLowerCase().includes(searchQ)
           || amtStr.includes(searchQ);
-    }) : allTxns;
+    }) : preTxns;
 
     let listHTML;
     if (!allTxns.length) {
@@ -14324,17 +14547,24 @@ function renderMobileView() {
           ? [fmtDate(t.date), cat].filter(Boolean)
           : [fmtDate(t.date), acct?.name, cat].filter(Boolean);
         const flag = t.isTransfer ? '⇄ ' : (t.splits && t.splits.length) ? '⑂ ' : '';
-        // Dated ahead: same --info marker as the desktop register, shrunk to a
-        // pill on the meta line. The amount stays full strength.
+        // Cleared state, same vocabulary as the desktop register: R locked,
+        // ✓ cleared, ○ not yet. Read-only here — toggling it is a desktop
+        // reconciliation job, not something to do by accident with a thumb.
+        const _cl = t.reconciled ? 'rec' : t.cleared ? 'yes' : 'no';
+        const _clMark = `<span class="mob-clr ${_cl}" title="${
+          t.reconciled ? 'Reconciled' : t.cleared ? 'Cleared' : 'Not cleared yet'}">${
+          t.reconciled ? 'R' : t.cleared ? '✓' : '○'}</span>`;
+        // Dated ahead. The date is the honest label — "in 12d" is vaguer than
+        // the day it actually lands, and on a phone the row is read once.
         const _fut  = txnIsFuture(t);
         const _days = _fut ? Math.max(0, payDiffDays(todayISO(), t.date || '')) : 0;
         const _pill = _fut
-          ? `<span class="mob-fut-pill">${_days === 1 ? 'tomorrow' : 'in ' + _days + 'd'}</span>`
+          ? `<span class="mob-fut-pill">↗ ${_days === 0 ? 'later today' : _days === 1 ? 'tomorrow' : mobShortDate(t.date)}</span>`
           : '';
         return `<div class="mob-txn-row tappable${_fut ? ' mob-fut' : ''}" onclick="BA.mobileEditTxn('${t.id}')">
           <div class="mob-txn-left">
-            <div class="mob-txn-payee">${flag}${esc(t.payee || '(no payee)')}${_pill}</div>
-            <div class="mob-txn-meta">${esc(metaParts.join(' · '))}</div>
+            <div class="mob-txn-payee">${_fut ? '' : _clMark}${flag}${esc(t.payee || '(no payee)')}${_pill}</div>
+            <div class="mob-txn-meta">${_fut ? 'scheduled · ' : ''}${esc(metaParts.join(' · '))}</div>
           </div>
           <div class="mob-txn-amt" style="color:${color}">${isNeg ? '+' : ''}${fmtC(Math.abs(amt))}</div>
           <span class="mob-txn-chev">›</span>
@@ -14342,17 +14572,34 @@ function renderMobileView() {
       }).join('');
       const countLabel = searchQ
         ? `${txns.length} of ${allTxns.length} transaction${allTxns.length!==1?'s':''} match`
-        : `${txns.length} transaction${txns.length!==1?'s':''}`;
+        : `${txns.length} transaction${txns.length!==1?'s':''}${_clrF!=='all'?' · '+_clrF:''}`;
       listHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:0 14px">${rows}</div>
         <div style="font-size:.72rem;color:var(--text3);text-align:center;margin-top:10px">${countLabel}</div>`;
     }
-    txnHTML = selectorHTML + searchHTML + pillHTML + listHTML;
+    const clrBar = allTxns.length ? `<div style="display:flex;gap:6px;margin-bottom:10px">
+      ${[['all','All',allTxns.length,'var(--text3)'],
+         ['uncleared','○ Not cleared',_clrCounts.uncleared,'var(--warn)'],
+         ['cleared','✓ Cleared',_clrCounts.cleared,'var(--ok)']]
+        .map(([k,label,n,clr]) => {
+          const on = _clrF === k;
+          return `<button onclick="BA.setMobTxnClr('${k}')"
+            style="padding:5px 11px;min-height:32px;border-radius:99px;font-size:.72rem;font-weight:600;cursor:pointer;
+                   border:1px solid ${on ? clr : 'var(--border)'};
+                   background:${on ? clr : 'var(--surface)'};color:${on ? '#fff' : 'var(--text3)'}">
+            ${label} <span style="opacity:.8">${n}</span></button>`;
+        }).join('')}
+      ${_clrCounts.future ? `<span style="align-self:center;font-size:.68rem;color:var(--info);white-space:nowrap">+${_clrCounts.future} scheduled</span>` : ''}
+    </div>` : '';
+    txnHTML = selectorHTML + searchHTML + pillHTML + clrBar + listHTML;
   }
 
   // ── CC Cards section ───────────────────────────────────────
   let cardsHTML = '';
   let payWithHTML = '';
   if (tab === 'cards') {
+    // Cash on hand, for the "only if you clear it" caveat below. Wrapped
+    // because a phone must never lose the whole Cards screen to one panel.
+    let R2Safe = null; try { R2Safe = payRunway().safe; } catch (e) {}
     const ccCards = (D.ccTracker?.cards || []).filter(c => c.active !== false);
     if (!ccCards.length) {
       cardsHTML = `<div style="color:var(--text3);padding:28px 0;text-align:center;font-size:.88rem">No credit cards configured</div>`;
@@ -14381,25 +14628,43 @@ function renderMobileView() {
       });
 
       // ── "Pay with" ──────────────────────────────────────────
-      // Fourteen cards in the wallet; at a till the live question is which one.
-      // Every input already exists — APR, promo role, utilisation, limit — it has
-      // simply never been asked to name one.
+      // Rewritten 2026-09-06. The old version ranked "0% or pay-in-full, most
+      // room" and so named COSTCO — the card Shiva clears in full every cycle —
+      // and labelled it "0%", which is not a rate but a consequence of his own
+      // discipline. Following it means finding the whole amount in cash next
+      // cycle. It also never excluded the 0% promo card, where new purchases
+      // usually fall outside the promo and muddy a payoff plan that is on track.
+      //
+      // The honest question is not "which card is nicest" but "what will this
+      // cost me if it carries", because on these balances it will. So: rank by
+      // the actual monthly cost per $100 carried, exclude the promo card, and
+      // keep the pay-in-full card as a separate, conditional option.
+      let cardCost = new Map();
       try {
-        const st = payCardStates().filter(s => s.limit > 0);
-        const room = s => s.limit - s.balance;
-        const best = st.filter(s => room(s) > 300 && (s.apr === 0 || s.role === 'pay-in-full'))
-                       .sort((a, b) => room(b) - room(a))[0]
-                  || st.filter(s => room(s) > 300).sort((a, b) => a.apr - b.apr)[0];
-        const worst = st.filter(s => s.balance > 100).sort((a, b) => b.apr - a.apr)[0];
-        if (best) payWithHTML = `
+        const st = payCardStates();
+        st.forEach(x => cardCost.set(x.id, x));
+        const room = x => Math.max(0, x.limit - x.balance);
+        const usable = st.filter(x => x.limit > 0 && room(x) > 300);
+        // Cheapest place for a balance that will carry: lowest APR, promo and
+        // pay-in-full cards set aside — they are answers to a different question.
+        const carry = usable.filter(x => x.role !== 'minimum-only' && x.role !== 'pay-in-full')
+                            .sort((a, b) => a.apr - b.apr)[0];
+        const pif   = usable.filter(x => x.role === 'pay-in-full')
+                            .sort((a, b) => room(b) - room(a))[0];
+        const worst = st.filter(x => x.balance > 100).sort((a, b) => b.apr - a.apr)[0];
+        if (carry || pif) payWithHTML = `
           <div class="mob-summary-card" style="border-color:color-mix(in srgb,var(--primary) 32%,transparent)">
-            <div style="font-size:.66rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--primary)">Pay with</div>
-            <div style="font-size:1.05rem;font-weight:800;color:var(--text);margin-top:1px">${esc(best.name)}</div>
-            <div style="font-size:.76rem;color:var(--text3)">${best.apr === 0 ? '0%' : best.apr.toFixed(2) + '%'}${best.role === 'pay-in-full' ? ' and cleared every cycle' : ''} · ${fmtC(room(best))} available</div>
-            ${worst && worst.name !== best.name ? `<div style="font-size:.74rem;color:var(--danger);margin-top:5px">Avoid ${esc(worst.name)} — ${worst.apr.toFixed(2)}%, your dearest</div>` : ''}
+            <div style="font-size:.66rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--primary)">Cheapest to carry</div>
+            ${carry ? `<div style="font-size:1.05rem;font-weight:800;color:var(--text);margin-top:1px">${esc(carry.name)}</div>
+            <div style="font-size:.76rem;color:var(--text3)">${carry.apr.toFixed(2)}% · <b style="color:var(--text2)">${fmtC(carry.per100)} per $100 a month</b> · ${fmtC(room(carry))} room</div>`
+            : `<div style="font-size:.86rem;color:var(--text2);margin-top:2px">No interest-bearing card has room to spare.</div>`}
+            ${pif ? `<div style="margin-top:7px;padding-top:7px;border-top:1px solid var(--border-light);font-size:.76rem;color:var(--text2)">
+              <b>${esc(pif.name)}</b> costs nothing <i>if</i> you clear it in full next cycle — ${fmtC(room(pif))} room.
+              ${R2Safe != null ? `<span style="color:var(--text3)">You have ${fmtC(R2Safe)} of cash free today.</span>` : ''}
+            </div>` : ''}
+            ${worst && (!carry || worst.name !== carry.name) ? `<div style="font-size:.74rem;color:var(--danger);margin-top:6px">Avoid ${esc(worst.name)} — ${worst.apr.toFixed(2)}%, ${fmtC(worst.per100)} per $100</div>` : ''}
           </div>`;
       } catch (e) { console.warn('pay-with', e); }
-
       // ── Bills Due section ───────────────────────────────────
       const billsDue = enrichedCards.filter(e => e.dueDate && e.osVal > 0.005);
       billsDue.sort((a, b) => (a.dueDate||'').localeCompare(b.dueDate||''));
@@ -14428,31 +14693,55 @@ function renderMobileView() {
       }
 
       // Sort
+      // Cost is the dimension the pills never had: which of these is actually
+      // expensive. `moInterest` is what this balance costs per month at its own
+      // rate, so a big balance at 19% can outrank a small one at 33% — which is
+      // the truth about where the money goes.
+      const _cost = e => (cardCost.get(e.card.id) || {});
       const mcs = UI.mobileCardSort || 'outstanding';
       enrichedCards.sort((a, b) => {
         if (mcs === 'name')        return (a.card.name||'').localeCompare(b.card.name||'');
         if (mcs === 'outstanding') return b.osVal - a.osVal;
         if (mcs === 'available')   return (b.avail||0) - (a.avail||0);
         if (mcs === 'util')        return (b.util||0) - (a.util||0);
+        if (mcs === 'cost')        return (_cost(b).moInterest||0) - (_cost(a).moInterest||0);
+        if (mcs === 'apr')         return (_cost(b).apr||0) - (_cost(a).apr||0);
         return 0;
       });
 
       // Sort pill bar
-      const sortPills = ['outstanding','available','util','name'].map(s => {
-        const labels = { outstanding:'Outstanding', available:'Available', util:'Utilisation', name:'Name' };
+      const sortPills = ['cost','apr','outstanding','available','util','name'].map(s => {
+        const labels = { cost:'💸 Costing me', apr:'Rate', outstanding:'Outstanding', available:'Available', util:'Utilisation', name:'Name' };
         const active = mcs === s;
         return `<button onclick="BA.setMobileCardSort('${s}')"
-          style="padding:4px 10px;border-radius:99px;font-size:.72rem;font-weight:600;border:1px solid ${active?'var(--primary)':'var(--border)'};background:${active?'var(--primary)':'var(--surface)'};color:${active?'#fff':'var(--text3)'};cursor:pointer">
+          style="padding:5px 11px;min-height:32px;border-radius:99px;font-size:.72rem;font-weight:600;border:1px solid ${active?'var(--primary)':'var(--border)'};background:${active?'var(--primary)':'var(--surface)'};color:${active?'#fff':'var(--text3)'};cursor:pointer">
           ${labels[s]}
         </button>`;
       }).join('');
       const sortBar = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${sortPills}</div>`;
 
-      const cardItems = enrichedCards.map(({ card, os, osVal, avail, util, dl }) => {
+      const _totMoInt = enrichedCards.reduce((s2, e) => s2 + (_cost(e).moInterest || 0), 0);
+      const cardItems = enrichedCards.map((e) => {
+        const { card, os, osVal, avail, util, dl } = e;
+        const c = _cost(e);
         const color = util === null ? 'var(--text3)' : util >= 75 ? 'var(--danger)' : util >= 40 ? '#d97706' : 'var(--ok)';
         const dueLabel = dl !== null
           ? `<span style="font-size:.68rem;font-weight:700;color:${dl<0?'var(--danger)':dl<=5?'#d97706':'var(--text3)'}">Due${dl<0?` ${Math.abs(dl)}d ago`:dl===0?' today':` in ${dl}d`}</span>`
           : '';
+        // What this card costs, and what share of the total burn it is — the
+        // dimension the pills never carried. A 0% or cleared card says so
+        // instead of showing a misleading $0.00.
+        const _mo = c.moInterest || 0;
+        const _share = _totMoInt > 0 ? Math.round(_mo / _totMoInt * 100) : 0;
+        const costLine = c.apr == null ? '' :
+          _mo > 0.005
+          ? `<span style="color:var(--danger);font-weight:700">${fmtC(_mo)}/mo</span>
+             <span style="color:var(--text3)">· ${c.apr.toFixed(2)}% · ${fmtC(c.per100)} per $100${_share >= 5 ? ` · ${_share}% of your interest` : ''}</span>`
+          : c.role === 'minimum-only'
+          ? `<span style="color:var(--ok);font-weight:700">0% promo</span><span style="color:var(--text3)"> · costs nothing while it lasts${card.promoExpiration ? ' · to ' + fmtDate(card.promoExpiration) : ''}</span>`
+          : c.role === 'pay-in-full'
+          ? `<span style="color:var(--ok);font-weight:700">cleared every cycle</span><span style="color:var(--text3)"> · ${c.apr.toFixed(2)}% if you ever don't</span>`
+          : `<span style="color:var(--ok);font-weight:700">no interest</span><span style="color:var(--text3)"> · ${c.apr.toFixed(2)}% if it carries</span>`;
         return `<div class="mob-cat-card">
           <div class="mob-cat-row">
             <div style="display:flex;align-items:baseline;gap:8px;flex:1;min-width:0">
@@ -14461,10 +14750,11 @@ function renderMobileView() {
             </div>
             <span style="font-size:.92rem;font-weight:800;color:${color}">${util !== null ? util+'%' : '—'}</span>
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--text3);margin-bottom:6px">
+          <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--text3);margin-bottom:4px">
             <span>Outstanding: <strong style="color:var(--text)">${os !== null ? fmtCurrency(osVal) : '—'}</strong></span>
             <span>Available: <strong style="color:var(--ok)">${avail !== null ? fmtCurrency(avail) : '—'}</strong></span>
           </div>
+          ${costLine ? `<div style="font-size:.72rem;margin-bottom:6px">${costLine}</div>` : ''}
           ${card.limit > 0 ? `<div class="mob-bar-track"><div class="mob-bar-fill" style="width:${Math.min(100,util||0)}%;background:${color}"></div></div>` : ''}
         </div>`;
       }).join('');
@@ -14476,9 +14766,13 @@ function renderMobileView() {
           <span style="font-size:.82rem;font-weight:700;color:var(--text2)">Total Outstanding</span>
           <span style="font-size:1rem;font-weight:800;color:var(--text)">${fmtCurrency(totOS)}</span>
         </div>
-        ${totAvail !== null ? `<div class="mob-total-card" style="margin-bottom:14px">
+        ${totAvail !== null ? `<div class="mob-total-card">
           <span style="font-size:.82rem;font-weight:700;color:var(--text2)">Total Available</span>
           <span style="font-size:1rem;font-weight:800;color:var(--ok)">${fmtCurrency(totAvail)}</span>
+        </div>` : ''}
+        ${_totMoInt > 0.005 ? `<div class="mob-total-card" style="margin-bottom:14px">
+          <span style="font-size:.82rem;font-weight:700;color:var(--text2)">Costing you</span>
+          <span style="font-size:1rem;font-weight:800;color:var(--danger)">${fmtCurrency(_totMoInt)}<span style="font-size:.75rem;font-weight:600;color:var(--text3)">/mo</span></span>
         </div>` : ''}
         ${sortBar}
         ${cardItems}`;
@@ -14640,6 +14934,8 @@ const BA = {
   // was disorienting, so hold position.
   setMobileTxnSearch(q) { UI.mobileTxnSearch = q || ''; mobRender('keep'); },
   setMobileCardSort(s) { UI.mobileCardSort = s; mobRender('top'); },
+  setMobBudgetFilter(f) { UI.mobBudgetFilter = f; mobRender('top'); },
+  setMobTxnClr(f) { UI.mobTxnClr = f; mobRender('keep'); },
   mobileDrillCat(catId) {
     // Remember where in the category list they tapped from, so "← Back"
     // returns them to that row instead of the top of the page.
@@ -17133,12 +17429,28 @@ function renderTxnLeftNav() {
   }
 }
 
+// ── The strip above the ledger ─────────────────────────────────────────────
+// Rebuilt 2026-09-06. It was six tiles ~76px tall, wrapping to two rows, so a
+// third of the screen was spent before the first transaction. Two of them —
+// Cleared Balance and Uncleared — duplicated pills the ledger header already
+// carries once an account is selected, and the other two spent a whole card
+// each on a count of 2.
+//
+// Now: one line of pills. Per account, only what is actionable, because the
+// balances live in the ledger header where the balances are.
+function kpiPill(k, v, sub, tone, onclick, title) {
+  const c = tone ? `border-color:color-mix(in srgb,${tone} 32%,var(--border));background:color-mix(in srgb,${tone} 7%,transparent)` : '';
+  return `<span class="kpi-pill${onclick ? ' act' : ''}" style="${c}"${onclick ? ` onclick="${onclick}"` : ''}${title ? ` title="${esc(title)}"` : ''}>
+    <span class="kpi-k"${tone ? ` style="color:${tone}"` : ''}>${k}</span><span class="kpi-v"${tone ? ` style="color:${tone}"` : ''}>${v}</span>${sub ? `<span class="kpi-s">${sub}</span>` : ''}</span>`;
+}
+
 function renderTxnKpis() {
   const row  = id('txn-kpi-row');
   if (!row) return;
   const acct = UI.txnAccount ? (D.txnAccounts||[]).find(a => a.id === UI.txnAccount) : null;
   const now   = new Date();
   const curYM = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const pills = [];
 
   if (!acct) {
     // ── Global summary across all accounts ───────────────────
@@ -17147,63 +17459,51 @@ function renderTxnKpis() {
     const totalPending = allTxns.filter(t => t.status === 'pending').length;
     const pendingAmt   = allTxns.filter(t => t.status === 'pending').reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
     const LIQUID_TYPES = ['Bank','Savings','Cash','Investment'];
-    const bankBal  = accounts.filter(a => LIQUID_TYPES.includes(a.type)).reduce((s,a) => s + txnCurrentBalance(a), 0);
-    const ccOwed   = accounts.filter(a => a.type === 'Credit Card').reduce((s,a) => s + txnCurrentBalance(a), 0);
-    const loanBal  = accounts.filter(a => a.type === 'Loans').reduce((s,a) => s + txnCurrentBalance(a), 0);
+    const liquid   = accounts.filter(a => LIQUID_TYPES.includes(a.type));
+    const cards    = accounts.filter(a => a.type === 'Credit Card');
+    const loans    = accounts.filter(a => a.type === 'Loans');
+    const bankBal  = liquid.reduce((s,a) => s + txnCurrentBalance(a), 0);
+    const ccOwed   = cards.reduce((s,a) => s + txnCurrentBalance(a), 0);
+    const loanBal  = loans.reduce((s,a) => s + txnCurrentBalance(a), 0);
     const unclr    = allTxns.filter(t => txnCounts(t) && !t.cleared).length;
     const moDebits = allTxns.filter(t => txnCounts(t) && !t.isTransfer && (t.date||'').startsWith(curYM)).reduce((s,t)=>s+(parseFloat(t.debit)||0),0);
-    // Dated-ahead: entered by hand with a date still to come. Counted nowhere
-    // until the day arrives, so the tile says so out loud.
     const _futList = allTxns.filter(txnIsFuture);
-    const _futN    = _futList.length;
     const _futAmt  = _futList.reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
-    const futureTile = _futN > 0 ? `<div class="sum-card" style="border-color:var(--info);background:color-mix(in srgb,var(--info) 6%,transparent)"><div class="sum-lbl" style="color:var(--info)">\ud83d\udcc5 Dated Ahead</div><div class="sum-val" style="color:var(--info)">${_futN} item${_futN!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(_futAmt)} scheduled \u00b7 not counted yet</div></div>` : '';
-    // Clickable: the tile used to tell you there was work and give you no way
-    // to reach it, while the All-Accounts ledger filtered pending rows out.
-    const pendingTile = totalPending > 0
-      ? `<div class="sum-card" style="border-color:#f59e0b;background:color-mix(in srgb,#f59e0b 6%,transparent);cursor:pointer" title="Open the approval queue" onclick="BA.oblOpenReview()"><div class="sum-lbl" style="color:#b45309">⏳ Pending Approval</div><div class="sum-val" style="color:#b45309">${totalPending} item${totalPending!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(pendingAmt)} to review · click to review</div></div>`
-      : '';
-    const loanTile = accounts.some(a => a.type === 'Loans')
-      ? `<div class="sum-card c-danger"><div class="sum-lbl">🏠 Loans Owed</div><div class="sum-val mono" style="color:${loanBal>0?'var(--danger)':'var(--ok)'}">${fmtCurrency(Math.abs(loanBal))}</div><div class="sum-sub">${accounts.filter(a=>a.type==='Loans').length} loan${accounts.filter(a=>a.type==='Loans').length!==1?'s':''}</div></div>`
-      : '';
-    row.innerHTML = `
-      <div class="sum-card c-ok"><div class="sum-lbl">Bank Balance</div><div class="sum-val mono" style="color:${bankBal>=0?'var(--ok)':'var(--danger)'}">${fmtCurrency(Math.abs(bankBal))}</div><div class="sum-sub">${accounts.filter(a=>LIQUID_TYPES.includes(a.type)).length} account${accounts.filter(a=>LIQUID_TYPES.includes(a.type)).length!==1?'s':''}</div></div>
-      <div class="sum-card c-danger"><div class="sum-lbl">CC Balance Owed</div><div class="sum-val mono" style="color:${ccOwed>0?'var(--danger)':'var(--ok)'}">${fmtCurrency(Math.abs(ccOwed))}</div><div class="sum-sub">${accounts.filter(a=>a.type==='Credit Card').length} card${accounts.filter(a=>a.type==='Credit Card').length!==1?'s':''}</div></div>
-      ${loanTile}
-      <div class="sum-card"><div class="sum-lbl">Spent — ${bFmtMonth(curYM)}</div><div class="sum-val mono">${fmtCurrency(moDebits)}</div><div class="sum-sub">across all accounts</div></div>
-      <div class="sum-card${unclr>0?' c-warn':''}"><div class="sum-lbl">Uncleared</div><div class="sum-val">${unclr}</div><div class="sum-sub">across all accounts</div></div>
-      ${futureTile}${pendingTile}`;
-    return;
+
+    pills.push(kpiPill('Bank', fmtCurrency(Math.abs(bankBal)), `${liquid.length} acct${liquid.length!==1?'s':''}`,
+      bankBal >= 0 ? 'var(--ok)' : 'var(--danger)'));
+    pills.push(kpiPill('Cards', fmtCurrency(Math.abs(ccOwed)), `${cards.length} card${cards.length!==1?'s':''}`,
+      ccOwed > 0 ? 'var(--danger)' : 'var(--ok)'));
+    if (loans.length) pills.push(kpiPill('Loans', fmtCurrency(Math.abs(loanBal)), `${loans.length}`,
+      loanBal > 0 ? 'var(--danger)' : 'var(--ok)'));
+    pills.push(kpiPill(bFmtMonth(curYM), fmtCurrency(moDebits), 'spent'));
+    if (unclr) pills.push(kpiPill('Uncleared', unclr, 'rows', 'var(--warn)'));
+    if (_futList.length) pills.push(kpiPill('📅 Dated ahead', `${_futList.length}`,
+      `${fmtCurrency(_futAmt)} · not counted yet`, 'var(--info)'));
+    if (totalPending) pills.push(kpiPill('⏳ To approve', `${totalPending}`,
+      `${fmtCurrency(pendingAmt)} · review`, '#b45309', 'BA.oblOpenReview()', 'Open the approval queue'));
+  } else {
+    // ── Per-account ─────────────────────────────────────────
+    // Cleared balance, uncleared amount and available credit are pills in the
+    // ledger header, three inches below and next to the account they describe.
+    // Repeating them here bought nothing but height. What is left is the two
+    // things that are NOT in the ledger header: work waiting, and money dated
+    // ahead that no balance includes yet.
+    const allTxns       = (D.transactions||[]).filter(t => t.accountId === acct.id);
+    const pendingTxns   = allTxns.filter(t => t.status === 'pending');
+    const committedTxns = allTxns.filter(t => !t.status || t.status === 'approved');
+    const pendingAmt    = pendingTxns.reduce((s,t) => s + (parseFloat(t.debit)||0) + (parseFloat(t.credit)||0), 0);
+    const _futList = committedTxns.filter(txnIsFuture);
+    const _futAmt  = _futList.reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
+    if (_futList.length) pills.push(kpiPill('📅 Dated ahead', `${_futList.length}`,
+      `${fmtCurrency(_futAmt)} · not counted yet`, 'var(--info)'));
+    if (pendingTxns.length) pills.push(kpiPill('⏳ To approve', `${pendingTxns.length}`,
+      `${fmtCurrency(pendingAmt)} · review below`, '#b45309'));
   }
 
-  // ── Per-account view ──────────────────────────────────────
-  const allTxns    = (D.transactions||[]).filter(t => t.accountId === acct.id);
-  const pendingTxns = allTxns.filter(t => t.status === 'pending');
-  const committedTxns = allTxns.filter(t => !t.status || t.status === 'approved');
-  const clearedTxns = committedTxns.filter(t => t.cleared);
-  // Cleared balance: opening balance + all cleared transactions
-  const clearedBal = txnRunningBalances(acct, clearedTxns);
-  const clearedBalance = clearedBal.length ? clearedBal[clearedBal.length-1]._bal : (parseFloat(acct.openingBalance)||0);
-  const unclrTxns = committedTxns.filter(t => !t.cleared);
-  const unclrAmt  = unclrTxns.reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
-  const pendingAmt = pendingTxns.reduce((s,t) => s + (parseFloat(t.debit)||0) + (parseFloat(t.credit)||0), 0);
-  const isCC   = acct.type === 'Credit Card';
-  // NOTE: a `balColor` line sat here referencing an undefined `bal`, so this
-  // whole function threw the moment a single account was selected and the
-  // summary cards never rendered. The value was never used — the header uses
-  // clearedBalColor below — so the dead line is gone rather than repaired.
-  const _futList = committedTxns.filter(txnIsFuture);
-  const _futN    = _futList.length;
-  const _futAmt  = _futList.reduce((s,t) => s+(parseFloat(t.debit)||0)+(parseFloat(t.credit)||0), 0);
-  const futureTile = _futN > 0 ? `<div class="sum-card" style="border-color:var(--info);background:color-mix(in srgb,var(--info) 6%,transparent)"><div class="sum-lbl" style="color:var(--info)">\ud83d\udcc5 Dated Ahead</div><div class="sum-val" style="color:var(--info)">${_futN} item${_futN!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(_futAmt)} scheduled \u00b7 not counted yet</div></div>` : '';
-  const pendingTile = pendingTxns.length > 0
-    ? `<div class="sum-card" style="border-color:#f59e0b;background:color-mix(in srgb,#f59e0b 6%,transparent)"><div class="sum-lbl" style="color:#b45309">⏳ Pending Approval</div><div class="sum-val" style="color:#b45309">${pendingTxns.length} item${pendingTxns.length!==1?'s':''}</div><div class="sum-sub">${fmtCurrency(pendingAmt)} to review</div></div>`
-    : '';
-  const clearedBalColor = isCC ? (clearedBalance > 0 ? 'var(--danger)' : 'var(--ok)') : (clearedBalance >= 0 ? 'var(--ok)' : 'var(--danger)');
-  row.innerHTML = `
-    <div class="sum-card"><div class="sum-lbl">${isCC?'Cleared Balance Owed':'Cleared Balance'}</div><div class="sum-val mono" style="color:${clearedBalColor}">${fmtCurrency(Math.abs(clearedBalance))}</div><div class="sum-sub">${esc(acct.name)}</div></div>
-    <div class="sum-card${unclrAmt>0?' c-warn':''}"><div class="sum-lbl">Uncleared Amount</div><div class="sum-val mono">${fmtCurrency(Math.abs(unclrAmt))}</div><div class="sum-sub">${unclrTxns.length} uncleared transaction${unclrTxns.length!==1?'s':''}</div></div>
-    ${futureTile}${pendingTile}`;
+  // Empty means gone, not an empty box holding padding open.
+  row.innerHTML = pills.join('');
+  row.style.display = pills.length ? 'flex' : 'none';
 }
 
 // Build unique payee → most-recent categoryId map across ALL transactions for autocomplete
@@ -17930,7 +18230,16 @@ function renderTxnRight() {
   const clearedBalance2 = clearedBal2.length ? clearedBal2[clearedBal2.length-1]._bal : (parseFloat(acct.openingBalance)||0);
   const clearedBalIsOk = (isCC || isLoan) ? clearedBalance2 <= 0 : clearedBalance2 >= 0;
   const clearedBalColor = clearedBalIsOk ? 'var(--ok)' : 'var(--danger)';
-  const clearedBalBadge = `<span style="font-size:.78rem;font-weight:700;color:${clearedBalColor};background:color-mix(in srgb,${clearedBalColor} 12%,transparent);border:1px solid color-mix(in srgb,${clearedBalColor} 28%,transparent);padding:2px 10px;border-radius:99px;margin-left:4px" title="Cleared Balance">Cleared: ${fmtCurrency(Math.abs(clearedBalance2))}</span>${(() => {
+  // Uncleared moved here from the banner tile, so cleared and the gap that
+  // explains it sit side by side against the account they belong to. Signed the
+  // same way as the register: for a card a positive figure is more owed.
+  const _unclrTxns2 = committedTxns.filter(t => !t.cleared && !txnIsFuture(t));
+  const _unclrAmt2  = _unclrTxns2.reduce((s,t) => s + (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0), 0);
+  const _unclrSigned = (isCC || isLoan) ? _unclrAmt2 : -_unclrAmt2;
+  const unclearedBadge = _unclrTxns2.length
+    ? `<span style="font-size:.78rem;font-weight:700;color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border:1px solid color-mix(in srgb,var(--warn) 28%,transparent);padding:2px 10px;border-radius:99px;margin-left:4px" title="${_unclrTxns2.length} transaction${_unclrTxns2.length!==1?'s':''} entered but not yet cleared — the difference between Cleared and the running balance">○ Uncleared: ${_unclrSigned >= 0 ? '+' : '−'}${fmtCurrency(Math.abs(_unclrAmt2))} (${_unclrTxns2.length})</span>`
+    : `<span style="font-size:.78rem;font-weight:700;color:var(--ok);background:color-mix(in srgb,var(--ok) 10%,transparent);border:1px solid color-mix(in srgb,var(--ok) 24%,transparent);padding:2px 10px;border-radius:99px;margin-left:4px" title="Every posted transaction has cleared">✓ All cleared</span>`;
+  const clearedBalBadge = `<span style="font-size:.78rem;font-weight:700;color:${clearedBalColor};background:color-mix(in srgb,${clearedBalColor} 12%,transparent);border:1px solid color-mix(in srgb,${clearedBalColor} 28%,transparent);padding:2px 10px;border-radius:99px;margin-left:4px" title="Cleared Balance">Cleared: ${fmtCurrency(Math.abs(clearedBalance2))}</span>${unclearedBadge}${(() => {
     if (!isCC || !acct.ccCardId) return '';
     const ccCard = (D.ccTracker?.cards||[]).find(c => c.id === acct.ccCardId);
     const lim = parseFloat(ccCard?.limit) || 0;
