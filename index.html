@@ -1305,6 +1305,7 @@ let UI = {
     emi:   { col: 'name',   dir: 'asc' },
     split: { col: 'name',   dir: 'asc' },
   },
+  oblCatFilter:    '',   // Obligations: budget-group pill filter ('' = all)
   acctSearch:      '',   // Setup → Accounts: free-text filter
   acctTypeFilter:  '',   // Setup → Accounts: type filter
   acctShowClosed:  false, // Setup → Accounts: include closed accounts
@@ -12730,6 +12731,10 @@ function oblSortArr(arr, type) {
       else if (col === 'monthly'){ av = oblToMonthly(+a.cost,a.billingCycle); bv = oblToMonthly(+b.cost,b.billingCycle); }
       else if (col === 'renewal'){ av = oblNextChargeDate(a,'subscription')||'9999'; bv = oblNextChargeDate(b,'subscription')||'9999'; }
       else if (col === 'payment'){ av = (a.paymentMethod||'').toLowerCase(); bv = (b.paymentMethod||'').toLowerCase(); }
+      // Sorts on the two flags as a 2-bit number, so one click groups the
+      // obligations that post to Transactions and the ones that do not.
+      else if (col === 'shows'){ av = (a.autoPost?2:0)+(a.trackInMonthly?1:0);
+                                 bv = (b.autoPost?2:0)+(b.trackInMonthly?1:0); }
       else if (col === 'assigned'){ av = (a.assignedTo||'').toLowerCase(); bv = (b.assignedTo||'').toLowerCase(); }
       else if (col === 'status'){ av = a.status||'';                      bv = b.status||''; }
     } else if (type === 'emi') {
@@ -12759,6 +12764,36 @@ function oblSortArr(arr, type) {
 }
 
 // Build a sortable <th> for obl tables
+// ── "Shows up in" ─────────────────────────────────────────────────────────
+// Replaced the Assigned column, which held free text he never used. These are
+// the two flags from the obligation form's "Where this shows up" section, and
+// they decide real behaviour: `autoPost` generates a pending transaction on each
+// due date, `trackInMonthly` builds a Monthly-tab payment row. Seeing them in
+// the list is the difference between trusting the list and opening 38 records.
+//
+// Clickable, because neither flag has a save-time side effect — both are read at
+// render time (oblAutoGenerateTxns / the Monthly builder), so flipping one is
+// just a flag write.
+function oblShowsUpCell(o) {
+  const chip = (on, label, title, kind) => `
+    <button type="button" onclick="event.stopPropagation();BA.oblToggleShows('${o.id}','${kind}')"
+      title="${esc(title)}"
+      style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;cursor:pointer;
+             font-size:.66rem;font-weight:700;white-space:nowrap;font-family:inherit;
+             border:1px solid ${on ? 'color-mix(in srgb,var(--primary) 45%,transparent)' : 'var(--border)'};
+             background:${on ? 'color-mix(in srgb,var(--primary) 12%,transparent)' : 'var(--surface)'};
+             color:${on ? 'var(--primary)' : 'var(--text3)'}">
+      <span style="font-size:.8em">${on ? '✓' : '○'}</span>${label}</button>`;
+  return `<div style="display:flex;gap:5px;flex-wrap:wrap">
+    ${chip(!!o.autoPost, 'Txns',
+      o.autoPost ? 'Auto-posts a pending transaction on each due date — click to stop'
+                 : 'Not auto-posted; you record it by hand — click to auto-post')}
+    ${chip(!!o.trackInMonthly, 'Monthly',
+      o.trackInMonthly ? 'Also builds a Monthly tab payment row — click to stop'
+                       : 'Not in the Monthly tab — click to add it')}
+  </div>`;
+}
+
 function oblTh(label, col, type, extraClass = '') {
   const { col: c, dir } = UI.oblSort[type] || {};
   const active = c === col;
@@ -12945,7 +12980,15 @@ function oblFilterBar(kind, rows) {
   const q  = UI.oblSearch || '';
   const af = UI.oblAcctFilter || '';
   const sf = UI.oblStatusFilter || '';
+  const cf = UI.oblCatFilter || '';
   const accts = [...new Set(rows.map(r => (r.paymentMethod||'').trim()).filter(Boolean))].sort();
+  // The pills are the BUDGET GROUP behind each obligation's expense type — the
+  // same label the row's category pill shows — counted from the rows actually
+  // present, so an empty filter is never offered. A split-template obligation
+  // has no single expense type and files under "Split".
+  const _gcount = {};
+  rows.forEach(r => { const g = oblFilterGroupOf(r); _gcount[g] = (_gcount[g] || 0) + 1; });
+  const groups = Object.keys(_gcount).sort((a, b) => a.localeCompare(b)).map(g => [g, g, _gcount[g]]);
   return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0 4px">
     <input id="obl-search" class="finput" style="max-width:220px;height:32px;font-size:.82rem" placeholder="Search ${esc(kind)}…"
       value="${esc(q)}" oninput="BA.oblSetSearch(this.value)">
@@ -12957,14 +13000,28 @@ function oblFilterBar(kind, rows) {
       <option value="">All statuses</option>
       ${['Active','Paused','Cancelled','Completed','Paid Off'].map(x => `<option value="${x}"${x===sf?' selected':''}>${x}</option>`).join('')}
     </select>
-    ${(q||af||sf) ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblClearFilters()">Clear</button>` : ''}
+    <select class="finput" style="max-width:190px;height:32px;font-size:.82rem" onchange="BA.oblSetCatFilter(this.value)">
+      <option value="">All categories</option>
+      ${groups.map(([g, , n]) => `<option value="${esc(g)}"${g===cf?' selected':''}>${esc(g)} (${n})</option>`).join('')}
+    </select>
+    ${(q||af||sf||cf) ? `<button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblClearFilters()">Clear</button>` : ''}
   </div>`;
 }
+// One definition of "which pill does this obligation sit under", shared by the
+// filter bar's counts and the predicate — so a pill can never show a count the
+// filter then fails to produce.
+function oblFilterGroupOf(r) {
+  if (oblHasSplitTemplate(r)) return 'Split';
+  return oblGroupLabel(r.expenseTypeId);
+}
+
 function oblApplyFilters(rows) {
   const q  = (UI.oblSearch||'').trim().toLowerCase();
   const af = (UI.oblAcctFilter||'').trim().toLowerCase();
   const sf = UI.oblStatusFilter || '';
+  const cf = UI.oblCatFilter || '';
   return rows.filter(r => {
+    if (cf && oblFilterGroupOf(r) !== cf) return false;
     if (q  && !(oblName(r)+' '+(r.notes||'')+' '+(r.assignedTo||'')+' '+(txnCatLabel(r.expenseTypeId)||'')).toLowerCase().includes(q)) return false;
     if (af && (r.paymentMethod||'').trim().toLowerCase() !== af) return false;
     if (sf && (r.status||'Active') !== sf) return false;
@@ -13018,7 +13075,7 @@ function renderOblSubscriptions() {
         const warn = pm && oblPayAcctMismatch(pm) ? ' <span title="Account not found in Transactions" style="color:var(--warn);cursor:default">⚠️</span>' : '';
         return esc(pm||'—') + warn;
       })()}</td>
-      <td>${esc(sub.assignedTo||'—')}</td>
+      <td>${oblShowsUpCell(sub)}</td>
       <td><span class="obl-pill ${sub.status==='Active'?'green':sub.status==='Paused'?'orange':'red'}" style="cursor:pointer" title="Click to cycle Active → Paused → Cancelled" onclick="BA.oblCycleStatus('${sub.id}')">${sub.status||'Active'}</span></td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.oblToggleHistory('${sub.id}')" title="Posted history — expected vs actual">🕐</button>
@@ -13031,7 +13088,7 @@ function renderOblSubscriptions() {
 
   const thead = `<thead><tr>
     ${oblTh('Name','name','sub')}${oblTh('Amount','cost','sub','r')}${oblTh('Cycle','cycle','sub')}${oblTh('Monthly','monthly','sub','r')}
-    ${oblTh('Next Renewal','renewal','sub')}${oblTh('Payment Account','payment','sub')}${oblTh('Assigned','assigned','sub')}${oblTh('Status','status','sub')}<th></th>
+    ${oblTh('Next Renewal','renewal','sub')}${oblTh('Payment Account','payment','sub')}${oblTh('Shows up in','shows','sub')}${oblTh('Status','status','sub')}<th></th>
   </tr></thead>`;
 
   const wrapTable = rows => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;overflow-x:auto">
@@ -15667,7 +15724,35 @@ const BA = {
   oblSetSearch(v)       { UI.oblSearch = v;       renderObligations(); const el = id('obl-search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } },
   oblSetAcctFilter(v)   { UI.oblAcctFilter = v;   renderObligations(); },
   oblSetStatusFilter(v) { UI.oblStatusFilter = v; renderObligations(); },
-  oblClearFilters()     { UI.oblSearch = ''; UI.oblAcctFilter = ''; UI.oblStatusFilter = ''; renderObligations(); },
+  // Flip one of the two "where this shows up" flags from the list. Neither has a
+  // save-time side effect — `autoPost` is read by oblAutoGenerateTxns() and
+  // `trackInMonthly` by the Monthly builder, both at render time — so this is a
+  // flag write. The one rule the modal enforces is enforced here too: an
+  // auto-posting obligation must have somewhere in the budget to land.
+  oblToggleShows(oblId, kind) {
+    // oblFind returns { obj, type } — writing to the wrapper silently did
+    // nothing, which is exactly what the test caught.
+    const found = oblFind(oblId);
+    if (!found) return;
+    const o = found.obj;
+    if (kind === 'auto') {
+      if (!o.autoPost && !o.expenseTypeId && !oblHasSplitTemplate(o)) {
+        toast('Give it an expense type first — an auto-posting obligation has to land in the budget', 'err');
+        return;
+      }
+      o.autoPost = !o.autoPost;
+      toast(o.autoPost ? `${oblName(o)} will auto-post on each due date`
+                       : `${oblName(o)} will no longer auto-post`, 'ok');
+    } else {
+      o.trackInMonthly = !o.trackInMonthly;
+      toast(o.trackInMonthly ? `${oblName(o)} added to the Monthly tab`
+                             : `${oblName(o)} removed from the Monthly tab`, 'ok');
+    }
+    dirty();
+    renderObligations();
+  },
+  oblSetCatFilter(v)    { UI.oblCatFilter = v; renderObligations(); },
+  oblClearFilters()     { UI.oblSearch = ''; UI.oblAcctFilter = ''; UI.oblStatusFilter = ''; UI.oblCatFilter = ''; renderObligations(); },
   // Click the status pill to cycle it — the common edit, without opening a form
   oblCycleStatus(oblId) {
     const o = oblFind(oblId);
