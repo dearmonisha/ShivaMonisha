@@ -1023,12 +1023,10 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       <div class="nav-dropdown-menu" id="nav-dd-menu-insights">
         <button class="nav-dd-item" id="tab-cc"              onclick="switchView('cc');closeNavDropdowns()">Credit Card</button>
         <button class="nav-dd-item" id="tab-cc-balances"   onclick="switchView('cc-balances');closeNavDropdowns()">💳 Card Balances</button>
-        <button class="nav-dd-item" id="tab-treemap"       onclick="switchView('treemap');closeNavDropdowns()">🗂️ Spending Breakdown</button>
         <button class="nav-dd-item" id="tab-cat-trends"  onclick="switchView('cat-trends');closeNavDropdowns()">📉 Category Trends</button>
         <button class="nav-dd-item" id="tab-savings-pots"  onclick="switchView('savings-pots');closeNavDropdowns()">💰 Savings Pots</button>
         <button class="nav-dd-item" id="tab-reserve-pots" onclick="switchView('reserve-pots');closeNavDropdowns()">♻️ Reserve Pots</button>
         <button class="nav-dd-item" id="tab-debt-payoff"  onclick="switchView('debt-payoff');closeNavDropdowns()">🏁 Debt Payoff</button>
-        <button class="nav-dd-item" id="tab-path-to-freedom" onclick="switchView('path-to-freedom');closeNavDropdowns()">🚀 Path to Freedom</button>
         <button class="nav-dd-item" id="tab-mindfulness" onclick="switchView('mindfulness');closeNavDropdowns()">🧘 Mindfulness Review</button>
         <button class="nav-dd-item" id="tab-ratios" onclick="switchView('ratios');closeNavDropdowns()">📐 Financial Ratios</button>
         <button class="nav-dd-item" id="tab-home-cost" onclick="switchView('home-cost');closeNavDropdowns()">🏠 Cost of Home Ownership</button>
@@ -1084,7 +1082,6 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-family" style="display:none"></div>
   <div id="view-cc" style="display:none"></div>
   <div id="view-cc-balances" style="display:none"></div>
-  <div id="view-treemap"     style="display:none"></div>
   <div id="view-obligations" style="display:none">
     <!-- Obligations sticky nav — sub-tabs + import button stay visible while scrolling -->
     <div class="budget-sticky-bar" style="flex-wrap:wrap;gap:6px;padding:6px 14px;align-items:center;">
@@ -1135,8 +1132,6 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       <div style="flex:1;min-width:0">
         <!-- Budget vs Actuals table -->
         <div id="budgetTableWrap" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden"></div>
-        <!-- CC Repayment Planner -->
-        <div id="ccRepayWrap" style="margin-top:18px"></div>
       </div>
       <!-- Right insight panel -->
       <div id="budgetPanelWrap" style="width:280px;flex-shrink:0;position:sticky;top:162px"></div>
@@ -1181,7 +1176,6 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   <div id="view-savings-pots"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-reserve-pots" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-debt-payoff"  style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
-  <div id="view-path-to-freedom" style="display:none;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-mindfulness" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-ratios" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
   <div id="view-home-cost" style="display:none;padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 80px)"></div>
@@ -1291,7 +1285,6 @@ let UI = {
   budgetDonutMode: 'actual', // 'actual' | 'budget' — donut chart mode
   budgetMonth:       ymNow(),  // currently viewed budget month
   budgetSelectedCat: null,     // selected category id for right panel
-  ccrSelectedCard: null,       // selected CC card id in repayment planner (null = show all)
   payAmount:   null,           // Payments tab: amount being allocated (null = default to safe-to-deploy)
   payStrategy: null,           // Payments tab: 'avalanche' | 'util' | 'snowball'
   mobBudgetFilter: 'all',      // Mobile Budget tab: all | over | watch | track | reimb
@@ -1344,9 +1337,6 @@ let UI = {
   finIEMonth:     ymNow(),
   finIEQuarter:   null,     // 'YYYY-Q1'..'YYYY-Q4', defaults to current quarter
   finIEYear:      new Date().getFullYear(),
-  // Path to Freedom — "Are you keeping pace?" year filter. Empty array = all years (no filter);
-  // otherwise a list of 'YYYY' strings, multi-selectable via the pill selector.
-  ptfPaceYears:   [],
   // Mindfulness Review — month being reviewed, defaults to the current month.
   mindMonth:      ymNow(),
 };
@@ -1553,12 +1543,6 @@ const NAV_ICON_MAP = {
     dot:_dot('Card Balances'),
     bracket:_brk('Card Balances'),
   },
-  'tab-treemap': {
-    emoji:'🗂️ Spending Breakdown',
-    clean:'Spending Breakdown',
-    dot:_dot('Spending Breakdown'),
-    bracket:_brk('Spending Breakdown'),
-  },
   'tab-savings-pots': {
     emoji:'💰 Savings Pots',
     clean:'Savings Pots',
@@ -1570,12 +1554,6 @@ const NAV_ICON_MAP = {
     clean:'Debt Payoff',
     dot:_dot('Debt Payoff'),
     bracket:_brk('Debt Payoff'),
-  },
-  'tab-path-to-freedom': {
-    emoji:'🚀 Path to Freedom',
-    clean:'Path to Freedom',
-    dot:_dot('Path to Freedom'),
-    bracket:_brk('Path to Freedom'),
   },
   'tab-mindfulness': {
     emoji:'🧘 Mindfulness Review',
@@ -1680,10 +1658,10 @@ function _applyData(raw) {
   if (!D.pathToFreedom) D.pathToFreedom = { extraMonthly: 0 };
   if (D.pathToFreedom.extraMonthly == null) D.pathToFreedom.extraMonthly = 0;
   // Historical min-due/statement-balance data, keyed by ccCardId → 'YYYY-MM' → {due,paid,outstanding,dueDate,metMin}.
-  // Separate from the Monthly tab / cycles tracking entirely — used only by the Path to Freedom
-  // "Are you keeping pace?" panel to extend its window further back than live tracking goes.
+  // Separate from the Monthly tab / cycles tracking entirely. The Path to Freedom view that
+  // read it was removed 2026-09-10; kept because payMinDue() still reads it for older statements.
   if (!D.ptfMinDueHistory) D.ptfMinDueHistory = {};
-  // Backfill promo-expiration / paid-in-full fields on CC cards (Path to Freedom)
+  // Backfill promo-expiration / paid-in-full fields on CC cards (read by the Payments tab)
   (D.ccTracker?.cards || []).forEach(c => {
     if (c.promoExpiration === undefined) c.promoExpiration = '';
     if (c.payInFull === undefined) c.payInFull = false;
@@ -3039,13 +3017,13 @@ function switchView(v) {
     UI.txnHighlightRow = null;
   }
   UI.view = v;
-  ['monthly','family','cc','cc-balances','treemap','budget','annual','actuals','setup','obligations','transactions','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','financials','payments','home-cost'].forEach(k => {
-    id('view-'+k).style.display = v===k ? '' : 'none';
+  ['monthly','family','cc','cc-balances','budget','annual','actuals','setup','obligations','transactions','cat-trends','savings-pots','reserve-pots','debt-payoff','mindfulness','ratios','financials','payments','home-cost'].forEach(k => {
+    const _vw = id('view-'+k); if (_vw) _vw.style.display = v===k ? '' : 'none';
     const tb = id('tab-'+k); if (tb) tb.classList.toggle('active', v===k);
   });
   // Highlight dropdown trigger when one of its children is active
   const _budgetViews   = ['budget','annual','actuals'];
-  const _insightsViews = ['cc','cc-balances','treemap','cat-trends','savings-pots','reserve-pots','debt-payoff','path-to-freedom','mindfulness','ratios','home-cost'];
+  const _insightsViews = ['cc','cc-balances','cat-trends','savings-pots','reserve-pots','debt-payoff','mindfulness','ratios','home-cost'];
   const _setupViews    = ['setup','obligations'];
   const ddB = id('tab-dd-budget');   if (ddB) ddB.classList.toggle('active', _budgetViews.includes(v));
   const ddI = id('tab-dd-insights'); if (ddI) ddI.classList.toggle('active', _insightsViews.includes(v));
@@ -3055,7 +3033,6 @@ function switchView(v) {
   if (v==='family')       renderFamily();
   if (v==='cc')           renderCCTracker();
   if (v==='cc-balances')  renderCCBalances();
-  if (v==='treemap')      renderTreemap();
   if (v==='budget')       renderBudget();
   if (v==='annual')       renderAnnual();
   if (v==='actuals')      renderActualsGrid();
@@ -3066,7 +3043,6 @@ function switchView(v) {
   if (v==='savings-pots')  renderSavingsPots();
   if (v==='reserve-pots')  renderReservePots();
   if (v==='debt-payoff')   renderDebtPayoff();
-  if (v==='path-to-freedom') renderPathToFreedom();
   if (v==='mindfulness')   renderMindfulness();
   if (v==='ratios')        renderFinancialRatios();
   if (v==='financials')    renderFinancials();
@@ -5263,215 +5239,6 @@ function generateAIExport(year) {
 }
 
 // ════════════════════════════════════════════════════════════
-// SPENDING TREEMAP
-// ════════════════════════════════════════════════════════════
-function renderTreemap() {
-  const wrap = id('view-treemap');
-  if (!wrap) return;
-
-  if (!UI.treemapMonth) UI.treemapMonth = UI.budgetMonth || ymNow();
-  const month = UI.treemapMonth;
-  const [yr, mo] = month.split('-').map(Number);
-  const monthLabel = new Date(yr, mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
-  const level    = UI.treemapLevel   || 0;
-  const selGroup = UI.treemapGroupId || null;
-  const selCat   = UI.treemapCatId   || null;
-
-  const COLORS  = ['#c7d2fe','#fde68a','#bbf7d0','#fecaca','#bfdbfe','#ddd6fe','#fbcfe8','#99f6e4','#fed7aa','#d9f99d','#e2e8f0'];
-  const TCOLORS = ['#3730a3','#78350f','#14532d','#7f1d1d','#1e3a8a','#4c1d95','#831843','#134e4a','#7c2d12','#365314','#334155'];
-
-  let nodes = [], crumbs = [];
-
-  if (level === 0) {
-    const grps = D.budget.groups || [];
-    const cats = D.budget.categories || [];
-    grps.forEach((g, gi) => {
-      const v = cats.filter(c => c.groupId === g.id).reduce((s, c) => s + budgetGetCatSpend(c.id, month), 0);
-      if (v > 0.01) nodes.push({ id: g.id, name: g.name, value: v, ci: gi % COLORS.length, nextLevel: 1 });
-    });
-    crumbs = [{ label: 'All spending' }];
-  } else if (level === 1) {
-    const grp = (D.budget.groups || []).find(g => g.id === selGroup);
-    const gi  = (D.budget.groups || []).findIndex(g => g.id === selGroup);
-    (D.budget.categories || []).filter(c => c.groupId === selGroup).forEach(c => {
-      const v = budgetGetCatSpend(c.id, month);
-      if (v > 0.01) nodes.push({ id: c.id, name: c.name, value: v, ci: gi % COLORS.length, nextLevel: 2 });
-    });
-    crumbs = [
-      { label: 'All spending', nav: `BA.treemapNav(0)` },
-      { label: grp ? grp.name : 'Group' }
-    ];
-  } else if (level === 2) {
-    const cat = (D.budget.categories || []).find(c => c.id === selCat);
-    const grp = (D.budget.groups || []).find(g => g.id === cat?.groupId);
-    const gi  = (D.budget.groups || []).findIndex(g => g.id === cat?.groupId);
-    const txns = (D.transactions || []).filter(t =>
-      t.date && t.date.slice(0, 7) === month && !t.isTransfer &&
-      txnCounts(t) &&
-      t.categoryId === selCat
-    );
-    const pm = {};
-    txns.forEach(t => {
-      const k = (t.payee || '(no payee)').trim();
-      const a = (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
-      if (a > 0.01) pm[k] = (pm[k] || 0) + a;
-    });
-    Object.entries(pm).forEach(([name, value]) =>
-      nodes.push({ id: name, name, value, ci: gi % COLORS.length, isLeaf: true })
-    );
-    crumbs = [
-      { label: 'All spending',          nav: `BA.treemapNav(0)` },
-      { label: grp ? grp.name : 'Group', nav: `BA.treemapNav(1)` },
-      { label: cat ? cat.name : 'Category' }
-    ];
-  }
-
-  nodes.sort((a, b) => b.value - a.value);
-  const total = nodes.reduce((s, n) => s + n.value, 0);
-
-  // Store for click handler reference
-  UI._tmNodes = nodes;
-
-  if (!nodes.length || !total) {
-    wrap.innerHTML = `<div style="padding:60px;text-align:center;color:var(--text3);font-size:.9rem">No spending data for ${monthLabel}</div>`;
-    return;
-  }
-
-  // ── Squarified treemap layout ──────────────────────────────
-  const W = 900, H = 580;
-
-  function worstAR(row, side, remTotal, area) {
-    const s = row.reduce((a, n) => a + n.value, 0);
-    if (!s || !side) return Infinity;
-    const rw = (s / remTotal) * area / side;
-    if (!rw) return Infinity;
-    return Math.max(...row.map(n => {
-      const ns = (n.value / remTotal) * area / rw;
-      return ns > 0 ? Math.max(rw / ns, ns / rw) : Infinity;
-    }));
-  }
-
-  function pickRow(rem, side, remTotal, area) {
-    let row = [], best = Infinity;
-    for (let i = 0; i < rem.length; i++) {
-      const cand = [...row, rem[i]];
-      const r = worstAR(cand, side, remTotal, area);
-      if (r <= best || !row.length) { row = cand; best = r; }
-      else break;
-    }
-    return row;
-  }
-
-  function tmLayout(nodes, x, y, w, h) {
-    if (!nodes.length) return [];
-    if (nodes.length === 1) return [{ ...nodes[0], x, y, w, h }];
-    const res = [];
-    let rem = nodes.slice(), cx = x, cy = y, cw = w, ch = h;
-    while (rem.length > 0) {
-      const rt = rem.reduce((s, n) => s + n.value, 0);
-      const area = cw * ch;
-      if (!area || !rt) break;
-      let row;
-      if (cw >= ch) {
-        row = pickRow(rem, ch, rt, area);
-        const rs = row.reduce((s, n) => s + n.value, 0);
-        const rw = (rs / rt) * cw;
-        let ry = cy;
-        row.forEach(n => { const nh = (n.value / rs) * ch; res.push({ ...n, x: cx, y: ry, w: rw, h: nh }); ry += nh; });
-        cx += rw; cw -= rw;
-      } else {
-        row = pickRow(rem, cw, rt, area);
-        const rs = row.reduce((s, n) => s + n.value, 0);
-        const rh = (rs / rt) * ch;
-        let rx = cx;
-        row.forEach(n => { const nw = (n.value / rs) * cw; res.push({ ...n, x: rx, y: cy, w: nw, h: rh }); rx += nw; });
-        cy += rh; ch -= rh;
-      }
-      rem = rem.slice(row.length);
-    }
-    return res;
-  }
-
-  const PAD = 2;
-  const rects = tmLayout(nodes, 0, 0, W, H);
-
-  // ── Render cells ───────────────────────────────────────────
-  const cells = rects.map((r, idx) => {
-    const x = r.x + PAD, y = r.y + PAD, w = r.w - PAD * 2, h = r.h - PAD * 2;
-    if (w < 6 || h < 6) return '';
-    const color  = COLORS[r.ci];
-    const tcolor = TCOLORS[r.ci];
-    const pct     = Math.round(r.value / total * 100);
-    const clickable = !r.isLeaf;
-    const cStyle  = clickable ? 'cursor:pointer' : '';
-
-    const maxChars = Math.max(3, Math.floor(w / 7));
-    const label   = r.name.length > maxChars ? r.name.slice(0, maxChars - 1) + '…' : r.name;
-    const fSize   = w > 140 ? 14 : w > 80 ? 12 : 11;
-
-    let txt = '';
-    if (w > 36 && h > 22) {
-      const midX = x + w / 2;
-      const showAmt = w > 90 && h > 44;
-      const showPct = w > 90 && h > 60;
-      const baseY = showAmt ? y + h / 2 - (showPct ? 14 : 8) : y + h / 2 + 4;
-      txt += `<text x="${midX}" y="${baseY}" text-anchor="middle" style="font-size:${fSize}px;fill:${tcolor};font-weight:600;font-family:inherit;pointer-events:none">${esc(label)}</text>`;
-      if (showAmt)
-        txt += `<text x="${midX}" y="${baseY + fSize + 3}" text-anchor="middle" style="font-size:11px;fill:${tcolor};opacity:.8;font-family:inherit;pointer-events:none">${fmtCurrency(r.value)}</text>`;
-      if (showPct)
-        txt += `<text x="${midX}" y="${baseY + fSize + 18}" text-anchor="middle" style="font-size:11px;fill:${tcolor};opacity:.6;font-family:inherit;pointer-events:none">${pct}%</text>`;
-    }
-
-    const onclick = clickable ? `onclick="BA.treemapDrill(${idx})"` : '';
-    return `<g style="${cStyle}">
-      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="${color}" ${onclick}>
-        <title>${esc(r.name)}: ${fmtCurrency(r.value)} (${pct}%)${clickable ? ' — click to drill down' : ''}</title>
-      </rect>
-      ${txt}
-    </g>`;
-  }).join('');
-
-  // ── Breadcrumb ─────────────────────────────────────────────
-  const crumbHTML = crumbs.map((c, i) => {
-    const sep = i > 0 ? `<span style="color:var(--text3);margin:0 5px;font-size:.9rem">›</span>` : '';
-    if (c.nav)
-      return `${sep}<button class="btn btn-sm" onclick="${c.nav}" style="padding:2px 8px;font-size:.8rem">${esc(c.label)}</button>`;
-    return `${sep}<span style="font-size:.85rem;font-weight:700;color:var(--text)">${esc(c.label)}</span>`;
-  }).join('');
-
-  const prevM = shiftYM(month, -1);
-  const nextM = shiftYM(month,  1);
-
-  wrap.innerHTML = `
-    <div style="padding:18px 20px 20px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-        <h2 style="margin:0;font-size:1.1rem;font-weight:700;color:var(--text);flex:1">🗂️ Spending Breakdown</h2>
-        <div style="display:flex;align-items:center;gap:8px">
-          <button class="btn btn-sm" onclick="UI.treemapMonth='${prevM}';UI.treemapLevel=0;renderTreemap()">&#8249;</button>
-          <span style="font-size:.92rem;font-weight:600;color:var(--text);min-width:120px;text-align:center">${monthLabel}</span>
-          <button class="btn btn-sm" onclick="UI.treemapMonth='${nextM}';UI.treemapLevel=0;renderTreemap()">&#8250;</button>
-        </div>
-      </div>
-
-      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:14px">
-        ${crumbHTML}
-      </div>
-
-      <div style="overflow-x:auto">
-        <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block;border-radius:10px;overflow:hidden">
-          ${cells}
-        </svg>
-      </div>
-
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
-        <span style="font-size:.82rem;color:var(--text3)">Total: <strong style="color:var(--text)">${fmtCurrency(total)}</strong></span>
-        ${level < 2 ? `<span style="font-size:.72rem;color:var(--text3)">Click any box to drill down</span>` : `<span style="font-size:.72rem;color:var(--text3)">Payee level — use breadcrumb to go back</span>`}
-      </div>
-    </div>`;
-}
-
-// ════════════════════════════════════════════════════════════
 // MONEY FLOW — SANKEY DIAGRAM
 // ════════════════════════════════════════════════════════════
 function ccCapitalisationRows(txnAcctId, year, card) {
@@ -7602,7 +7369,7 @@ function budgetGetCatActuals(catId, month) {
   return r ? parseFloat(r.amount)||0 : 0;
 }
 // The REPORTING figure: everything spent on this category, pre-funded included.
-// Category Trends and Spending Breakdown use this so an HSA-paid bill still
+// Category Trends uses this so an HSA-paid bill still
 // shows up as the cost of care; budget comparisons use budgetGetCatActuals().
 function budgetGetCatSpend(catId, month) {
   const v = _txnActualsFull[catId + '::' + month];
@@ -7700,7 +7467,6 @@ function renderBudget() {
   renderBudgetKpis(month);
   renderBudgetIncomeSection(month);
   renderBudgetTable(month);
-  renderCCRepaySection(month);
   renderBudgetPanel(month);
 }
 
@@ -7838,14 +7604,7 @@ function renderBudgetKpis(month) {
          usedPct !== null ? `${usedPct}% spent` : 'No budget set') +
     card('🧾','Actual Spent', fmtC(actualSpent),
          actualSpent > totalBudgeted && totalBudgeted > 0 ? red : amber,
-         (() => {
-           if (!reimbSpent) return '';
-           const reimbRcvd = getReimbReceived(month);
-           const netPend   = Math.max(0, reimbSpent - reimbRcvd);
-           return netPend > 0
-             ? `<span style="color:var(--info)">+ ${fmtC(reimbSpent)} ♻ · ${fmtC(netPend)} still pending</span>`
-             : `<span style="color:var(--ok)">♻ ${fmtC(reimbSpent)} · fully reimbursed ✓</span>`;
-         })()) +
+         '') +
     splitCard('📊','Net In Hand',
       fmtC(plannedNet), plannedNet >= 0 ? green : red,
       fmtC(actualNet),  actualNet  >= 0 ? green : red) +
@@ -8428,25 +8187,6 @@ function renderBudgetTable(month) {
         <span class="btable-pct" style="color:${grandBar}">${grandPctLbl}</span>`:''}</td>
       <td></td>
     </tr>
-    ${grandReimbSpent > 0 && !_filterOver ? (() => {
-      const _reimbRcvd  = getReimbReceivedForMonth(month); // month-specific (not cumulative)
-      const _netPending = Math.max(0, grandReimbSpent - _reimbRcvd);
-      const _pendingLabel = _netPending > 0
-        ? `<span style="color:var(--info);font-weight:700">${fmtC(_netPending)} pending this month</span>`
-        : `<span style="color:var(--ok);font-weight:700">✓ Covered this month</span>`;
-      return `
-    <tr style="background:color-mix(in srgb,var(--info) 4%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
-      <td></td>
-      <td class="btable-name" colspan="2" style="font-size:.75rem;color:var(--info);padding-left:18px">
-        <span style="font-weight:600">♻ Reimbursable</span>
-        <span style="opacity:.7;font-weight:400"> — excluded from totals (others repay you)</span>
-      </td>
-      <td class="btable-num" style="color:var(--info);font-size:.8rem">${fmtC(grandReimbSpent)}</td>
-      <td class="btable-num" style="color:var(--ok);font-size:.8rem">${_reimbRcvd > 0 ? fmtC(_reimbRcvd) : '—'}</td>
-      <td colspan="1" style="font-size:.73rem;padding:0 8px">${_pendingLabel}</td>
-      <td colspan="1"></td>
-    </tr>`;
-    })() : ''}
     ${grandTrackSpent > 0 && !_filterOver ? `
     <tr style="background:color-mix(in srgb,#8b5cf6 4%,transparent);border-top:1px dashed color-mix(in srgb,#8b5cf6 25%,transparent)">
       <td></td>
@@ -8775,7 +8515,7 @@ function payFmtUp(v)   { const n = Math.ceil(parseFloat(v) || 0);  return '$' + 
 // amountDue (minimum) and outstandingBalance (statement balance).
 // Nothing here needs manual entry — it's all derived from data already held.
 
-// ── shared rate + promo helpers (used by BOTH the Payments tab and Path to Freedom) ──
+// ── shared rate + promo helpers (Payments tab; Path to Freedom removed 2026-09-10) ──
 // Two rates matter and they are not the same number. Mattress Firm and Costco carry
 // apr:0 on ccTracker.cards (nothing is accruing today) while the ACCOUNT holds the real
 // contractual rate — 34.99% and 24.74%. Path to Freedom already read the account rate;
@@ -11424,483 +11164,6 @@ function computeCCChargesForMonth(cardAccountId, month) {
     }
     return sum + (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
   }, 0);
-}
-
-function computeCCReimbChargesForMonth(cardAccountId, month) {
-  // Same filters as computeCCChargesForMonth but only for reimbursable categories
-  const reimbIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
-  if (!reimbIds.size) return 0;
-  return (D.transactions || []).filter(t => {
-    if (t.accountId !== cardAccountId) return false;
-    if (!t.date || t.date.slice(0, 7) !== month) return false;
-    if (!txnCounts(t)) return false;
-    if (t.isTransfer) return false;
-    if (t.splits && t.splits.length > 0) return t.splits.some(s => reimbIds.has(s.categoryId));
-    return reimbIds.has(t.categoryId);
-  }).reduce((sum, t) => {
-    if (t.splits && t.splits.length > 0) {
-      return sum + t.splits.filter(s => reimbIds.has(s.categoryId))
-                           .reduce((ss, s) => ss + (parseFloat(s.amount) || 0), 0);
-    }
-    return sum + (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
-  }, 0);
-}
-
-// All-time reimbursable charges across ALL months and ALL accounts (CC, bank, any).
-// Unlike the per-month CC version used in the history table, this does NOT filter by account
-// type or histMonths — it captures every transaction in any account that is assigned a
-// reimbursable budget category.
-function computeReimbChargesAllTime() {
-  const reimbIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
-  if (!reimbIds.size) return 0;
-  return (D.transactions || []).filter(t => {
-    if (!txnCounts(t)) return false;
-    if (t.isTransfer) return false;
-    if (t.splits && t.splits.length > 0) return t.splits.some(s => reimbIds.has(s.categoryId));
-    return reimbIds.has(t.categoryId);
-  }).reduce((sum, t) => {
-    if (t.splits && t.splits.length > 0) {
-      return sum + t.splits.filter(s => reimbIds.has(s.categoryId))
-                           .reduce((ss, s) => ss + (parseFloat(s.amount) || 0), 0);
-    }
-    return sum + (parseFloat(t.debit) || 0) - (parseFloat(t.credit) || 0);
-  }, 0);
-}
-
-function renderCCRepaySection(month) {
-  const wrap = id('ccRepayWrap');
-  if (!wrap) return;
-
-  const ccAccounts  = (D.txnAccounts || []).filter(a =>
-    a.type === 'Credit Card' &&
-    // A closed card stays visible only while it still owes something, so a card
-    // closed mid-cycle can still be paid off; once settled it drops out.
-    (a.status !== 'closed' || a.id === UI.ccrSelectedCard || txnCurrentBalance(a) > 0.005));
-  if (!ccAccounts.length) { wrap.innerHTML = ''; return; }
-
-  const bankAccounts = (D.txnAccounts || []).filter(a => ['Bank', 'Savings', 'Cash'].includes(a.type) && a.status !== 'closed');
-  const repayments   = D.budget.ccRepayments || [];
-  const monthLabel   = bFmtMonth(month);
-  const selCardId    = UI.ccrSelectedCard || null;
-  const selCard      = selCardId ? ccAccounts.find(c => c.id === selCardId) : null;
-
-  // Per-card totals + TBD transaction detection
-  const cardRows = ccAccounts.map(card => {
-    const charged      = computeCCChargesForMonth(card.id, month);
-    const cardPayments = repayments.filter(r => r.month === month && r.cardAccountId === card.id);
-    const totalPaid    = cardPayments.reduce((s, p) => s + (parseFloat(p.amountPaid)||0), 0);
-    const remaining    = Math.max(0, charged - totalPaid);
-    // Flag 1: transactions whose Note contains "TBD" — not yet categorized
-    const tbdTxns = (D.transactions || []).filter(t =>
-      t.accountId === card.id &&
-      t.date && t.date.slice(0, 7) === month &&
-      txnCounts(t) &&
-      !t.isTransfer &&
-      (t.notes || '').toUpperCase().includes('TBD')
-    );
-
-    // Flag 2: budget categories used by this card's transactions that are over budget.
-    // Collect every categoryId touched by this card this month, then check each one.
-    const cardTxns = (D.transactions || []).filter(t =>
-      t.accountId === card.id &&
-      t.date && t.date.slice(0, 7) === month &&
-      txnCounts(t) &&
-      !t.isTransfer
-    );
-    const touchedCatIds = new Set();
-    cardTxns.forEach(t => {
-      if (t.splits && t.splits.length > 0) {
-        t.splits.forEach(s => { if (s.categoryId && s.categoryId !== '__income__') touchedCatIds.add(s.categoryId); });
-      } else if (t.categoryId && t.categoryId !== '__income__') {
-        touchedCatIds.add(t.categoryId);
-      }
-    });
-    const overBudgetCats = [...touchedCatIds]
-      .map(catId => {
-        const plan   = budgetGetAdjustedPlan(catId, month);
-        const actual = budgetGetCatActuals(catId, month);
-        const over   = actual - plan;
-        const name   = (D.budget.categories || []).find(c => c.id === catId)?.name || catId;
-        return { catId, name, plan, actual, over };
-      })
-      .filter(c => c.over > 0.005); // half-cent epsilon; plan=0 categories included — any spend against $0 plan is over budget
-
-    return { card, charged, cardPayments, totalPaid, remaining, tbdCount: tbdTxns.length, overBudgetCats };
-  });
-
-  const thStyle   = 'padding:6px 10px;text-align:left;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap';
-  const thStyleR  = thStyle + ';text-align:right';
-
-  // ── LEFT PANEL — card summary rows ──
-  const leftBodyRows = cardRows.map(({ card, charged, totalPaid, remaining, tbdCount, overBudgetCats }) => {
-    const isSel    = card.id === selCardId;
-    const capColor = remaining > 0 ? 'var(--warn)' : 'var(--ok)';
-    const rowBg    = isSel ? 'background:color-mix(in srgb,var(--primary) 8%,transparent)' : '';
-
-    const tbdBadge = tbdCount > 0
-      ? `<span title="${tbdCount} transaction${tbdCount !== 1 ? 's' : ''} with note 'TBD' — budget allocation may be incorrect"
-           style="display:inline-flex;align-items:center;gap:3px;margin-left:6px;padding:1px 6px;border-radius:4px;font-size:.65rem;font-weight:700;background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 35%,transparent);white-space:nowrap;cursor:help">
-           ⚠ ${tbdCount} TBD
-         </span>`
-      : '';
-
-    const overBadge = overBudgetCats.length > 0
-      ? (() => {
-          const tipLines = overBudgetCats.map(c => `${c.name} (+${fmtCurrency(c.over)} over)`).join('\n');
-          const label    = overBudgetCats.length === 1
-            ? `${overBudgetCats[0].name} over budget`
-            : `${overBudgetCats.length} categories over budget`;
-          return `<span title="Categories over budget this month:\n${tipLines}"
-               style="display:inline-flex;align-items:center;gap:3px;margin-left:6px;padding:1px 6px;border-radius:4px;font-size:.65rem;font-weight:700;background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);white-space:nowrap;cursor:help">
-               🔴 ${label}
-             </span>`;
-        })()
-      : '';
-    return `<tr style="cursor:pointer;${rowBg}" onclick="UI.ccrSelectedCard=${isSel?'null':`'${card.id}'`};renderCCRepaySection('${month}')">
-      <td style="padding:7px 10px;font-size:.82rem;font-weight:${isSel?'600':'400'};color:var(--text)">
-        <span style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:2px">
-          ${isSel ? '<span style="color:var(--primary);margin-right:4px">▶</span>' : ''}${esc(card.name)}${tbdBadge}${overBadge}
-        </span>
-      </td>
-      <td style="padding:7px 10px;text-align:right;font-size:.82rem">
-        ${charged > 0
-          ? `<span onclick="event.stopPropagation();BA.showCCChargeDrillDown('${card.id}','${month}')"
-                   style="color:var(--primary);text-decoration:underline;text-decoration-style:dotted;cursor:pointer"
-                   title="Click to see transactions">${fmtCurrency(charged)}</span>`
-          : `<span style="color:var(--text3)">—</span>`}
-      </td>
-      <td style="padding:7px 10px;text-align:right;font-size:.82rem;color:var(--ok);font-weight:500">${totalPaid > 0 ? fmtCurrency(totalPaid) : '<span style="color:var(--text3)">—</span>'}</td>
-      <td style="padding:7px 10px;text-align:right;font-size:.82rem;font-weight:600;color:${capColor}">
-        ${remaining > 0
-          ? `${fmtCurrency(remaining)}<div style="font-size:.62rem;font-weight:600;color:var(--warn);letter-spacing:.03em;margin-top:1px">↑ capitalising</div>`
-          : '<span style="color:var(--ok)">✓ Paid</span>'}
-      </td>
-    </tr>`;
-  }).join('');
-
-  const grandCharged  = cardRows.reduce((s, r) => s + r.charged, 0);
-  const grandPaid     = cardRows.reduce((s, r) => s + r.totalPaid, 0);
-  const grandRem      = cardRows.reduce((s, r) => s + r.remaining, 0);
-  const leftTotalRow  = `<tr style="background:var(--surface2);border-top:2px solid var(--border)">
-    <td style="padding:7px 10px;font-size:.8rem;font-weight:700;color:var(--text)">Total</td>
-    <td style="padding:7px 10px;text-align:right;font-size:.8rem;font-weight:700;color:var(--text)">${fmtCurrency(grandCharged)}</td>
-    <td style="padding:7px 10px;text-align:right;font-size:.8rem;font-weight:700;color:var(--ok)">${fmtCurrency(grandPaid)}</td>
-    <td style="padding:7px 10px;text-align:right;font-size:.8rem;font-weight:700;color:${grandRem>0?'var(--warn)':'var(--ok)'}">${grandRem > 0 ? fmtCurrency(grandRem) : '✓ All paid'}</td>
-  </tr>`;
-
-  const flaggedAccounts = (D.txnAccounts || []).filter(a => a.showInCCRepay);
-  const availRows = flaggedAccounts.map(acct => {
-    const bal = txnCurrentBalance(acct);
-    return `<tr style="background:color-mix(in srgb,var(--ok) 5%,var(--surface))">
-      <td colspan="3" style="padding:6px 10px;font-size:.78rem;color:var(--text2)">🏦 ${esc(acct.name)}</td>
-      <td style="padding:6px 10px;text-align:right;font-size:.82rem;font-weight:600;color:${bal>=0?'var(--ok)':'var(--danger)'}">${fmtCurrency(bal)}</td>
-    </tr>`;
-  }).join('');
-
-  // ── RIGHT PANEL — payment history ──
-  const rightPayments = selCard
-    ? repayments.filter(r => r.month === month && r.cardAccountId === selCardId)
-    : repayments.filter(r => r.month === month && ccAccounts.some(c => c.id === r.cardAccountId));
-
-  const rightTitle = selCard
-    ? `${esc(selCard.name)} — ${monthLabel}`
-    : `All payments — ${monthLabel}`;
-
-  const rightBodyRows = rightPayments.map(p => {
-    const bank  = (D.txnAccounts||[]).find(a => a.id === p.bankAccountId);
-    const ccard = ccAccounts.find(c => c.id === p.cardAccountId);
-    const txn   = p.txnId ? (D.transactions||[]).find(t => t.id === p.txnId) : null;
-    return `<tr>
-      ${!selCard ? `<td style="padding:6px 10px;font-size:.78rem;color:var(--text2)">${esc(ccard?.name||'')}</td>` : ''}
-      <td style="padding:6px 10px;font-size:.78rem;color:var(--text3)">${fmtDate(txn?.date || p.month)}</td>
-      <td style="padding:6px 10px;font-size:.82rem;font-weight:600;color:var(--ok)">${fmtCurrency(p.amountPaid)}</td>
-      <td style="padding:6px 10px;font-size:.78rem;color:var(--text3)">${esc(bank?.name||'—')}</td>
-      <td style="padding:6px 10px;text-align:right">
-        <button class="btn btn-xs btn-ghost" style="font-size:.7rem;color:var(--danger)" onclick="event.stopPropagation();BA.ccrDeletePayment('${p.id}')">✕ Undo</button>
-      </td>
-    </tr>`;
-  }).join('');
-
-  const noPayRow = !rightPayments.length
-    ? `<tr><td colspan="5" style="padding:18px 10px;text-align:center;font-size:.78rem;color:var(--text3)">No payments recorded ${selCard ? 'for this card' : 'this month'}</td></tr>`
-    : '';
-
-  // ── ADD PAYMENT form row (pinned at bottom of right panel) ──
-  const bankOpts   = acctOptions(null, null, { types: ['Bank','Savings','Cash'], blank: false, flat: true });
-  const cardOpts   = cardRows
-    .filter(r => r.card.status !== 'closed' || r.card.id === selCardId)
-    .map(r => `<option value="${r.card.id}"${r.card.id===selCardId?' selected':''}>${esc(r.card.name)}</option>`).join('');
-  const frmRemain  = selCard ? (cardRows.find(r => r.card.id === selCardId)?.remaining || 0)
-                             : (cardRows.find(r => r.remaining > 0)?.remaining || 0);
-  const addPayRow  = `<tr style="background:color-mix(in srgb,var(--primary) 5%,var(--surface2));border-top:2px solid var(--border)">
-    <td colspan="${selCard ? '4' : '5'}" style="padding:8px 10px">
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        ${!selCard ? `<select id="ccr-form-card" class="finput" style="font-size:.76rem;padding:3px 6px;min-width:130px">
-          <option value="">— Card —</option>${cardOpts}
-        </select>` : ''}
-        <select id="ccr-bank-form" class="finput" style="font-size:.76rem;padding:3px 6px;min-width:120px">
-          <option value="">— Pay from —</option>${bankOpts}
-        </select>
-        <input type="text" id="ccr-amt-form" class="finput"
-          style="font-size:.76rem;padding:3px 6px;width:90px;text-align:right"
-          value="${fmtCurrency(frmRemain)}"
-          onfocus="this.value=parseFloat(this.value.replace(/[^0-9.]/g,''))||''"
-          onblur="this.value=fmtCurrency(parseFloat(this.value.replace(/[^0-9.]/g,''))||0)"
-          oninput="BA.ccrUpdateCapPreview('${month}')">
-        <button class="btn btn-primary btn-sm" style="font-size:.76rem;padding:3px 10px;white-space:nowrap"
-          onclick="BA.ccrRecordPaymentForm('${month}')">💸 Record Payment</button>
-      </div>
-      <div id="ccr-cap-preview" style="font-size:.72rem;margin-top:5px;min-height:16px"></div>
-    </td>
-  </tr>`;
-
-  const noDataMsg = cardRows.every(r => r.charged === 0)
-    ? `<div style="padding:20px 16px;color:var(--text3);font-size:.82rem">No CC transactions with assigned expense types found for ${monthLabel}.</div>`
-    : null;
-
-  // ── Capitalised History section ──────────────────────────
-  const histMonths = [...new Set((D.budget.ccRepayments||[]).map(r=>r.month))].sort().reverse();
-  const histCards = ccAccounts.map(card => {
-    const mData = histMonths.map(m => {
-      const charged        = computeCCChargesForMonth(card.id, m);
-      const reimbCharged   = computeCCReimbChargesForMonth(card.id, m);
-      const trueCharged    = Math.max(0, charged - reimbCharged); // your own spend only
-      const paid           = (D.budget.ccRepayments||[])
-        .filter(r => r.cardAccountId === card.id && r.month === m)
-        .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
-      // True cap = your own spend vs payment (reimbursable excluded)
-      // net can be negative when overpaying — reduces running balance
-      const cap = Math.max(0, trueCharged - paid);
-      const net = trueCharged - paid;
-      return { m, charged, reimbCharged, trueCharged, paid, cap, net };
-    }).filter(d => d.charged > 0 || d.paid > 0);
-    // totalCap = net outstanding balance on your OWN spend only
-    const totalCap      = Math.max(0, mData.reduce((s,d) => s + d.net, 0));
-    // totalReimb = gross reimbursable charges on this card across all history months
-    const totalReimb    = mData.reduce((s,d) => s + d.reimbCharged, 0);
-    // NOTE: reimbursements received are NOT tracked per-card — they're a global pool
-    // computed once at the section level (see reimbSummaryBlock below)
-    return { card, mData, totalCap, totalReimb };
-  }).filter(c => c.mData.length > 0);
-
-  const totalCapAll        = histCards.reduce((s,c) => s + c.totalCap, 0);
-  // Total reimbursable charges across ALL accounts (CC, bank, any) and ALL months.
-  // Computed directly from transactions — NOT from histCards — so bank account spending
-  // and months without a logged CC repayment entry are both included.
-  const _ccReimbAll        = computeReimbChargesAllTime();
-  // Cash paid directly via Family tab DR entries flagged ♻ (no expense category, no CC card)
-  const _famDirectReimb    = getFamReimbExpense(null);
-  const totalReimbAll      = _ccReimbAll + _famDirectReimb;
-  // Total reimbursements received — counted ONCE globally, not per card or per month
-  const totalReimbReceived = getReimbReceived(null);
-  const netPendingReimbAll = Math.max(0, totalReimbAll - totalReimbReceived);
-
-  // ── Standalone Reimbursement Tracker (always visible when any activity exists) ──────────
-  // Shows 5-column breakdown: CC charges | Family cash | Total | Received | Pending
-  // Placed OUTSIDE histCards.length gate so it works even with no CC repayment history.
-  const reimbSummaryBlock = (totalReimbAll > 0 || totalReimbReceived > 0) ? `
-    <div style="margin-top:10px;padding:12px 14px;background:color-mix(in srgb,var(--info) 6%,transparent);border:1px solid color-mix(in srgb,var(--info) 22%,transparent);border-radius:var(--r)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
-        <div style="font-size:.75rem;font-weight:700;color:var(--info)">♻ Reimbursement Tracker</div>
-        <button onclick="BA.reimbBreakdownModal()" style="font-size:.7rem;padding:2px 10px;background:color-mix(in srgb,var(--info) 10%,transparent);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);color:var(--info);border-radius:5px;cursor:pointer;font-weight:600" title="See every transaction contributing to these totals — copy and paste to Claude to diagnose discrepancies">🔍 Breakdown</button>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:.73rem">
-        <div style="text-align:center;padding:6px 4px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
-          <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">Reimbursable Txn Charges</div>
-          <div style="font-weight:700;color:var(--info)">${_ccReimbAll > 0 ? fmtCurrency(_ccReimbAll) : '—'}</div>
-        </div>
-        <div style="text-align:center;padding:6px 4px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
-          <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">Family Tab Cash ♻</div>
-          <div style="font-weight:700;color:var(--info)">${_famDirectReimb > 0 ? fmtCurrency(_famDirectReimb) : '—'}</div>
-        </div>
-        <div style="text-align:center;padding:6px 4px;background:color-mix(in srgb,var(--info) 10%,transparent);border-radius:6px;border:1px solid color-mix(in srgb,var(--info) 30%,transparent)">
-          <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">= Total Reimbursable</div>
-          <div style="font-weight:700;color:var(--info)">${totalReimbAll > 0 ? fmtCurrency(totalReimbAll) : '—'}</div>
-        </div>
-        <div style="text-align:center;padding:6px 4px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
-          <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">Total Received</div>
-          <div style="font-weight:700;color:var(--ok)">${totalReimbReceived > 0 ? fmtCurrency(totalReimbReceived) : '—'}</div>
-        </div>
-        <div style="text-align:center;padding:6px 4px;background:var(--surface);border-radius:6px;border:1px solid ${netPendingReimbAll > 0 ? 'color-mix(in srgb,var(--warn) 30%,transparent)' : 'color-mix(in srgb,var(--ok) 30%,transparent)'}">
-          <div style="color:var(--text3);font-size:.65rem;margin-bottom:3px">Net Pending</div>
-          <div style="font-weight:700;color:${netPendingReimbAll > 0 ? 'var(--warn)' : 'var(--ok)'}">
-            ${netPendingReimbAll > 0 ? fmtCurrency(netPendingReimbAll) : '✓ Fully settled'}
-          </div>
-        </div>
-      </div>
-      <div style="font-size:.66rem;color:var(--text3);margin-top:7px">
-        <b>Reimbursable Txn Charges</b> = transactions in any account (CC, bank, etc.) assigned a reimbursable expense type. &nbsp;
-        <b>Family Cash ♻</b> = DR entries in Family tab flagged ♻ (cash you paid directly, no expense type). &nbsp;
-        <b>Received</b> = ♻-flagged credits in Transactions tab + Family tab.
-      </div>
-    </div>` : '';
-
-  let histHTML = '';
-  if (histCards.length) {
-    const histCollapsed = UI._ccrHistCollapsed;
-    // Per-card collapse state: default fully-paid cards to collapsed, outstanding ones to expanded
-    if (!UI._ccrCardCollapsed) UI._ccrCardCollapsed = {};
-    histCards.forEach(({ card, totalCap }) => {
-      if (UI._ccrCardCollapsed[card.id] === undefined) {
-        UI._ccrCardCollapsed[card.id] = (totalCap === 0); // auto-collapse fully-paid cards
-      }
-    });
-
-    const cardTables = histCards.map(({ card, mData, totalCap, totalReimb }) => {
-      const cardCollapsed  = UI._ccrCardCollapsed[card.id];
-      const hasReimb       = totalReimb > 0;
-      const statusColor    = totalCap > 0 ? 'var(--warn)' : 'var(--ok)';
-      // Reimbursements are not card-specific — just show the charged amount per card
-      const reimbStatus    = hasReimb
-        ? `<span style="color:var(--info);font-size:.7rem;margin-left:8px">♻ ${fmtCurrency(totalReimb)} reimbursable</span>`
-        : '';
-      const statusLabel    = totalCap > 0
-        ? `<span style="font-weight:700">True cap: ${fmtCurrency(totalCap)}</span>${reimbStatus}`
-        : `<span>All fully paid ✓</span>${reimbStatus}`;
-
-      // Only build table rows when expanded
-      let tableHTML = '';
-      if (!cardCollapsed) {
-        // mData is newest-first. Compute running cumulative oldest→newest so overpayments
-        // correctly reduce the accumulated balance, then store results indexed to mData.
-        // Cumulative is based on trueCharged only — reimbursable is excluded.
-        const cumCaps = [];
-        let runCum = 0;
-        [...mData].reverse().forEach(d => {
-          runCum = Math.max(0, runCum + d.net); // net = trueCharged - paid (can be negative)
-          cumCaps.unshift(runCum);              // prepend so index aligns with mData
-        });
-
-        const rows = mData.map((d, i) => {
-          const cumCap = cumCaps[i];
-          const reimbCell = hasReimb
-            ? `<td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--info)">${d.reimbCharged > 0 ? fmtCurrency(d.reimbCharged) : '—'}</td>`
-            : '';
-          return `<tr${d.reimbCharged > 0 ? ' style="background:color-mix(in srgb,var(--info) 3%,transparent)"' : ''}>
-            <td style="padding:5px 10px;font-size:.75rem;color:var(--text3)">${bFmtMonth(d.m)}</td>
-            <td style="padding:5px 10px;text-align:right;font-size:.75rem">${fmtCurrency(d.trueCharged)}</td>
-            ${reimbCell}
-            <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:var(--ok)">${d.paid > 0 ? fmtCurrency(d.paid) : '—'}</td>
-            <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:600;color:${d.cap>0?'var(--warn)':'var(--ok)'}">${d.cap > 0 ? fmtCurrency(d.cap) : '—'}</td>
-            <td style="padding:5px 10px;text-align:right;font-size:.75rem;color:${cumCap>0?'var(--warn)':'var(--ok)'}">${fmtCurrency(cumCap)}</td>
-          </tr>`;
-        }).join('');
-
-        const reimbHeader = hasReimb
-          ? `<th style="${thStyleR}">♻ Reimb Charged</th>`
-          : '';
-        const reimbFooter = hasReimb
-          ? `<tr style="background:color-mix(in srgb,var(--info) 6%,transparent);border-top:1px dashed color-mix(in srgb,var(--info) 25%,transparent)">
-               <td style="padding:5px 10px;font-size:.72rem;color:var(--info);font-style:italic" colspan="2">♻ Total reimbursable on this card</td>
-               <td style="padding:5px 10px;text-align:right;font-size:.75rem;font-weight:700;color:var(--info)">${fmtCurrency(totalReimb)}</td>
-               <td colspan="3" style="padding:5px 10px;font-size:.71rem;color:var(--text3)">Received &amp; pending shown in summary below ↓</td>
-             </tr>`
-          : '';
-
-        tableHTML = `
-          <div style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--r) var(--r);overflow:hidden">
-            <table style="width:100%;border-collapse:collapse">
-              <thead><tr style="background:var(--surface2)">
-                <th style="${thStyle}">Month</th>
-                <th style="${thStyleR}">Your Spend</th>
-                ${reimbHeader}
-                <th style="${thStyleR}">Paid</th>
-                <th style="${thStyleR}">↑ True Cap</th>
-                <th style="${thStyleR}">Cumulative</th>
-              </tr></thead>
-              <tbody>${rows}${reimbFooter}</tbody>
-            </table>
-          </div>`;
-      }
-
-      return `
-        <div style="margin-bottom:10px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
-          <div style="display:flex;justify-content:space-between;align-items:center;
-                      padding:7px 12px;background:var(--surface2);cursor:pointer;user-select:none"
-               onclick="UI._ccrCardCollapsed['${card.id}']=!UI._ccrCardCollapsed['${card.id}'];renderCCRepaySection('${month}')">
-            <span style="display:flex;align-items:center;gap:7px;font-size:.8rem;font-weight:700;color:var(--text)">
-              <span style="font-size:.7rem;color:var(--text3)">${cardCollapsed ? '▶' : '▼'}</span>
-              ${esc(card.name)}
-            </span>
-            <span style="font-size:.75rem;color:${statusColor}">${statusLabel}</span>
-          </div>
-          ${tableHTML}
-        </div>`;
-    }).join('');
-
-    histHTML = `
-      <div style="margin-top:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface2);cursor:pointer"
-             onclick="UI._ccrHistCollapsed=!UI._ccrHistCollapsed;renderCCRepaySection('${month}')">
-          <div style="font-size:.85rem;font-weight:700;color:var(--text)">
-            ${histCollapsed ? '▶' : '▼'} ↑ Capitalised History
-          </div>
-          <div style="display:flex;gap:12px;align-items:center">
-            <span style="font-size:.75rem;color:${totalCapAll>0?'var(--warn)':'var(--ok)'}">
-              ${totalCapAll > 0 ? `${fmtCurrency(totalCapAll)} true cap across all cards` : 'All months fully paid ✓'}
-            </span>
-            ${totalReimbAll > 0
-              ? netPendingReimbAll > 0
-                ? `<span style="font-size:.72rem;color:var(--info)">♻ ${fmtCurrency(netPendingReimbAll)} still pending</span>`
-                : `<span style="font-size:.72rem;color:var(--ok)">♻ Fully reimbursed ✓</span>`
-              : ''}
-          </div>
-        </div>
-        ${histCollapsed ? '' : `<div style="padding:14px 16px">${cardTables}</div>`}
-      </div>`;
-  }
-
-  wrap.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
-        <div style="font-size:.85rem;font-weight:700;color:var(--text)">💳 CC Repayment Planner — ${monthLabel}
-          <span onclick="switchView('payments')" title="This panel reconciles charges against a calendar month. The Payments tab works off real statement cycles and tells you what to pay from the cash you actually have."
-            style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:5px;font-size:.62rem;font-weight:600;cursor:pointer;background:var(--warn-bg);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent)">
-            superseded → Payments tab</span>
-        </div>
-        <div style="font-size:.74rem;color:var(--text3)">Expense-typed transactions only</div>
-      </div>
-      ${noDataMsg || `
-      <div style="display:flex;align-items:stretch">
-        <div style="flex:0 0 55%;border-right:1px solid var(--border);overflow-x:auto">
-          <table style="width:100%;border-collapse:collapse">
-            <thead><tr style="background:var(--surface2)">
-              <th style="${thStyle}">Card</th>
-              <th style="${thStyleR}">Charged</th>
-              <th style="${thStyleR}">Paid</th>
-              <th style="${thStyleR}">Capitalised</th>
-            </tr></thead>
-            <tbody>
-              ${leftBodyRows}
-              ${leftTotalRow}
-              ${availRows}
-            </tbody>
-          </table>
-        </div>
-        <div style="flex:1;display:flex;flex-direction:column;min-width:0;overflow-x:auto">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--surface2);border-bottom:1px solid var(--border)">
-            <span style="font-size:.75rem;font-weight:600;color:var(--text2)">${rightTitle}</span>
-            ${selCard ? `<button onclick="UI.ccrSelectedCard=null;renderCCRepaySection('${month}')" style="background:none;border:none;cursor:pointer;font-size:.7rem;color:var(--text3);padding:0">✕ Show all</button>` : ''}
-          </div>
-          <table style="width:100%;border-collapse:collapse;flex:1">
-            <thead><tr style="background:var(--surface2)">
-              ${!selCard ? `<th style="${thStyle}">Card</th>` : ''}
-              <th style="${thStyle}">Date</th>
-              <th style="${thStyleR}">Amount</th>
-              <th style="${thStyle}">Paid From</th>
-              <th style="border-bottom:1px solid var(--border)"></th>
-            </tr></thead>
-            <tbody>
-              ${rightBodyRows}
-              ${noPayRow}
-              ${addPayRow}
-            </tbody>
-          </table>
-        </div>
-      </div>`}
-    </div>
-    ${histHTML}
-    ${reimbSummaryBlock}`;
 }
 
 // ── Annual Budget Grid ───────────────────────────────────────
@@ -14983,17 +14246,6 @@ const BA = {
       document.body.appendChild(modal);
     });
   },
-  treemapDrill(idx) {
-    const node = (UI._tmNodes || [])[idx];
-    if (!node || node.isLeaf) return;
-    if (node.nextLevel === 1) { UI.treemapGroupId = node.id; UI.treemapLevel = 1; }
-    if (node.nextLevel === 2) { UI.treemapCatId   = node.id; UI.treemapLevel = 2; }
-    renderTreemap();
-  },
-  treemapNav(level) {
-    UI.treemapLevel = level;
-    renderTreemap();
-  },
   dismissSaveError() { clearSaveError(); refreshSaveUI(); },
 
   paySetSrc(cardId, acctId) {
@@ -16402,180 +15654,6 @@ const BA = {
     if (UI.view === 'annual') renderAnnual();
     if (UI.view === 'actuals') renderActualsGrid();
   },
-
-  reimbBreakdownModal() {
-    const fmtAmt = n => '$' + (n||0).toFixed(2);
-    const reimbIds = new Set((D.budget.categories||[]).filter(c => c.reimbursable).map(c => c.id));
-    const acctMap  = {};
-    (D.txnAccounts||[]).forEach(a => { acctMap[a.id] = a.name; });
-    const persons  = famPersons();
-    const personMap = {};
-    persons.forEach(p => { personMap[p.id] = p.name; });
-
-    // ── Section A: Reimbursable txn charges ──────────────────
-    const reimbTxns = (D.transactions||[]).filter(t => {
-      if (t.status && t.status !== 'approved') return false;
-      if (t.isTransfer) return false;
-      if (t.splits?.length) return t.splits.some(s => reimbIds.has(s.categoryId));
-      return reimbIds.has(t.categoryId);
-    }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
-    const sectionA = reimbTxns.map(t => {
-      let amt, cats;
-      if (t.splits?.length) {
-        const matching = t.splits.filter(s => reimbIds.has(s.categoryId));
-        amt  = matching.reduce((s,l) => s + (parseFloat(l.amount)||0), 0);
-        cats = matching.map(s => txnCatLabel(s.categoryId)||s.categoryId).join(' + ');
-      } else {
-        amt  = (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
-        cats = txnCatLabel(t.categoryId)||t.categoryId||'';
-      }
-      return { date: t.date||'', acct: acctMap[t.accountId]||'?', payee: t.payee||'', cats, amt };
-    });
-    const totalA = sectionA.reduce((s,r) => s + r.amt, 0);
-
-    // ── Section B: Family tab DR entries flagged ♻ ───────────
-    const sectionB = [];
-    Object.entries(((D.familyAccounts)||{}).ledgers||{}).forEach(([pid, entries]) => {
-      (entries||[]).filter(e => e.isReimbursement && e.dr > 0).forEach(e => {
-        sectionB.push({ person: personMap[pid]||pid, date: e.date||'', desc: e.description||'', amt: parseFloat(e.dr)||0 });
-      });
-    });
-    sectionB.sort((a,b) => a.date.localeCompare(b.date));
-    const totalB = sectionB.reduce((s,r) => s + r.amt, 0);
-
-    // ── Section C: Received — Transactions tab ♻ credits ─────
-    const sectionC = (D.transactions||[])
-      .filter(t => t.isReimbursement && (parseFloat(t.credit)||0) > 0)
-      .sort((a,b) => (a.date||'').localeCompare(b.date||''))
-      .map(t => ({ date: t.date||'', acct: acctMap[t.accountId]||'?', payee: t.payee||'', amt: parseFloat(t.credit)||0 }));
-    const totalC = sectionC.reduce((s,r) => s + r.amt, 0);
-
-    // ── Section D: Received — Family tab CR entries flagged ♻ ─
-    const sectionD = [];
-    Object.entries(((D.familyAccounts)||{}).ledgers||{}).forEach(([pid, entries]) => {
-      (entries||[]).filter(e => e.isReimbursement && e.cr > 0).forEach(e => {
-        sectionD.push({ person: personMap[pid]||pid, date: e.date||'', desc: e.description||'', amt: parseFloat(e.cr)||0 });
-      });
-    });
-    sectionD.sort((a,b) => a.date.localeCompare(b.date));
-    const totalD = sectionD.reduce((s,r) => s + r.amt, 0);
-
-    // ── Build copy-friendly plain text ────────────────────────
-    const pad = (s, n) => String(s).padEnd(n);
-    const lines = [];
-    lines.push('=== REIMBURSEMENT BREAKDOWN ===');
-    lines.push('');
-    lines.push('--- A) Reimbursable Transaction Charges ---');
-    lines.push(pad('Date',12) + pad('Account',20) + pad('Payee',30) + pad('Expense Type',28) + 'Amount');
-    lines.push('-'.repeat(95));
-    sectionA.forEach(r => lines.push(pad(r.date,12) + pad(r.acct,20) + pad(r.payee,30) + pad(r.cats,28) + fmtAmt(r.amt)));
-    lines.push('-'.repeat(95));
-    lines.push(pad('SUBTOTAL A',90) + fmtAmt(totalA));
-    lines.push('');
-    lines.push('--- B) Family Tab Cash Paid (DR entries flagged ♻) ---');
-    lines.push(pad('Date',12) + pad('Person',20) + pad('Description',50) + 'Amount');
-    lines.push('-'.repeat(88));
-    sectionB.forEach(r => lines.push(pad(r.date,12) + pad(r.person,20) + pad(r.desc,50) + fmtAmt(r.amt)));
-    lines.push('-'.repeat(88));
-    lines.push(pad('SUBTOTAL B',83) + fmtAmt(totalB));
-    lines.push('');
-    lines.push(`TOTAL REIMBURSABLE (A + B) = ${fmtAmt(totalA + totalB)}`);
-    lines.push('');
-    lines.push('--- C) Received — Transactions Tab (♻-flagged credits) ---');
-    lines.push(pad('Date',12) + pad('Account',20) + pad('Payee',40) + 'Amount');
-    lines.push('-'.repeat(78));
-    sectionC.forEach(r => lines.push(pad(r.date,12) + pad(r.acct,20) + pad(r.payee,40) + fmtAmt(r.amt)));
-    lines.push('-'.repeat(78));
-    lines.push(pad('SUBTOTAL C',73) + fmtAmt(totalC));
-    lines.push('');
-    lines.push('--- D) Received — Family Tab (CR entries flagged ♻) ---');
-    lines.push(pad('Date',12) + pad('Person',20) + pad('Description',40) + 'Amount');
-    lines.push('-'.repeat(78));
-    sectionD.forEach(r => lines.push(pad(r.date,12) + pad(r.person,20) + pad(r.desc,40) + fmtAmt(r.amt)));
-    lines.push('-'.repeat(78));
-    lines.push(pad('SUBTOTAL D',73) + fmtAmt(totalD));
-    lines.push('');
-    lines.push(`TOTAL RECEIVED (C + D) = ${fmtAmt(totalC + totalD)}`);
-    lines.push('');
-    lines.push(`NET PENDING = ${fmtAmt(Math.max(0, (totalA+totalB) - (totalC+totalD)))}`);
-    const copyText = lines.join('\n');
-
-    // ── Build HTML modal ──────────────────────────────────────
-    const tblHdr = (cols) => `<tr style="background:var(--surface2)">${cols.map(c=>`<th style="padding:4px 8px;text-align:left;font-size:.7rem;border-bottom:1px solid var(--border);white-space:nowrap">${c}</th>`).join('')}</tr>`;
-    const tblRow = (cells, shade) => `<tr style="${shade?'background:color-mix(in srgb,var(--info) 3%,transparent)':''}">
-      ${cells.map(c=>`<td style="padding:3px 8px;font-size:.72rem;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent);white-space:nowrap">${c}</td>`).join('')}</tr>`;
-    const totalRow = (label, amt, cols) => `<tr style="background:var(--surface2);font-weight:700">
-      <td colspan="${cols-1}" style="padding:4px 8px;font-size:.72rem;text-align:right">${label}</td>
-      <td style="padding:4px 8px;font-size:.72rem;color:var(--info)">${fmtAmt(amt)}</td></tr>`;
-
-    const secA_html = `
-      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">A — Reimbursable Transaction Charges <span style="color:var(--info);margin-left:8px">${fmtAmt(totalA)}</span></div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
-        ${tblHdr(['Date','Account','Payee','Expense Type','Amount'])}
-        ${sectionA.map((r,i) => tblRow([r.date, esc(r.acct), esc(r.payee), esc(r.cats), fmtAmt(r.amt)], i%2)).join('')}
-        ${totalRow('Subtotal A', totalA, 5)}
-      </table></div>`;
-
-    const secB_html = `
-      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">B — Family Tab Cash Paid (DR flagged ♻) <span style="color:var(--info);margin-left:8px">${fmtAmt(totalB)}</span></div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
-        ${tblHdr(['Date','Person','Description','Amount'])}
-        ${sectionB.map((r,i) => tblRow([r.date, esc(r.person), esc(r.desc), fmtAmt(r.amt)], i%2)).join('')}
-        ${sectionB.length ? totalRow('Subtotal B', totalB, 4) : tblRow(['—','No Family DR entries flagged ♻','',''],false)}
-      </table></div>`;
-
-    const secC_html = `
-      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">C — Received via Transactions Tab (♻ credits) <span style="color:var(--ok);margin-left:8px">${fmtAmt(totalC)}</span></div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
-        ${tblHdr(['Date','Account','Payee','Amount'])}
-        ${sectionC.map((r,i) => tblRow([r.date, esc(r.acct), esc(r.payee), fmtAmt(r.amt)], i%2)).join('')}
-        ${sectionC.length ? totalRow('Subtotal C', totalC, 4) : tblRow(['—','No ♻-flagged credit transactions','',''],false)}
-      </table></div>`;
-
-    const secD_html = `
-      <div style="font-size:.76rem;font-weight:700;color:var(--text);margin:14px 0 6px">D — Received via Family Tab (CR flagged ♻) <span style="color:var(--ok);margin-left:8px">${fmtAmt(totalD)}</span></div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:var(--r)">
-        ${tblHdr(['Date','Person','Description','Amount'])}
-        ${sectionD.map((r,i) => tblRow([r.date, esc(r.person), esc(r.desc), fmtAmt(r.amt)], i%2)).join('')}
-        ${sectionD.length ? totalRow('Subtotal D', totalD, 4) : tblRow(['—','No Family CR entries flagged ♻','',''],false)}
-      </table></div>`;
-
-    const net = Math.max(0, (totalA+totalB) - (totalC+totalD));
-    const summaryHtml = `
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px;padding:10px 12px;background:color-mix(in srgb,var(--info) 6%,transparent);border:1px solid color-mix(in srgb,var(--info) 20%,transparent);border-radius:var(--r)">
-        <div style="text-align:center">
-          <div style="font-size:.65rem;color:var(--text3);margin-bottom:2px">Total Reimbursable (A+B)</div>
-          <div style="font-weight:700;color:var(--info);font-size:.85rem">${fmtAmt(totalA+totalB)}</div>
-        </div>
-        <div style="text-align:center">
-          <div style="font-size:.65rem;color:var(--text3);margin-bottom:2px">Total Received (C+D)</div>
-          <div style="font-weight:700;color:var(--ok);font-size:.85rem">${fmtAmt(totalC+totalD)}</div>
-        </div>
-        <div style="text-align:center">
-          <div style="font-size:.65rem;color:var(--text3);margin-bottom:2px">Net Pending</div>
-          <div style="font-weight:700;font-size:.85rem;color:${net>0?'var(--warn)':'var(--ok)'}">${net>0?fmtAmt(net):'✓ Fully settled'}</div>
-        </div>
-      </div>`;
-
-    // Stash copy text in UI so the onclick can reference it by name — avoids inlining
-    // the entire string as an HTML attribute (breaks on quotes, parens, etc.)
-    UI._reimbCopyText = copyText;
-    showModal(`
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
-        <div class="modal-title" style="margin-bottom:0">♻ Reimbursement Breakdown</div>
-        <button onclick="navigator.clipboard.writeText(UI._reimbCopyText).then(()=>toast('Copied! Paste into Claude.','ok'))"
-          style="font-size:.72rem;padding:3px 12px;background:var(--primary);color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600;white-space:nowrap">
-          📋 Copy as Text
-        </button>
-      </div>
-      <div style="font-size:.72rem;color:var(--text3);margin-bottom:12px">Click <b>Copy as Text</b> and paste into Claude to diagnose discrepancies.</div>
-      ${secA_html}${secB_html}${secC_html}${secD_html}${summaryHtml}
-    `);
-    // Widen the modal so the tables have room
-    const _m = document.querySelector('#modal-root .modal');
-    if (_m) { _m.style.maxWidth = '860px'; _m.style.width = '90vw'; }
-  },
-
   toggleCatReimbursable(catId) {
     const cat = (D.budget.categories||[]).find(c => c.id === catId);
     if (!cat) return;
@@ -17108,8 +16186,8 @@ function oblAutoGenerateTxns() {
 //                          every budget comparison, over-budget alert and pot
 //                          runway measures only money that leaves cash flow.
 //   _txnActualsFull      — the REPORTING number; everything, so Category
-//                          Trends and Spending Breakdown still show what care
-//                          actually cost. Derived, so it is never persisted.
+//                          Trends still shows what care actually cost.
+//                          Derived, so it is never persisted.
 let _txnActualsFull = {};
 // How much of a category+month's budget figure came from moving money into or
 // out of a savings/reserve pot rather than from spending. Kept separately so
@@ -19083,7 +18161,7 @@ const ACCT_FLAGS = [
   ['acct-inpay',      'includeInPayments',   'Include in Payments cash',
    'Adds this account\u2019s balance to Cash Today and Safe to Deploy on the Payments tab, and lets its income, pending debits and dated-ahead rows feed the cash runway. Tick it for every everyday spending account, not just the main one. Savings-pot and reserve accounts are always excluded, whatever is ticked here — that money is already earmarked.'],
   ['acct-prefunded',  'preFunded',           "Pre-funded — spending here doesn't count against budgets",
-   'For money that is already earmarked and replenished outside your household cash flow — an HSA fed by payroll, an FSA, a 529. Spending stays in Category Trends, Spending Breakdown and every statement, so you still see what it really cost; it simply stops competing with the monthly budget and the savings pot for that category, which are sized for out-of-pocket cash.'],
+   'For money that is already earmarked and replenished outside your household cash flow — an HSA fed by payroll, an FSA, a 529. Spending stays in Category Trends and every statement, so you still see what it really cost; it simply stops competing with the monthly budget and the savings pot for that category, which are sized for out-of-pocket cash.'],
 ];
 
 function acctEditModal(editId) {
@@ -20823,15 +19901,10 @@ function renderDebtPayoff() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// PATH TO FREEDOM — Credit-card debt avalanche (Rich Dad, Poor Dad lens:
-// pay down expense-liabilities highest-rate-first, fastest way to flip
-// cash flow back toward income-assets). Ford Lightning and other Loans-type
-// accounts are excluded — this view is credit-card revolving debt only.
+// CREDIT-CARD DEBT MODEL — the Path to Freedom view was removed 2026-09-10
+// (the Payments tab answers the same question). These two builders survive
+// because the Financial Statements' debt-to-income ratio uses them.
 // ══════════════════════════════════════════════════════════════════════
-let _ptfChart = null;
-const PTF_MAX_MONTHS = 600;
-const PTF_LEDGER_START = '2026-01'; // balance-trend window start — adjust if your "new approach" start date changes
-
 function ptfCardMinPayment(ccCardId, balance) {
   const tmpl = (D.templates || []).find(t => t.ccCardId === ccCardId);
   if (tmpl) {
@@ -20842,98 +19915,6 @@ function ptfCardMinPayment(ccCardId, balance) {
     }
   }
   return Math.max(25, Math.round(balance * 0.02 * 100) / 100);
-}
-
-// Statement-cycle history for a card: due/paid/outstanding for each cycle that's actually come
-// due, merged from two sources — the live cycles/templates tracking (recent, ongoing) and
-// D.ptfMinDueHistory (older statements backfilled once, from outside the Monthly tab entirely).
-// The two windows don't overlap (history stops where live tracking starts), so this produces
-// one continuous month-by-month series wherever both exist.
-function ptfPaymentHistory(ccCardId, asOf) {
-  const rowsByMonth = {};
-
-  const histForCard = D.ptfMinDueHistory?.[ccCardId] || {};
-  Object.entries(histForCard).forEach(([m, rec]) => {
-    if (rec.dueDate && rec.dueDate > asOf) return;
-    rowsByMonth[m] = {
-      month: m,
-      due: parseFloat(rec.due) || 0,
-      paid: rec.paid != null ? parseFloat(rec.paid) : null,
-      metMin: !!rec.metMin,
-      outstanding: rec.outstanding != null ? parseFloat(rec.outstanding) : null,
-    };
-  });
-
-  const tmpl = (D.templates || []).find(t => t.ccCardId === ccCardId);
-  if (tmpl) {
-    Object.keys(D.cycles || {}).sort().forEach(m => {
-      const pay = (D.cycles[m]?.payments || []).find(p => p.templateId === tmpl.id);
-      if (!pay || pay.amountDue == null) return;
-      if (pay.dueDate && pay.dueDate > asOf) return; // not due yet — nothing to judge
-      const due = parseFloat(pay.amountDue) || 0;
-      const paid = pay.amountPaid != null ? parseFloat(pay.amountPaid) : null;
-      rowsByMonth[m] = {
-        month: m,
-        due,
-        paid,
-        // Nothing owed (e.g. an unused store card that cycled with a $0 balance) always counts
-        // as met, regardless of whether a payment record exists for that month.
-        metMin: due <= 0.01 || (paid != null && paid >= due - 0.01),
-        outstanding: pay.outstandingBalance != null ? parseFloat(pay.outstandingBalance) : null,
-      };
-    });
-  }
-
-  return Object.keys(rowsByMonth).sort().map(m => rowsByMonth[m]);
-}
-
-// Verdict on whether the balance is actually going down over a window, not just whether
-// minimums are being met — the two are independent. A card can meet its minimum every single
-// month and still grow if new charges (plus interest) outpace what's paid. Takes a plain array
-// of balance values (oldest → newest), regardless of source (statement cycles or ledger).
-function ptfPaceVerdict(values) {
-  if (values.length < 2) return { label: 'Not enough history yet', color: 'var(--text3)', change: null, pct: null };
-  const first = values[0], last = values[values.length - 1];
-  const change = last - first;
-  const pct = first > 0 ? (change / first * 100) : 0;
-  if (last <= first * 0.97) return { label: '📉 Paying down', color: '#22c55e', change, pct };
-  if (last >= first * 1.03) return { label: '📈 Growing despite payments', color: '#ef4444', change, pct };
-  return { label: '➡️ Flat — covering minimum only', color: '#d97706', change, pct };
-}
-
-// Month-end ledger balance for a CC account from `startYm` through `asOf` — independent of the
-// cycles/templates tracking (which only goes back to when statement-level tracking started).
-// Since the raw transaction ledger goes back to account opening, this gives a much longer,
-// smoother read on whether the balance is actually trending down, without needing any new data.
-function ptfLedgerMonthlyBalances(acct, startYm, asOf) {
-  const out = [];
-  let [y, m] = startYm.split('-').map(Number);
-  const [endY, endM] = asOf.slice(0,7).split('-').map(Number);
-  while (y < endY || (y === endY && m <= endM)) {
-    const lastDay = new Date(y, m, 0).getDate();
-    let dateStr = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-    if (dateStr > asOf) dateStr = asOf;
-    out.push({ month: `${y}-${String(m).padStart(2,'0')}`, balance: Math.max(0, finBalanceAsOf(acct, dateStr)) });
-    m++; if (m > 12) { m = 1; y++; }
-  }
-  return out;
-}
-
-function ptfSparkline(values, color) {
-  if (!values.length) return '<span style="font-size:.7rem;color:var(--text3)">—</span>';
-  const w = 110, h = 30, pad = 3;
-  const min = Math.min(...values), max = Math.max(...values);
-  const range = (max - min) || 1;
-  const pts = values.map((v, i) => {
-    const x = pad + (i / (values.length - 1 || 1)) * (w - 2 * pad);
-    const y = h - pad - ((v - min) / range) * (h - 2 * pad);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const lastX = pad + (w - 2*pad), lastY = h - pad - ((values[values.length-1]-min)/range)*(h-2*pad);
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block">
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"/>
-    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2.5" fill="${color}"/>
-  </svg>`;
 }
 
 function ptfBuildCards(asOf) {
@@ -21013,414 +19994,6 @@ function ptfBuildCards(asOf) {
       minPayment,
       hasPlannedPayment,
     };
-  });
-}
-
-function ptfPriorityOrder(cards) {
-  return [...cards].sort((a, b) => b.effectiveApr - a.effectiveApr);
-}
-
-// Simulates the avalanche waterfall: minimums on every card each month, plus
-// `extraMonthly` (and any minimums freed up by cards that have hit zero)
-// dumped on the highest-priority remaining card. Returns months-to-payoff,
-// total interest paid, and the payoff month for each card (by array index).
-function ptfSimulate(orderedCards, extraMonthly) {
-  const n = orderedCards.length;
-  let bals = orderedCards.map(c => c.balance);
-  const minPay = orderedCards.map(c => c.minPayment);
-  // Uses effectiveApr, not the contractual apr: an on-track promo card is modeled at 0%
-  // since it isn't actually accruing interest as long as it stays on pace.
-  const rate = orderedCards.map(c => (c.effectiveApr || 0) / 100 / 12);
-  const payoffMonth = new Array(n).fill(null);
-  for (let i = 0; i < n; i++) payoffMonth[i] = bals[i] <= 0.005 ? 0 : null;
-  let month = 0, totalInterest = 0;
-  while (bals.some(b => b > 0.005) && month < PTF_MAX_MONTHS) {
-    month++;
-    let freedUp = extraMonthly;
-    for (let i = 0; i < n; i++) if (bals[i] <= 0.005) freedUp += minPay[i];
-    for (let i = 0; i < n; i++) {
-      if (bals[i] <= 0.005) continue;
-      const interest = bals[i] * rate[i];
-      totalInterest += interest;
-      bals[i] = bals[i] + interest - minPay[i];
-    }
-    for (let i = 0; i < n; i++) {
-      if (bals[i] > 0.005 && freedUp > 0) {
-        const pay = Math.min(freedUp, bals[i]);
-        bals[i] -= pay;
-        freedUp -= pay;
-      }
-    }
-    for (let i = 0; i < n; i++) {
-      if (bals[i] < 0) bals[i] = 0;
-      if (bals[i] <= 0.005 && payoffMonth[i] === null) payoffMonth[i] = month;
-    }
-  }
-  return { months: month, totalInterest, payoffMonth, maxedOut: month >= PTF_MAX_MONTHS };
-}
-
-function ptfSetPromoExpiration(acctId, val) {
-  const acct = (D.txnAccounts || []).find(a => a.id === acctId);
-  const meta = acct && (D.ccTracker?.cards || []).find(c => c.id === acct.ccCardId);
-  if (!meta) return;
-  meta.promoExpiration = val || '';
-  dirty();
-  renderPathToFreedom();
-}
-
-function ptfSetPlannedPayment(acctId, val) {
-  const acct = (D.txnAccounts || []).find(a => a.id === acctId);
-  const meta = acct && (D.ccTracker?.cards || []).find(c => c.id === acct.ccCardId);
-  if (!meta) return;
-  const n = parseFloat(val);
-  meta.plannedPayment = (n > 0) ? n : null;
-  dirty();
-  renderPathToFreedom();
-  toast(meta.plannedPayment ? `${acct.name} now modeled at ${fmtCurrency(meta.plannedPayment)}/mo` : `${acct.name} back to the auto-derived minimum`, 'ok');
-}
-
-function ptfSetPayInFull(acctId, checked) {
-  const acct = (D.txnAccounts || []).find(a => a.id === acctId);
-  const meta = acct && (D.ccTracker?.cards || []).find(c => c.id === acct.ccCardId);
-  if (!meta) return;
-  meta.payInFull = !!checked;
-  dirty();
-  renderPathToFreedom();
-  toast(checked ? `${acct.name} marked paid-in-full — excluded from the payoff plan` : `${acct.name} back in the payoff plan`, 'ok');
-}
-
-function ptfSetExtra(val) {
-  D.pathToFreedom.extraMonthly = Math.max(0, parseFloat(val) || 0);
-  dirty();
-  renderPathToFreedom();
-}
-
-function ptfSetPaceYear(y) {
-  // 'all' (or no arg) clears the filter entirely. Otherwise toggle the clicked year in/out of
-  // the multi-select list so several years can be viewed together.
-  if (!y || y === 'all') { UI.ptfPaceYears = []; renderPathToFreedom(); return; }
-  const set = new Set(UI.ptfPaceYears || []);
-  if (set.has(y)) set.delete(y); else set.add(y);
-  UI.ptfPaceYears = [...set].sort();
-  renderPathToFreedom();
-}
-
-function ptfMonthsLabel(n) {
-  if (n == null) return '—';
-  if (n <= 0) return 'Paid off';
-  const y = Math.floor(n / 12), m = n % 12;
-  if (y === 0) return `${m} mo`;
-  return `${y} yr${y!==1?'s':''}${m ? ' ' + m + ' mo' : ''}`;
-}
-
-function ptfPayoffDate(monthsFromNow) {
-  const today = centralToday();
-  const [y, m] = today.split('-').map(Number);
-  let yy = y, mm = m + monthsFromNow;
-  while (mm > 12) { mm -= 12; yy++; }
-  const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return `${MO[mm-1]} ${yy}`;
-}
-
-function renderPathToFreedom() {
-  const wrap = id('view-path-to-freedom');
-  if (!wrap) return;
-  if (_ptfChart) { try { _ptfChart.destroy(); } catch(e){} _ptfChart = null; }
-
-  const asOf = centralToday();
-  const allCards = ptfBuildCards(asOf);
-  const attackCards = ptfPriorityOrder(allCards.filter(c => !c.payInFull));
-  const paidInFullCards = allCards.filter(c => c.payInFull);
-  const activeAttack = attackCards.filter(c => c.balance > 0.005);
-
-  const extra = parseFloat(D.pathToFreedom?.extraMonthly) || 0;
-  const withExtra = ptfSimulate(activeAttack, extra);
-  const minOnly    = ptfSimulate(activeAttack, 0);
-
-  const totalDebt   = activeAttack.reduce((s,c) => s + c.balance, 0);
-  const totalMin    = activeAttack.reduce((s,c) => s + c.minPayment, 0);
-  const weightedApr = totalDebt > 0 ? activeAttack.reduce((s,c) => s + c.balance * c.apr, 0) / totalDebt : 0;
-  const interestSaved = minOnly.totalInterest - withExtra.totalInterest;
-  const monthsSaved    = minOnly.months - withExtra.months;
-
-  // "Urgent" now means genuinely at risk — a promo card that's behind the pace needed to
-  // clear before its deferred-interest window ends. A card on pace isn't costing anything
-  // right now, so it doesn't get flagged even if the expiration date is close.
-  const urgentPromos = activeAttack.filter(c => c.promoExpiration && c.promoOnTrack === false);
-
-  // Years available for the pace-panel pill selector — union of backfilled min-due history
-  // months and live cycle-tracking months, across every card.
-  const paceYearsAvailable = [...new Set(
-    Object.values(D.ptfMinDueHistory || {}).flatMap(months => Object.keys(months).map(m => m.slice(0,4)))
-      .concat(Object.keys(D.cycles || {}).map(m => m.slice(0,4)))
-  )].filter(Boolean).sort();
-
-  // ── Reality check: are minimums actually being met, and is the balance actually
-  // trending down? Separate questions — a card can meet its minimum every month and
-  // still grow if new charges + interest outpace what's paid toward it.
-  const paceRows = activeAttack.map(c => {
-    // Combined statement history (backfilled historical + live cycles/templates tracking) —
-    // gives both min-due compliance AND real statement-balance figures, which are more
-    // authoritative than a ledger reconstruction wherever they exist.
-    const hist = ptfPaymentHistory(c.ccCardId, asOf);
-    // Scope to the selected year pills, if any — an empty selection behaves exactly as before
-    // (all history). Multiple years selected together are treated as one combined window —
-    // e.g. picking 2024 + 2026 shows only those months, skipping 2025 in between.
-    const paceYears = (UI.ptfPaceYears && UI.ptfPaceYears.length) ? UI.ptfPaceYears : null;
-    const scopedHist = paceYears ? hist.filter(h => paceYears.includes(h.month.slice(0,4))) : hist;
-    const missedCount = scopedHist.filter(h => !h.metMin).length;
-    const histValues = scopedHist.filter(h => h.outstanding != null).map(h => h.outstanding);
-    // Balance trend: prefer the real statement-history balances above; only fall back to a
-    // ledger reconstruction (account opening onward, or spanning just the selected years) if
-    // there isn't enough statement history for this card to judge a trend from.
-    let values = histValues, windowLabel = scopedHist.length ? scopedHist[0].month : null;
-    if (values.length < 2) {
-      const acct = (D.txnAccounts || []).find(x => x.id === c.id);
-      const yearsSorted = paceYears ? [...paceYears].sort() : null;
-      const ledgerStart = yearsSorted ? `${yearsSorted[0]}-01` : PTF_LEDGER_START;
-      const ledgerEnd = yearsSorted ? (yearsSorted[yearsSorted.length-1] < asOf.slice(0,4) ? `${yearsSorted[yearsSorted.length-1]}-12-31` : asOf) : asOf;
-      let ledger = acct ? ptfLedgerMonthlyBalances(acct, ledgerStart, ledgerEnd) : [];
-      // Ledger reconstruction is contiguous month-by-month across the full span — if the
-      // selected years skip a gap (e.g. 2024 + 2026, no 2025), drop the in-between months so
-      // the trend only reflects the years actually picked.
-      if (yearsSorted) ledger = ledger.filter(x => yearsSorted.includes(x.month.slice(0,4)));
-      values = ledger.map(x => x.balance);
-      windowLabel = ledger.length ? ledger[0].month : ledgerStart;
-    }
-    const verdict = ptfPaceVerdict(values);
-    // The overall Jan-to-now change can hide a reversal — e.g. a lump payment early in the
-    // window makes the whole window look like "paying down" even if the last few months have
-    // been climbing back up. Surface the recent trend (last 3 months, or fewer if not enough
-    // history) alongside the overall one so an early one-off doesn't mask current direction.
-    const recentSpan = Math.min(3, values.length - 1);
-    const recentChange = recentSpan > 0 ? values[values.length - 1] - values[values.length - 1 - recentSpan] : null;
-    return { c, hist: scopedHist, verdict, values, missedCount, windowLabel, recentSpan, recentChange };
-  }).filter(r => r.values.length || r.hist.length);
-  const growingCount = paceRows.filter(r => r.verdict.color === '#ef4444').length;
-  const anyMissedMin = paceRows.some(r => r.missedCount > 0);
-  // Total change over the selected window, summed across all cards with a known change —
-  // the headline number for "as a whole, is total revolving debt actually going down?"
-  const totalChangeOverWindow = paceRows.reduce((s, r) => s + (r.verdict.change || 0), 0);
-  const totalChangeKnown = paceRows.some(r => r.verdict.change != null);
-
-  const cardRow = (c, i) => {
-    const isUrgent = c.promoExpiration && c.promoOnTrack === false;
-    const isOnTrackPromo = c.promoExpiration && c.promoOnTrack === true;
-    const payoffMo = withExtra.payoffMonth[i];
-    const rankBadge = c.balance <= 0.005
-      ? `<span style="font-size:.68rem;color:var(--ok)">paid off</span>`
-      : `<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:${isUrgent?'#f59e0b':'var(--primary)'};color:#fff;font-size:.7rem;font-weight:800">${activeAttack.filter(x=>x.balance>0.005).indexOf(c)+1}</span>`;
-    return `
-    <tr style="border-top:1px solid var(--border)">
-      <td style="padding:9px 10px">${rankBadge}</td>
-      <td style="padding:9px 10px;font-weight:700">${esc(c.name)}</td>
-      <td style="padding:9px 10px;text-align:right;font-weight:600;${c.balance>0?'color:var(--danger)':''}">${fmtCurrency(c.balance)}</td>
-      <td style="padding:9px 10px;text-align:right">${c.apr.toFixed(2)}%${isOnTrackPromo ? '<div style="font-size:.65rem;color:var(--text3);font-weight:400">0% while on pace</div>' : ''}</td>
-      <td style="padding:9px 10px;text-align:right">
-        <input type="number" min="0" step="1" value="${c.minPayment.toFixed(2)}" onchange="ptfSetPlannedPayment('${c.id}', this.value)"
-          title="${c.hasPlannedPayment ? 'Committed payment you\'ve set — overrides the auto-derived minimum. Clear to 0 to go back to auto.' : 'Auto-derived from statement history. Enter your actual planned payment if you pay more than the card\'s minimum.'}"
-          style="width:80px;text-align:right;font-size:.78rem;padding:3px 6px;border-radius:6px;border:1px solid ${c.hasPlannedPayment?'var(--primary)':'var(--border)'};background:var(--surface);color:${c.hasPlannedPayment?'var(--text)':'var(--text3)'}">
-        <div style="font-size:.62rem;color:${c.hasPlannedPayment?'var(--primary)':'var(--text3)'};margin-top:1px">${c.hasPlannedPayment?'committed':'auto'}</div>
-      </td>
-      <td style="padding:9px 10px;text-align:center">
-        <input type="date" value="${c.promoExpiration||''}" onchange="ptfSetPromoExpiration('${c.id}', this.value)"
-          style="font-size:.72rem;padding:3px 6px;border-radius:6px;border:1px solid ${isUrgent?'#f59e0b':'var(--border)'};background:var(--surface);color:var(--text)">
-        ${isUrgent ? `<div style="font-size:.66rem;color:#f59e0b;font-weight:700;margin-top:2px">⚠ behind pace — ${c.promoPayments != null ? `only ${c.promoPayments} payments land before expiry, leaving ${fmtCurrency(c.promoGap||0)} outstanding. ` : ''}Needs +${fmtCurrency(c.promoShortfall||0)}/mo${c.apr ? ` or the balance starts accruing at ${c.apr}%` : ''}<span onclick="event.stopPropagation();switchView('payments')" style="margin-left:6px;text-decoration:underline;cursor:pointer">fix in Payments →</span></div>` : ''}
-        ${isOnTrackPromo ? `<div style="font-size:.66rem;color:var(--ok);font-weight:700;margin-top:2px">✓ on pace to clear in time</div>` : ''}
-      </td>
-      <td style="padding:9px 10px;text-align:right;font-weight:700;color:${payoffMo===0?'var(--ok)':'var(--text)'}">${ptfMonthsLabel(payoffMo)}</td>
-      <td style="padding:9px 10px;text-align:center">
-        <label style="font-size:.7rem;color:var(--text3);cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-          <input type="checkbox" onchange="ptfSetPayInFull('${c.id}', this.checked)" style="cursor:pointer">Pay in full
-        </label>
-      </td>
-    </tr>`;
-  };
-
-  const tableHead = `
-    <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
-      <th style="padding:6px 10px">#</th><th style="padding:6px 10px">Card</th>
-      <th style="padding:6px 10px;text-align:right">Balance</th><th style="padding:6px 10px;text-align:right">APR</th>
-      <th style="padding:6px 10px;text-align:right">Min/mo</th><th style="padding:6px 10px;text-align:center">Promo expires</th>
-      <th style="padding:6px 10px;text-align:right">Payoff</th><th style="padding:6px 10px;text-align:center">Paid in full?</th>
-    </tr>`;
-
-  const paidInFullRow = (c) => `
-    <tr style="border-top:1px solid var(--border)">
-      <td style="padding:8px 10px;font-weight:700">${esc(c.name)}</td>
-      <td style="padding:8px 10px;text-align:right">${fmtCurrency(c.balance)}</td>
-      <td style="padding:8px 10px;text-align:right;color:var(--text3)">${c.apr.toFixed(2)}%</td>
-      <td style="padding:8px 10px;text-align:center">
-        <label style="font-size:.72rem;color:var(--text3);cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-          <input type="checkbox" checked onchange="ptfSetPayInFull('${c.id}', this.checked)" style="cursor:pointer">Paid in full
-        </label>
-      </td>
-    </tr>`;
-
-  // ── Payoff timeline chart data (total revolving balance over time) ──
-  const maxMo = Math.max(withExtra.maxedOut ? 0 : withExtra.months, minOnly.maxedOut ? 0 : minOnly.months, 1);
-  const seqFor = (extraAmt) => {
-    const bals = activeAttack.map(c => c.balance);
-    const minPay = activeAttack.map(c => c.minPayment);
-    const rate = activeAttack.map(c => (c.effectiveApr||0)/100/12);
-    const seq = [bals.reduce((s,b)=>s+b,0)];
-    for (let mo = 1; mo <= maxMo; mo++) {
-      let freedUp = extraAmt;
-      for (let i=0;i<bals.length;i++) if (bals[i] <= 0.005) freedUp += minPay[i];
-      for (let i=0;i<bals.length;i++) {
-        if (bals[i] <= 0.005) continue;
-        bals[i] = bals[i] + bals[i]*rate[i] - minPay[i];
-      }
-      for (let i=0;i<bals.length;i++) {
-        if (bals[i] > 0.005 && freedUp > 0) { const pay = Math.min(freedUp, bals[i]); bals[i] -= pay; freedUp -= pay; }
-        if (bals[i] < 0) bals[i] = 0;
-      }
-      seq.push(bals.reduce((s,b)=>s+b,0));
-    }
-    return seq;
-  };
-  const labels = Array.from({length: maxMo+1}, (_,i) => i===0 ? 'Now' : ptfPayoffDate(i));
-
-  wrap.innerHTML = `
-    <div style="padding:18px 20px 36px">
-      <div style="margin-bottom:18px">
-        <div style="font-size:1.05rem;font-weight:800;margin-bottom:2px">🚀 Path to Freedom</div>
-        <div style="font-size:.78rem;color:var(--text3)">Credit-card debt avalanche — highest APR first. Rich Dad, Poor Dad framing: every dollar here is an expense-liability pulling cash out of your pocket; killing the highest-rate ones fastest frees that cash flow for income-assets.</div>
-      </div>
-
-      ${urgentPromos.length ? `
-      <div style="background:var(--warn-bg,#422006);border:1px solid #f59e0b;border-radius:var(--r2);padding:12px 16px;margin-bottom:18px;font-size:.8rem;color:var(--text)">
-        ⚠ <b>${urgentPromos.length}</b> card${urgentPromos.length!==1?'s are':' is'} behind the pace needed to clear before its promo ends
-        (${urgentPromos.map(c=>esc(c.name)).join(', ')}) — bumped to the top of the payoff order,
-        since deferred-interest promos can retroactively charge interest on the full original balance if not cleared by the deadline.
-        Cards on pace to clear in time aren't flagged — they aren't costing anything right now.
-      </div>` : ''}
-
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
-        ${finCard('Revolving CC Debt', fmtCurrency(totalDebt), activeAttack.length+' cards', '#ef4444')}
-        ${finCard('Weighted Avg APR', weightedApr.toFixed(2)+'%', null, '#d97706')}
-        ${finCard('Debt-Free Date', withExtra.maxedOut ? 'Not on track' : ptfPayoffDate(withExtra.months), 'in '+ptfMonthsLabel(withExtra.months), withExtra.maxedOut?'#ef4444':'var(--ok)')}
-        ${finCard('Interest Saved', fmtCurrency(Math.max(0,interestSaved)), monthsSaved>0 ? monthsSaved+' fewer months vs. minimums only' : null, '#22c55e')}
-      </div>
-
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:20px">
-        <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
-          <div>
-            <div style="font-weight:700;font-size:.85rem">📊 Are you keeping pace?</div>
-            <div style="font-size:.73rem;color:var(--text3);margin-top:2px">
-              Balance trend and minimum-due compliance are both from real statement history now — backfilled data plus
-              live tracking, per card (window varies by card; shown per row below)${(UI.ptfPaceYears && UI.ptfPaceYears.length) ? `, scoped to <b>${UI.ptfPaceYears.join(' + ')}</b>` : ''}.
-              Meeting the minimum every month and the balance actually going down are two different things —
-              new charges plus interest can outpace what's paid even when nothing is technically missed.
-            </div>
-          </div>
-          ${paceYearsAvailable.length ? `
-          <div class="stabs" style="flex-shrink:0" title="Click to toggle a year on/off — pick more than one to view them together">
-            <button class="stab ${!(UI.ptfPaceYears&&UI.ptfPaceYears.length)?'active':''}" onclick="ptfSetPaceYear('all')">All</button>
-            ${paceYearsAvailable.map(y => `<button class="stab ${(UI.ptfPaceYears||[]).includes(y)?'active':''}" onclick="ptfSetPaceYear('${y}')">${y}</button>`).join('')}
-          </div>` : ''}
-        </div>
-        <div style="padding:10px 14px;font-size:.8rem;${anyMissedMin ? 'color:#ef4444' : 'color:var(--ok)'}">
-          ${anyMissedMin ? '⚠ At least one card missed its minimum due at least once historically — see per-card detail below.' : '✓ Minimum due has been met every recorded month across all cards.'}
-          ${growingCount ? ` &nbsp;·&nbsp; <b style="color:#ef4444">${growingCount} card${growingCount!==1?'s are':' is'} growing</b> despite that — covering the minimum isn't the same as paying it down.` : ''}
-          ${totalChangeKnown ? ` &nbsp;·&nbsp; <b style="color:${totalChangeOverWindow>0?'#ef4444':totalChangeOverWindow<0?'var(--ok)':'var(--text)'}">Total change over window: ${totalChangeOverWindow>0?'+':''}${fmtCurrency(totalChangeOverWindow)}</b>` : ''}
-        </div>
-        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-          <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
-            <th style="padding:6px 10px">Card</th><th style="padding:6px 10px">Balance trend</th>
-            <th style="padding:6px 10px;text-align:right">Change over window</th>
-            <th style="padding:6px 10px;text-align:center">Min due met</th>
-            <th style="padding:6px 10px">Verdict</th>
-          </tr>
-          ${paceRows.map(r => `
-          <tr style="border-top:1px solid var(--border)">
-            <td style="padding:8px 10px;font-weight:700">${esc(r.c.name)}</td>
-            <td style="padding:8px 10px">${ptfSparkline(r.values, r.verdict.color)}<div style="font-size:.62rem;color:var(--text3);margin-top:1px">since ${r.windowLabel ? bFmtMonth(r.windowLabel) : '—'}</div></td>
-            <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.verdict.change>0?'#ef4444':r.verdict.change<0?'#22c55e':'var(--text)'}">
-              ${r.verdict.change==null ? '—' : (r.verdict.change>0?'+':'') + fmtCurrency(r.verdict.change) + ' (' + (r.verdict.pct>0?'+':'') + r.verdict.pct.toFixed(0) + '%)'}
-            </td>
-            <td style="padding:8px 10px;text-align:center;${r.hist.length ? (r.missedCount>0?'color:#ef4444;font-weight:700':'color:var(--text3)') : 'color:var(--text3)'}">${r.hist.length ? (r.hist.length - r.missedCount)+'/'+r.hist.length : 'no data'}</td>
-            <td style="padding:8px 10px;font-weight:700;color:${r.verdict.color}">
-              ${r.verdict.label}
-              ${r.recentChange != null ? `<div style="font-size:.66rem;font-weight:400;color:${r.recentChange>0?'#ef4444':r.recentChange<0?'var(--ok)':'var(--text3)'};margin-top:1px">last ${r.recentSpan}mo: ${r.recentChange>0?'+':''}${fmtCurrency(r.recentChange)} ${r.recentChange>0?'↑ climbing again':r.recentChange<0?'↓':'flat'}</div>` : ''}
-            </td>
-          </tr>`).join('') || `<tr><td colspan="5" style="padding:14px;color:var(--text3)">No recorded statement-cycle history yet</td></tr>`}
-          ${paceRows.length ? `
-          <tr style="border-top:2px solid var(--border);background:var(--surface2)">
-            <td style="padding:8px 10px;font-weight:800" colspan="2">Total change over window</td>
-            <td style="padding:8px 10px;text-align:right;font-weight:800;color:${totalChangeOverWindow>0?'#ef4444':totalChangeOverWindow<0?'#22c55e':'var(--text)'}">
-              ${totalChangeKnown ? (totalChangeOverWindow>0?'+':'') + fmtCurrency(totalChangeOverWindow) : '—'}
-            </td>
-            <td colspan="2"></td>
-          </tr>` : ''}
-        </table>
-      </div>
-
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px;margin-bottom:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <label style="font-size:.8rem;font-weight:700;color:var(--text2)">Extra $/month toward the avalanche</label>
-        <input type="number" min="0" step="10" value="${extra}" onchange="ptfSetExtra(this.value)"
-          style="width:120px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-weight:700">
-        <span style="font-size:.75rem;color:var(--text3)">on top of ${fmtCurrency(totalMin)}/mo in minimums — applied to the #1 card, then rolls forward automatically as each card is paid off.</span>
-      </div>
-
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px 14px;margin-bottom:20px">
-        <div style="font-size:.85rem;font-weight:800;margin-bottom:12px">Payoff Timeline</div>
-        <div style="position:relative;height:260px"><canvas id="ptf-canvas"></canvas></div>
-      </div>
-
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:20px">
-        <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Payoff order (highest APR first)</div>
-        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-          ${tableHead}
-          ${activeAttack.map(cardRow).join('') || '<tr><td colspan="8" style="padding:14px;color:var(--text3)">No revolving credit-card debt 🎉</td></tr>'}
-          ${activeAttack.length ? `
-          <tr style="border-top:2px solid var(--border);background:var(--surface2)">
-            <td colspan="2" style="padding:9px 10px;font-weight:800">Total</td>
-            <td style="padding:9px 10px;text-align:right;font-weight:800;${totalDebt>0?'color:var(--danger)':''}">${fmtCurrency(totalDebt)}</td>
-            <td></td>
-            <td style="padding:9px 10px;text-align:right;font-weight:800">${fmtCurrency(totalMin)}</td>
-            <td colspan="3"></td>
-          </tr>` : ''}
-        </table>
-      </div>
-
-      ${paidInFullCards.length ? `
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-        <div style="padding:10px 14px;font-weight:700;font-size:.82rem;border-bottom:1px solid var(--border)">Paid in full monthly — no action needed</div>
-        <div style="padding:6px 14px 2px;font-size:.72rem;color:var(--text3)">Excluded from the payoff plan since they carry no revolving balance.</div>
-        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-          <tr style="text-align:left;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
-            <th style="padding:6px 10px">Card</th><th style="padding:6px 10px;text-align:right">Current balance</th>
-            <th style="padding:6px 10px;text-align:right">APR</th><th style="padding:6px 10px;text-align:center"></th>
-          </tr>
-          ${paidInFullCards.map(paidInFullRow).join('')}
-        </table>
-      </div>` : ''}
-    </div>`;
-
-  const canvas = id('ptf-canvas');
-  if (!canvas || !activeAttack.length) return;
-  _ptfChart = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Minimums only', data: seqFor(0), borderColor: '#9ca3af', backgroundColor: 'transparent', borderDash: [5,3], borderWidth: 2, pointRadius: 0, tension: 0.3 },
-        { label: `With +${fmtCurrency(extra)}/mo`, data: seqFor(extra), borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.10)', fill: true, borderWidth: 2.5, pointRadius: 0, tension: 0.3 },
-      ],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { position: 'top', labels: { font: { size: 11 }, boxWidth: 14, padding: 14, color: '#94a3b8' } },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtCurrency(Math.max(0, ctx.parsed.y))}` } },
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 12, font: { size: 10 }, color: '#94a3b8', maxRotation: 0 }, grid: { color: 'rgba(148,163,184,0.15)' } },
-        y: { min: 0, ticks: { font: { size: 10 }, color: '#94a3b8', callback: v => v >= 1000 ? '$' + (v/1000).toFixed(0) + 'k' : '$' + v }, grid: { color: 'rgba(148,163,184,0.15)' } },
-      },
-    },
   });
 }
 
@@ -22419,376 +20992,6 @@ Object.assign(BA, {
     }
     renderTxnRight();
   },
-
-  // ── CC Repayment Planner methods ──────────────────────────────────────
-
-  // Drilldown popup: all expense-typed transactions for a card in a month
-  showCCChargeDrillDown(cardAccountId, month) {
-    // Fresh open: clear any prior category selection before rendering
-    UI._ccrDrillSel = new Set();
-    BA._renderCcrDrillModal(cardAccountId, month);
-  },
-
-  _ccrDrillToggleCat(catKey) {
-    if (!UI._ccrDrillSel) UI._ccrDrillSel = new Set();
-    if (UI._ccrDrillSel.has(catKey)) UI._ccrDrillSel.delete(catKey);
-    else UI._ccrDrillSel.add(catKey);
-    const d = UI._ccrDrillCtx;
-    if (d) BA._renderCcrDrillModal(d.cardAccountId, d.month, true);
-  },
-
-  _ccrDrillClearSel() {
-    UI._ccrDrillSel = new Set();
-    const d = UI._ccrDrillCtx;
-    if (d) BA._renderCcrDrillModal(d.cardAccountId, d.month, true);
-  },
-
-  _ccrDrillSelectAll(allKeys) {
-    UI._ccrDrillSel = new Set(allKeys);
-    const d = UI._ccrDrillCtx;
-    if (d) BA._renderCcrDrillModal(d.cardAccountId, d.month, true);
-  },
-
-  _renderCcrDrillModal(cardAccountId, month, preserveScroll) {
-    const card = (D.txnAccounts||[]).find(a => a.id === cardAccountId);
-    const cardName = card ? card.name : cardAccountId;
-    const [y, m] = month.split('-').map(Number);
-    const monthLabel = new Date(y, m-1, 1).toLocaleString('default', { month:'long', year:'numeric' });
-    UI._ccrDrillCtx = { cardAccountId, month };
-    const sel = UI._ccrDrillSel || (UI._ccrDrillSel = new Set());
-
-    // Same filter as computeCCChargesForMonth
-    const txns = (D.transactions||[]).filter(t => {
-      if (t.accountId !== cardAccountId) return false;
-      if (!t.date || t.date.slice(0,7) !== month) return false;
-      if (!txnCounts(t)) return false;
-      if (t.isTransfer) return false;
-      if (t.splits && t.splits.length > 0) return t.splits.some(s => s.categoryId && s.categoryId !== '__income__');
-      return t.categoryId && t.categoryId !== '__income__';
-    }).sort((a,b) => (a.date||'').localeCompare(b.date||''));
-
-    let grandTotal = 0;
-    const catTotals = new Map(); // catKey -> { label, total }
-    const bumpCat = (catId, label, amt) => {
-      const key = catId || label;
-      const existing = catTotals.get(key);
-      if (existing) existing.total += amt;
-      else catTotals.set(key, { label, total: amt });
-    };
-    const rows = txns.map(t => {
-      let amt = 0;
-      let catLabel = '';
-      let splitNote = '';
-
-      if (t.splits && t.splits.length > 0) {
-        const expLines = t.splits.filter(s => s.categoryId && s.categoryId !== '__income__');
-        amt = expLines.reduce((s, sp) => s + (parseFloat(sp.amount)||0), 0);
-        const catNames = [...new Set(expLines.map(sp => txnCatLabel(sp.categoryId)||sp.categoryId))];
-        catLabel = catNames.join(', ');
-        splitNote = `<span style="font-size:.68rem;color:var(--text3);margin-left:3px">(split)</span>`;
-        expLines.forEach(sp => bumpCat(sp.categoryId, txnCatLabel(sp.categoryId)||sp.categoryId, parseFloat(sp.amount)||0));
-      } else {
-        amt = (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
-        catLabel = txnCatLabel(t.categoryId) || t.categoryId || '—';
-        bumpCat(t.categoryId, catLabel, amt);
-      }
-      grandTotal += amt;
-
-      const isTbd   = (t.notes||'').toUpperCase().includes('TBD');
-      const notesHtml = t.notes
-        ? `<span style="font-size:.7rem;color:${isTbd?'var(--warn)':'var(--text3)'};display:block;margin-top:1px;font-weight:${isTbd?'600':'400'}">${esc(t.notes)}</span>`
-        : '';
-
-      return `<tr onclick="closeModal();BA.txnNavToView('${t.id}','${t.accountId}')"
-                  style="border-bottom:1px solid var(--border-light);cursor:pointer;transition:background .12s"
-                  onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
-        <td style="padding:6px 8px;font-size:.78rem;color:var(--text3);white-space:nowrap">${fmtDate(t.date)}</td>
-        <td style="padding:6px 8px;font-size:.78rem;max-width:160px;overflow:hidden;text-overflow:ellipsis">
-          <span style="color:var(--primary);text-decoration:underline;text-decoration-style:dotted">${esc(t.payee||'(no payee)')}</span>${splitNote}
-          ${notesHtml}
-        </td>
-        <td style="padding:6px 8px;font-size:.75rem;color:var(--text3);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(catLabel)}</td>
-        <td style="padding:6px 8px;font-size:.82rem;font-weight:500;text-align:right;white-space:nowrap;color:${amt<0?'var(--ok)':'var(--text)'}">${amt<0?'−':''}${fmtC(Math.abs(amt))}</td>
-      </tr>`;
-    }).join('');
-
-    const emptyState = txns.length === 0
-      ? `<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--text3)">No expense-typed transactions found for ${monthLabel}</td></tr>`
-      : '';
-
-    // Keep selection keys that no longer exist in this render from silently inflating the total
-    const validKeys = new Set(catTotals.keys());
-    [...sel].forEach(k => { if (!validKeys.has(k)) sel.delete(k); });
-
-    const catPills = [...catTotals.entries()]
-      .sort((a,b) => b[1].total - a[1].total)
-      .map(([key, c]) => {
-        const isSel = sel.has(key);
-        return `<span onclick="BA._ccrDrillToggleCat('${esc(key).replace(/'/g,"\\'")}')"
-          title="Click to ${isSel?'remove from':'add to'} selection"
-          style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:.72rem;cursor:pointer;user-select:none;transition:background .1s,border-color .1s;
-                 background:${isSel?'color-mix(in srgb,var(--primary) 16%,transparent)':'var(--surface2)'};
-                 border:1px solid ${isSel?'var(--primary)':'var(--border)'};
-                 color:${isSel?'var(--primary)':'var(--text2)'}">
-          ${isSel?'✓ ':''}<span style="font-weight:500">${esc(c.label)}</span><span style="font-weight:700;${isSel?'':'color:var(--text)'}">${fmtC(c.total)}</span>
-        </span>`;
-      }).join('');
-
-    const allKeysJson = JSON.stringify([...catTotals.keys()]).replace(/"/g,'&quot;');
-    const selectAllBtn = catTotals.size > 0
-      ? `<button onclick="BA._ccrDrillSelectAll(${allKeysJson})" style="background:none;border:none;cursor:pointer;font-size:.72rem;color:var(--primary);padding:0;font-weight:600;text-decoration:underline;text-decoration-style:dotted">☑ Select all categories</button>`
-      : '';
-
-    const selCount = sel.size;
-    const selTotal  = [...sel].reduce((s,k) => s + (catTotals.get(k)?.total || 0), 0);
-    const selBar = selCount > 0 ? `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
-                  margin-bottom:12px;padding:8px 12px;border-radius:8px;
-                  background:color-mix(in srgb,var(--primary) 8%,transparent);
-                  border:1px solid color-mix(in srgb,var(--primary) 25%,transparent)">
-        <div style="font-size:.78rem;color:var(--text2)">
-          <strong style="color:var(--primary)">${selCount}</strong> categor${selCount!==1?'ies':'y'} selected ·
-          Total: <strong style="color:var(--text)">${fmtC(selTotal)}</strong>
-        </div>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-sm" style="font-size:.72rem;padding:3px 9px" onclick="BA._ccrDrillClearSel()">✕ Clear</button>
-          <button class="btn btn-primary btn-sm" style="font-size:.72rem;padding:3px 9px" onclick="BA.ccrUseDrillSelectionAsPayment()">💸 Use as Payment Amount</button>
-        </div>
-      </div>` : '';
-
-    showModal(`
-      <div class="modal-title" style="display:flex;align-items:center;gap:8px">
-        <span>💳 ${esc(cardName)}</span>
-        <span style="font-size:.78rem;font-weight:400;color:var(--text3)">${monthLabel}</span>
-      </div>
-      <div style="margin-bottom:10px;font-size:.78rem;color:var(--text3)">
-        ${txns.length} transaction${txns.length!==1?'s':''} · Charged: <strong style="color:var(--text)">${fmtC(grandTotal)}</strong>
-        ${txns.length>0?' · <span style="font-size:.72rem;opacity:.7">click a pill to build a payment total · click a row to go to the transaction</span>':''}
-      </div>
-      ${catPills ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
-          <div style="font-size:.72rem;color:var(--text3)">Tip: select all, then unselect the ones you want to exclude</div>
-          ${selectAllBtn}
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${catPills}</div>` : ''}
-      ${selBar}
-      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
-        <table style="width:100%;border-collapse:collapse">
-          <thead>
-            <tr style="background:var(--surface2);font-size:.72rem;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">
-              <th style="padding:5px 8px;text-align:left;font-weight:600;white-space:nowrap">Date</th>
-              <th style="padding:5px 8px;text-align:left;font-weight:600">Payee / Notes</th>
-              <th style="padding:5px 8px;text-align:left;font-weight:600">Category</th>
-              <th style="padding:5px 8px;text-align:right;font-weight:600">Amount</th>
-            </tr>
-          </thead>
-          <tbody>${rows}${emptyState}</tbody>
-        </table>
-      </div>
-      <div style="margin-top:12px;display:flex;justify-content:flex-end">
-        <button class="btn btn-primary btn-sm" onclick="closeModal()" style="font-size:.78rem">Close</button>
-      </div>
-    `);
-    // Widen the modal so the category pills have room to breathe
-    const _ccrM = document.querySelector('#modal-root .modal');
-    if (_ccrM) { _ccrM.style.maxWidth = '760px'; _ccrM.style.width = '90vw'; }
-  },
-
-  ccrUseDrillSelectionAsPayment() {
-    const d = UI._ccrDrillCtx;
-    const sel = UI._ccrDrillSel;
-    if (!d || !sel || sel.size === 0) return;
-
-    // Recompute the same per-category totals to get an accurate sum for the current selection
-    const txns = (D.transactions||[]).filter(t => {
-      if (t.accountId !== d.cardAccountId) return false;
-      if (!t.date || t.date.slice(0,7) !== d.month) return false;
-      if (!txnCounts(t)) return false;
-      if (t.isTransfer) return false;
-      if (t.splits && t.splits.length > 0) return t.splits.some(s => s.categoryId && s.categoryId !== '__income__');
-      return t.categoryId && t.categoryId !== '__income__';
-    });
-    let total = 0;
-    txns.forEach(t => {
-      if (t.splits && t.splits.length > 0) {
-        t.splits.filter(s => s.categoryId && s.categoryId !== '__income__').forEach(sp => {
-          if (sel.has(sp.categoryId)) total += parseFloat(sp.amount)||0;
-        });
-      } else if (sel.has(t.categoryId)) {
-        total += (parseFloat(t.debit)||0) - (parseFloat(t.credit)||0);
-      }
-    });
-
-    closeModal();
-
-    // Pre-select this card in the payment form (if a card dropdown is present) and drop in the total
-    const cardEl = id('ccr-form-card');
-    if (cardEl) cardEl.value = d.cardAccountId;
-    else UI.ccrSelectedCard = d.cardAccountId;
-
-    // Re-render so the right-hand payment form reflects the selected card, then fill the amount
-    renderCCRepaySection(d.month);
-    const amtEl = id('ccr-amt-form');
-    if (amtEl) {
-      amtEl.value = fmtCurrency(total);
-      amtEl.focus();
-      BA.ccrUpdateCapPreview(d.month);
-    }
-    toast(`${fmtCurrency(total)} dropped into the payment amount`, 'ok');
-  },
-
-  ccrUpdateCapPreview(month) {
-    const preview = id('ccr-cap-preview');
-    if (!preview) return;
-    const cardEl = id('ccr-form-card');
-    const amtEl  = id('ccr-amt-form');
-    if (!amtEl) return;
-    const cardId = cardEl ? cardEl.value : (UI.ccrSelectedCard || null);
-    if (!cardId) { preview.textContent = ''; return; }
-    const charged    = computeCCChargesForMonth(cardId, month);
-    const alreadyPaid = (D.budget.ccRepayments||[])
-      .filter(r => r.month === month && r.cardAccountId === cardId)
-      .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
-    const inputAmt   = parseFloat(amtEl.value.replace(/[^0-9.]/g,'')) || 0;
-    const willCap    = Math.max(0, charged - alreadyPaid - inputAmt);
-    if (inputAmt <= 0) { preview.textContent = ''; return; }
-    if (willCap > 0) {
-      preview.innerHTML = `<span style="color:var(--warn)">↑ ${fmtCurrency(willCap)} will capitalise onto the card balance</span>`;
-    } else {
-      preview.innerHTML = `<span style="color:var(--ok)">✓ Card will be fully paid for ${bFmtMonth(month)}</span>`;
-    }
-  },
-
-  ccrUpdateCapitalized(cardId, charged, month) {
-    const alreadyPaid = (D.budget.ccRepayments||[])
-      .filter(r => r.cardAccountId === cardId && r.month === month)
-      .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
-    const payEl = id(`ccr-pay-${cardId}`);
-    const capEl = id(`ccr-cap-${cardId}`);
-    if (!payEl || !capEl) return;
-    const newAmt = parseFloat(payEl.value.replace(/[^0-9.]/g,'')) || 0;
-    const cap    = Math.max(0, charged - alreadyPaid - newAmt);
-    capEl.textContent = fmtCurrency(cap);
-    capEl.style.color = cap > 0 ? 'var(--danger)' : 'var(--ok)';
-    const lbl = id(`ccr-cap-lbl-${cardId}`);
-    if (lbl) lbl.style.color = cap > 0 ? '#b45309' : 'var(--text3)';
-  },
-  ccrRecordPayment(cardId, month, charged) {
-    const payEl  = id(`ccr-pay-${cardId}`);
-    const bankEl = id(`ccr-bank-${cardId}`);
-    if (!payEl || !bankEl) return;
-    const amountPaid = parseFloat(payEl.value.replace(/[^0-9.]/g,'')) || 0;
-    const bankAcctId = bankEl.value;
-    if (!bankAcctId) { toast('Select a bank account to pay from', 'err'); return; }
-    if (amountPaid <= 0) { toast('Enter an amount to pay', 'err'); return; }
-
-    const card = (D.txnAccounts||[]).find(a => a.id === cardId);
-    const bank = (D.txnAccounts||[]).find(a => a.id === bankAcctId);
-    if (!card || !bank) { toast('Account not found', 'err'); return; }
-
-    // Create transfer: debit Bank → credit CC card
-    const today      = centralToday();
-    const transferId = uid();
-    const debitId    = uid();
-    const creditId   = uid();
-    const notes      = `CC payment — ${bFmtMonth(month)}`;
-    D.transactions.push({
-      id: debitId, accountId: bankAcctId,
-      date: today, payee: `CC Payment to ${card.name}`,
-      debit: amountPaid, credit: 0,
-      categoryId: null, notes,
-      cleared: false, isTransfer: true,
-      transferId, transferPairId: creditId, transferToAcctId: cardId,
-    });
-    D.transactions.push({
-      id: creditId, accountId: cardId,
-      date: today, payee: `Payment from ${bank.name}`,
-      debit: 0, credit: amountPaid,
-      categoryId: null, notes,
-      cleared: false, isTransfer: true,
-      transferId, transferPairId: debitId, transferFromAcctId: bankAcctId,
-    });
-
-    // Append payment record (multiple allowed per card+month)
-    if (!D.budget.ccRepayments) D.budget.ccRepayments = [];
-    const prevPaid    = (D.budget.ccRepayments||[])
-      .filter(r => r.month === month && r.cardAccountId === cardId)
-      .reduce((s,r) => s + (parseFloat(r.amountPaid)||0), 0);
-    const capitalized = Math.max(0, charged - prevPaid - amountPaid);
-    D.budget.ccRepayments.push({
-      id: uid(), month, cardAccountId: cardId, bankAccountId: bankAcctId,
-      totalCharged: charged, amountPaid, capitalized, txnId: debitId,
-    });
-
-    dirty();
-    renderBudget();
-    renderTxnKpis();
-    toast(`Payment of ${fmtCurrency(amountPaid)} recorded${capitalized > 0 ? ` · ${fmtCurrency(capitalized)} still capitalizing` : ' · fully paid ✓'}`, 'ok');
-  },
-
-  // Record payment from the unified inline form in the two-column grid
-  ccrRecordPaymentForm(month) {
-    const cardEl  = id('ccr-form-card');   // present only when no card is selected
-    const bankEl  = id('ccr-bank-form');
-    const amtEl   = id('ccr-amt-form');
-    if (!bankEl || !amtEl) return;
-
-    // Determine card id — from dropdown when "all", from UI.ccrSelectedCard otherwise
-    const cardId    = cardEl ? cardEl.value : (UI.ccrSelectedCard || '');
-    const bankAcctId = bankEl.value;
-    const amountPaid = parseFloat((amtEl.value || '').replace(/[^0-9.]/g, '')) || 0;
-
-    if (!cardId)     { toast('Select a credit card', 'err'); return; }
-    if (!bankAcctId) { toast('Select a bank account to pay from', 'err'); return; }
-    if (amountPaid <= 0) { toast('Enter an amount greater than 0', 'err'); return; }
-
-    const card = (D.txnAccounts||[]).find(a => a.id === cardId);
-    const bank = (D.txnAccounts||[]).find(a => a.id === bankAcctId);
-    if (!card || !bank) { toast('Account not found', 'err'); return; }
-
-    // Create transfer pair: debit Bank, credit CC card
-    const today      = centralToday();
-    const transferId = uid();
-    const debitId    = uid();
-    const creditId   = uid();
-    const notes      = `CC payment — ${bFmtMonth(month)}`;
-    D.transactions.push({
-      id: debitId, accountId: bankAcctId,
-      date: today, payee: `CC Payment to ${card.name}`,
-      debit: amountPaid, credit: 0,
-      categoryId: null, notes,
-      cleared: false, isTransfer: true,
-      transferId, transferPairId: creditId, transferToAcctId: cardId,
-    });
-    D.transactions.push({
-      id: creditId, accountId: cardId,
-      date: today, payee: `Payment from ${bank.name}`,
-      debit: 0, credit: amountPaid,
-      categoryId: null, notes,
-      cleared: false, isTransfer: true,
-      transferId, transferPairId: debitId, transferFromAcctId: bankAcctId,
-    });
-
-    // Append payment record (multiple per card+month are allowed)
-    if (!D.budget.ccRepayments) D.budget.ccRepayments = [];
-    const charged     = computeCCChargesForMonth(cardId, month);
-    const prevPaid    = (D.budget.ccRepayments)
-      .filter(r => r.month === month && r.cardAccountId === cardId)
-      .reduce((s, r) => s + (parseFloat(r.amountPaid)||0), 0);
-    const capitalized = Math.max(0, charged - prevPaid - amountPaid);
-    D.budget.ccRepayments.push({
-      id: uid(), month, cardAccountId: cardId, bankAccountId: bankAcctId,
-      totalCharged: charged, amountPaid, capitalized, txnId: debitId,
-    });
-
-    // Auto-mark the linked Monthly Tab payment as paid
-    this.ccrAutoMarkMonthlyPaid(cardId, month, bankAcctId);
-
-    dirty();
-    renderBudget();
-    renderTxnKpis();
-    toast(`Payment of ${fmtCurrency(amountPaid)} recorded${capitalized > 0 ? ` · ${fmtCurrency(capitalized)} still remaining` : ' · fully paid ✓'}`, 'ok');
-  },
-
   // Auto-mark the linked Monthly Tab payment as paid when a CCR payment is recorded.
   // Checks current month first; if already paid (or absent), checks next month (early payment).
   // Multiple CCR payments in the same month are silently ignored after the first mark.
@@ -22822,22 +21025,6 @@ Object.assign(BA, {
     if (nxt && !nxt.isPaid && hasAmtDue(nxt)) markPaid(nxt);
   },
 
-  // Delete one specific payment record by its id
-  ccrDeletePayment(recId) {
-    const rec = (D.budget.ccRepayments||[]).find(r => r.id === recId);
-    if (!rec) return;
-    if (rec.txnId) {
-      const txn = (D.transactions||[]).find(t => t.id === rec.txnId);
-      if (txn) {
-        D.transactions = D.transactions.filter(t => t.id !== rec.txnId && t.id !== txn.transferPairId);
-      }
-    }
-    D.budget.ccRepayments = D.budget.ccRepayments.filter(r => r.id !== recId);
-    dirty();
-    renderBudget();
-    renderTxnKpis();
-    toast('Payment removed', 'ok');
-  },
 
   txnFlagPicker(txnId, anchorEl) {
     // Remove any existing picker
