@@ -2065,6 +2065,57 @@ function oblDuplicateWarnings() {
   }
   return warn;
 }
+// ── Does this belong on the Monthly tab? ──────────────────────
+// Shiva's rule, 2026-09-11: a bill earns a Monthly row only when he has to ACT
+// on it — money leaving a bank account on a date, or an amount he must read off
+// a bill before it is paid. A FIXED charge on a CARD needs neither:
+//   "Since Spectrum was fixed and T-Mobile prepaid is fixed and they go from
+//    credit card, tracking their payment in monthly tab is useless work. I will
+//    anyway capture the transaction in credit cards when they hit the account."
+// Variable only counts when the bill actually recurs often enough to act on —
+// an annual card renewal (Microsoft, Total Septic) moves in price but never
+// needs a row, because nothing is due from him when it renews.
+// Card PAYMENTS are not obligations; those are Monthly templates and always
+// belong. trackInMonthly remains the switch — this only reports disagreement.
+function oblShouldTrackMonthly(obj) {
+  if (!obj) return false;
+  const a = acctByName(obj.paymentMethod);
+  const fromBank = !!a && ['Bank', 'Savings', 'Cash'].includes(a.type);
+  const variable = obj.amountType === 'variable';
+  const recurs   = /monthly|weekly/i.test(obj.billingCycle || obj.frequency || '');
+  return fromBank || (variable && recurs);
+}
+function oblMonthlyRuleWarnings() {
+  const warn = {};
+  oblAll().filter(x => oblIsActive(x.obj)).forEach(({ obj }) => {
+    const should = oblShouldTrackMonthly(obj);
+    if (!!obj.trackInMonthly === should) return;
+    const a = acctByName(obj.paymentMethod);
+    const card = !!a && a.type === 'Credit Card';
+    const where = a ? `${card ? 'a card' : 'the bank'} (${a.name})` : 'no account';
+    warn[obj.id] = should
+      ? (card
+          ? `Should show in Monthly — the amount changes every cycle, so you have to read it before it is paid (on ${a.name})`
+          : `Should show in Monthly — money leaves ${where} on a date`)
+      : `Does not need a Monthly row — a fixed ${obj.cost != null ? fmtCurrency(obj.cost) + ' ' : ''}charge on ${where}; the card transaction already captures it`;
+  });
+  return warn;
+}
+function oblMonthlyBadge(warnMap, oblId) {
+  const w = warnMap && warnMap[oblId];
+  if (!w) return '';
+  return `<span title="${esc(w)}" style="margin-left:5px;cursor:help;color:var(--info);font-weight:700">\u2696</span>`;
+}
+// One line above the grid, and only when something disagrees.
+function oblMonthlyRuleBanner() {
+  const n = Object.keys(oblMonthlyRuleWarnings()).length;
+  if (!n) return '';
+  return `<div style="margin:0 0 8px;padding:6px 10px;border-radius:6px;font-size:.72rem;
+      background:color-mix(in srgb,var(--info) 8%,transparent);
+      border:1px solid color-mix(in srgb,var(--info) 25%,transparent);color:var(--info)"
+      title="Rule: a bill belongs in Monthly when money leaves a bank account, or when its amount must be read off a bill before paying. A fixed charge on a card needs no row.">
+      \u2696 ${n} obligation${n === 1 ? '' : 's'} ${n === 1 ? 'does' : 'do'} not match the Monthly-tab rule — hover the \u2696 on each row</div>`;
+}
 function oblDupBadge(warnMap, oblId) {
   const w = warnMap && warnMap[oblId];
   if (!w || !w.length) return '';
@@ -12311,6 +12362,7 @@ function renderOblSubscriptions() {
 
   // ── Shared row builder ─────────────────────────────────────
   const _dupWarn = oblDuplicateWarnings();
+  const _mRule   = oblMonthlyRuleWarnings();
   const makeSubRow = (sub, opts = {}) => {
     const { dimmed = false, struck = false } = opts;
     const renewal = oblNextChargeDate(sub, 'subscription');
@@ -12327,7 +12379,7 @@ function renderOblSubscriptions() {
     const _last  = (renewal && _sched && renewal !== _sched) ? oblLastApproved(sub.id) : null;
     const paidNote = _last ? `<br><span style="font-size:.68rem;color:var(--ok)">✓ charged ${fmtDate(_last.date)}</span>` : '';
     return `<tr style="${rowStyle}">
-      <td>${oblCatPill(sub)}<span style="${nameStyle}">${esc(sub.name)}</span>${oblDupBadge(_dupWarn, sub.id)}${oblPriceBadge(sub)}
+      <td>${oblCatPill(sub)}<span style="${nameStyle}">${esc(sub.name)}</span>${oblDupBadge(_dupWarn, sub.id)}${oblMonthlyBadge(_mRule, sub.id)}${oblPriceBadge(sub)}
         <div style="margin-top:2px">${oblPostBadges(sub)}</div>${endNote}</td>
       <td class="r">${fmtCurrency(sub.cost)}</td>
       <td>${sub.billingCycle}</td>
@@ -12389,6 +12441,7 @@ function renderOblSubscriptions() {
       <div class="sum-card ${overdue>0?'c-danger':''}"><div class="sum-lbl">Overdue</div><div class="sum-val">${overdue}</div><div class="sum-sub">posted, past due, unapproved</div></div>
     </div>
     ${oblFilterBar('subscriptions', all)}
+    ${oblMonthlyRuleBanner()}
     <div class="obl-section-hdr">
       <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">✅ Active Subscriptions</h3>
       <button class="btn btn-primary btn-sm" onclick="oblAddSubModal()">＋ Add Subscription</button>
@@ -12495,6 +12548,7 @@ function renderOblEmis() {
 
   const enrichedSorted = oblSortArr(oblApplyFilters(enriched), 'emi');
   const _dupWarnE = oblDuplicateWarnings();
+  const _mRuleE   = oblMonthlyRuleWarnings();
 
   const freqLabel = f => f === 'Bi-weekly' ? '2wk' : f === 'Quarterly' ? 'qtr' : 'mo';
 
@@ -12504,7 +12558,7 @@ function renderOblEmis() {
     return `<tr>
       <td>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          ${oblCatPill(e)}<span>${esc(e.itemName||e.name||'Loan')}</span>${oblDupBadge(_dupWarnE, e.id)}${oblPriceBadge(e)}
+          ${oblCatPill(e)}<span>${esc(e.itemName||e.name||'Loan')}</span>${oblDupBadge(_dupWarnE, e.id)}${oblMonthlyBadge(_mRuleE, e.id)}${oblPriceBadge(e)}
         </div>
         <div style="margin-top:2px">${oblPostBadges(e)}</div>
         ${e.lender?`<div style="font-size:.7rem;color:var(--text3);margin-top:1px">${esc(e.lender)}</div>`:''}
@@ -12561,6 +12615,7 @@ function renderOblEmis() {
       ${oblOverdueCount('emi') > 0 ? `<div class="sum-card c-danger"><div class="sum-lbl">Overdue</div><div class="sum-val">${oblOverdueCount('emi')}</div><div class="sum-sub">posted, past due, unapproved</div></div>` : ''}
     </div>
     ${oblFilterBar('loans', all)}
+    ${oblMonthlyRuleBanner()}
     <div class="obl-section-hdr">
       <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">Active Loans &amp; Financing</h3>
       <button class="btn btn-primary btn-sm" onclick="oblAddEmiModal()">＋ Add Loan</button>
@@ -12679,6 +12734,7 @@ function renderOblSplits() {
 
   const sorted = oblSortArr(oblApplyFilters(splits), 'split');
   const _dupWarnS = oblDuplicateWarnings();
+  const _mRuleS   = oblMonthlyRuleWarnings();
   const rows = sorted.length ? sorted.map(sp => {
     const paid     = sp.installmentsPaid || 0;
     const total    = sp.totalInstallments || 1;
@@ -12691,7 +12747,7 @@ function renderOblSplits() {
       return `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
     })();
     return `<tr style="${isComplete?'opacity:.55':''}">
-      <td>${oblCatPill(sp)}${esc(sp.name)}${oblDupBadge(_dupWarnS, sp.id)}${oblPriceBadge(sp)}
+      <td>${oblCatPill(sp)}${esc(sp.name)}${oblDupBadge(_dupWarnS, sp.id)}${oblMonthlyBadge(_mRuleS, sp.id)}${oblPriceBadge(sp)}
         <div style="margin-top:2px">${oblPostBadges(sp)}</div></td>
       <td class="r">${fmtCurrency(sp.installmentAmount)}</td>
       <td>${paid} / ${total}</td>
@@ -12728,6 +12784,7 @@ function renderOblSplits() {
       ${oblOverdueCount('split') > 0 ? `<div class="sum-card c-danger"><div class="sum-lbl">Overdue</div><div class="sum-val">${oblOverdueCount('split')}</div><div class="sum-sub">posted, past due, unapproved</div></div>` : ''}
     </div>
     ${oblFilterBar('split payments', splits)}
+    ${oblMonthlyRuleBanner()}
     <div class="obl-section-hdr">
       <h3 style="font-size:.95rem;font-weight:700;color:var(--text)">Split Payments</h3>
       <button class="btn btn-primary btn-sm" onclick="oblAddSplitModal()">＋ Add Split Payment</button>
