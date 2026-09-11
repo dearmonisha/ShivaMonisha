@@ -3592,7 +3592,19 @@ function commitCell(value, pid, field, type) {
 
   let v = value;
   if (type === 'num') { v = value === '' ? null : parseFloat(value); if (isNaN(v)) v = null; }
+  const prev = p[field];
   p[field] = v;
+  // Amount Paid owns the transaction it wrote. Changing it here moves the
+  // ledger with it — including an automatic payment whose real figure only
+  // became known after the row was ticked.
+  if (field === 'amountPaid' && p.isPaid && prev !== v) {
+    if (p.txnId) {
+      if (mtxSyncAmount(p)) toast(`Transaction updated to ${fmtCurrency(mtxAmount(p, mtxKind(p) === 'card'))}`, 'ok');
+    } else {
+      const r = mtxWrite(p);                    // it had no amount when ticked
+      if (r.ok) toast(`${p.name || 'Payment'} — transaction recorded ✓`, 'ok');
+    }
+  }
   dirty();
   reRenderRow(pid);
 }
@@ -3608,12 +3620,163 @@ function reRenderRow(pid) {
   tr.parentNode.replaceChild(tmp.firstElementChild, tr);
 }
 
+// ── Marking a Monthly row paid writes the transaction too ─────────────────
+// Approving an obligation already did both halves — it posts the transaction AND
+// ticks the Monthly row (oblTickMonthlyRow). Going the other way did nothing, so
+// Shiva ticked the row and then typed the same payment into the ledger by hand:
+//   "when I mark Monthly payment as paid, I am manually entering the
+//    corresponding transaction again in the Transaction tab."
+// A Monthly row is one of three things, and each needs a different write:
+//   card        — a bank→card transfer pair, exactly what payRecord() builds.
+//   obligation  — the engine has ALREADY posted a pending row for this month, so
+//                 approve that one. Creating a second would double the spend.
+//   bill        — a plain debit from the pay-from account, categorised by the
+//                 template's expense type.
+// Everything written here is stamped back onto the row (txnId / txnPairId /
+// txnAuto) so unticking is a true inverse and editing Amount Paid can follow the
+// transaction. Nothing is ever guessed: no amount, no account, no write.
+function mtxTemplateFor(p)  { return (D.templates || []).find(t => t.id === p.templateId) || null; }
+function mtxCardAcctFor(p) {
+  const t = mtxTemplateFor(p);
+  if (!t || !t.ccCardId) return null;
+  const card = (D.ccTracker?.cards || []).find(c => c.id === t.ccCardId);
+  return card ? ((D.txnAccounts || []).find(a => a.id === card.linkedTxnAccountId) || null) : null;
+}
+function mtxKind(p) {
+  if (mtxCardAcctFor(p)) return 'card';
+  if (p.obligationId)    return 'obligation';
+  return 'bill';
+}
+// A bill's amount due IS what gets paid, so falling back to it is right. A card's
+// is the minimum, and Shiva almost never pays exactly the minimum — guessing there
+// would put a wrong figure into the ledger, the card balance and the runway. So a
+// card row has to be told, and says so instead of inventing one.
+function mtxAmount(p, strict) {
+  const typed = (p.amountPaid != null && p.amountPaid !== '') ? +p.amountPaid : NaN;
+  const v = isFinite(typed) ? typed : (strict ? NaN : +p.amountDue);
+  return isFinite(v) ? Math.round(v * 100) / 100 : 0;
+}
+// The row the obligation engine already posted for this month, if it is still waiting.
+function mtxPendingOblTxn(p) {
+  if (!p.obligationId) return null;
+  const ym = (p.statementDate || p.dueDate || p.paidDate || centralToday()).slice(0, 7);
+  return (D.transactions || []).find(t =>
+    t.obligationId === p.obligationId && t.status === 'pending' &&
+    ((t.oblMonth || (t.date || '').slice(0, 7)) === ym)) ||
+    (D.transactions || []).find(t => t.obligationId === p.obligationId && t.status === 'pending') || null;
+}
+// Writes the transaction for a row being marked paid. Returns {ok, reason}.
+function mtxWrite(p) {
+  if (!p || p.txnId) return { ok: true };            // already has one
+  const kind = mtxKind(p);
+  const amt  = mtxAmount(p, kind === 'card');
+
+  if (kind === 'obligation') {
+    const pend = mtxPendingOblTxn(p);
+    if (pend) {
+      const a = amt > 0 ? amt : ((+pend.debit || 0) || (+pend.credit || 0));
+      if (!(a > 0)) return { ok: false, reason: 'Enter the amount paid first' };
+      oblApproveTxn(pend, p.paidDate || pend.date, a, null);
+      p.txnId = pend.id; p.txnAuto = 'approved';
+      p.amountPaid = a;
+      recomputeTxnActuals();
+      return { ok: true, approved: true };
+    }
+    // no pending row (auto-post off, or already actioned) — fall through to a plain debit
+  }
+
+  if (!(amt > 0)) return { ok: false,
+    reason: kind === 'card' ? 'Enter what you actually paid on this card' : 'Enter the amount paid first' };
+
+  if (kind === 'card') {
+    const cardAcct = mtxCardAcctFor(p);
+    const bankId   = p.paidFromId || payDefaults().bankAccountId;
+    if (!bankId) return { ok: false, reason: 'Set a Paid From account first' };
+    const tpl = mtxTemplateFor(p);
+    let purpose = 'principal';
+    try { const s = payCardStates().find(x => x.acct.id === cardAcct.id); if (s) purpose = payPurpose(s, amt); } catch (e) {}
+    const r = payRecord(cardAcct.id, amt, purpose, {
+      bankAccountId: bankId, cardId: tpl ? tpl.ccCardId : null, date: p.paidDate || centralToday(),
+      statementDate: p.statementDate || null, dueDate: p.dueDate || null,
+      notes: `Payment — ${p.name || cardAcct.name}`, markMonthly: false
+    });
+    if (!r) return { ok: false, reason: 'Could not record that payment' };
+    p.txnId = r.debitId; p.txnPairId = r.creditId; p.txnAuto = 'created';
+    recomputeTxnActuals();
+    return { ok: true };
+  }
+
+  // bill — a plain debit from the account it is paid from
+  const acctId = p.paidFromId;
+  if (!acctId) return { ok: false, reason: 'Set a Paid From account first' };
+  const tpl  = mtxTemplateFor(p);
+  const txn  = {
+    id: uid(), accountId: acctId, date: p.paidDate || centralToday(),
+    payee: p.name || 'Payment', debit: amt, credit: 0,
+    categoryId: (tpl && tpl.expenseTypeId) || null,
+    notes: p.notes || '', cleared: false
+  };
+  // A template may carry a split (Coserv is one bill, gas and electricity).
+  if (tpl && Array.isArray(tpl.splitTemplate) && tpl.splitTemplate.length) {
+    const lines = (typeof oblSplitLinesFor === 'function') ? oblSplitLinesFor(tpl, amt) : null;
+    if (lines && lines.length) { txn.splits = lines; txn.categoryId = null; }
+  }
+  D.transactions.push(txn);
+  p.txnId = txn.id; p.txnAuto = 'created';
+  recomputeTxnActuals();
+  return { ok: true };
+}
+// The exact inverse. A row we CREATED is deleted; a row we merely APPROVED goes
+// back to pending so the obligation queue owns it again.
+function mtxRemove(p) {
+  if (!p || !p.txnId) return;
+  const tid = p.txnId, pid = p.txnPairId;
+  if (p.txnAuto === 'approved') {
+    const t = (D.transactions || []).find(x => x.id === tid);
+    if (t) { if (typeof oblUncountSplit === 'function') oblUncountSplit(t); t.status = 'pending'; }
+  } else {
+    D.transactions = (D.transactions || []).filter(x => x.id !== tid && (!pid || x.id !== pid));
+    if (D.payments && Array.isArray(D.payments.ledger))
+      D.payments.ledger = D.payments.ledger.filter(r => r.txnId !== tid);
+    if (D.budget && Array.isArray(D.budget.ccRepayments))
+      D.budget.ccRepayments = D.budget.ccRepayments.filter(r => r.txnId !== tid);
+  }
+  delete p.txnId; delete p.txnPairId; delete p.txnAuto;
+  recomputeTxnActuals();
+}
+// Editing Amount Paid on a row that already wrote a transaction moves the
+// transaction with it — both legs of a transfer, and the ledger rows that quote it.
+function mtxSyncAmount(p) {
+  if (!p || !p.txnId) return false;
+  const amt = mtxAmount(p, mtxKind(p) === 'card');
+  if (!(amt > 0)) return false;
+  const t = (D.transactions || []).find(x => x.id === p.txnId);
+  if (!t) return false;
+  const setAmt = row => { if ((+row.debit || 0) > 0 || (+row.credit || 0) === 0) { row.debit = amt; row.credit = 0; } else { row.credit = amt; row.debit = 0; } };
+  setAmt(t);
+  if (t.splits && t.splits.length) {
+    const tpl = mtxTemplateFor(p);
+    const lines = (tpl && typeof oblSplitLinesFor === 'function') ? oblSplitLinesFor(tpl, amt) : null;
+    if (lines && lines.length) t.splits = lines;
+  }
+  if (p.txnPairId) { const pr = (D.transactions || []).find(x => x.id === p.txnPairId); if (pr) setAmt(pr); }
+  if (D.payments && Array.isArray(D.payments.ledger))
+    D.payments.ledger.forEach(r => { if (r.txnId === p.txnId) r.amount = amt; });
+  if (D.budget && Array.isArray(D.budget.ccRepayments))
+    D.budget.ccRepayments.forEach(r => { if (r.txnId === p.txnId) r.amountPaid = amt; });
+  recomputeTxnActuals();
+  return true;
+}
 function togglePaid(pid, checked) {
   const p = findPayment(pid);
   if (!p) return;
   p.isPaid = checked;
   if (checked) {
-    if (!p.paidDate) p.paidDate = new Date().toISOString().split('T')[0];
+    // centralToday(), not the browser's UTC date: after ~7pm Central the UTC day
+    // has already rolled over, so a payment marked paid in the evening was dated
+    // TOMORROW — and txnCounts() excludes dated-ahead rows, so the transaction it
+    // now writes would not have moved a single balance.
+    if (!p.paidDate) p.paidDate = centralToday();
     // Auto-fill amountPaid = amountDue for non-Credit Card payments
     // (CC users typically pay a different amount than minimum due)
     if (p.amountPaid === null || p.amountPaid === undefined) {
@@ -3622,7 +3785,19 @@ function togglePaid(pid, checked) {
         p.amountPaid = p.amountDue;
       }
     }
+    // ...and write the matching transaction, so the ledger never has to be typed
+    // twice. A card payment has no auto-filled amount on purpose, so this is
+    // where it asks rather than inventing one.
+    const r = mtxWrite(p);
+    if (!r.ok) {
+      toast(r.reason + ' — marked paid, no transaction written', 'err');
+    } else if (r.approved) {
+      toast(`${p.name || 'Payment'} — approved the pending transaction ✓`, 'ok');
+    } else {
+      toast(`${p.name || 'Payment'} — transaction recorded ✓`, 'ok');
+    }
   } else {
+    mtxRemove(p);
     p.paidDate = null;
     p.amountPaid = null;
   }
@@ -4241,6 +4416,13 @@ function editTplModal(tid) {
           Tells the Payments tab whether this bill actually leaves your bank. Bills charged to a card are excluded from the cash runway.
         </div>
       </div>
+      <div class="fg full">
+        <label class="flbl">Expense Type <span style="font-weight:400;color:var(--text3);font-size:.7rem">— used when marking this bill paid writes the transaction</span></label>
+        <select class="finput" id="t-exptype">${txnCatOptions(t?.expenseTypeId || null)}</select>
+        <div style="font-size:.68rem;color:var(--text3);margin-top:3px;line-height:1.45">
+          Card payments are transfers and need none. Without one, a bill marked paid posts uncategorised.
+        </div>
+      </div>
       <div class="fg full" style="margin-top:4px;padding-top:10px;border-top:1px dashed var(--border)">
         <label class="flbl">Linked CC Tracker Card <span style="font-size:.7rem;font-weight:400;color:var(--text3)">— links statement balance to CC Tracker auto-sync</span></label>
         <select class="finput" id="t-cccard">
@@ -4296,12 +4478,18 @@ function submitTpl(existId) {
     // read correctly; every lookup prefers the id.
     paymentAccount: acctLabel(id('t-acct')?.value || null, null) || null,
     ccCardId: id('t-cccard')?.value || null,
+    expenseTypeId: id('t-exptype')?.value || null,
     isActive: existId ? (D.templates.find(t=>t.id===existId)?.isActive ?? true) : true
   };
 
+  // MERGE, never replace. This function used to build a fresh object from the
+  // form, which silently dropped every field the form does not render —
+  // retiredForObligationId (the pointer that says an obligation owns this bill
+  // now) and splitTemplate among them. Same rule as BA.txnSaveInline.
   if (existId) {
     const i = D.templates.findIndex(t=>t.id===existId);
-    if (i>=0) D.templates[i] = tpl; else D.templates.push(tpl);
+    if (i>=0) D.templates[i] = Object.assign({}, D.templates[i], tpl);
+    else D.templates.push(tpl);
   } else {
     D.templates.push(tpl);
   }
