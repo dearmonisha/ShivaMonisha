@@ -7422,13 +7422,26 @@ function budgetGetIncome(month) {
 
 // Sum of all approved, non-transfer transactions tagged __income__ for a month.
 // credit - debit so that rare debit-side corrections reduce the total.
+// Income is money arriving in an account you spend from. The __income__ tag on
+// its own is not enough: interest postings on pot and HSA accounts carry it too,
+// and a Discover Cashback credit is tagged the same way — none of which is
+// household income. Shiva, 2026-09-11: "Income should only include income in
+// Bank account and not in any tracking account."
+// Worth $9.22 across 2026, and worth fixing so every page counts income the
+// same way rather than for the size of the number.
+const INCOME_ACCT_TYPES = new Set(['Bank', 'Savings', 'Cash']);
+function txnIsIncomeAcct(acctId) {
+  const a = (D.txnAccounts || []).find(x => x.id === acctId);
+  return !!a && INCOME_ACCT_TYPES.has(a.type);
+}
 function txnGetIncomeForMonth(month) {
   return (D.transactions || [])
     .filter(t =>
       t.date && t.date.slice(0, 7) === month &&
       !t.isTransfer &&
       txnCounts(t) &&
-      t.categoryId === '__income__'
+      t.categoryId === '__income__' &&
+      txnIsIncomeAcct(t.accountId)
     )
     .reduce((s, t) => s + (parseFloat(t.credit) || 0) - (parseFloat(t.debit) || 0), 0);
 }
@@ -8667,17 +8680,25 @@ function payMonthSummary(ym) {
   const st    = payCardStates();
   const accs  = (D.txnAccounts || []);
   const cc    = accs.filter(a => a.type === 'Credit Card');
-  let charged = 0, paid = 0;
+  let charged = 0, paid = 0, reimb = 0;
+  const _ccIds = new Set(cc.map(a => a.id));
   cc.forEach(a => { charged += payChargesInMonth(a.id, month); paid += payPaymentsInMonth(a.id, month); });
+  // Excluded from `charged` above, but it still lands on the balance — so the
+  // review can say what the cards actually did, not just what he has to fund.
+  (D.transactions || []).forEach(t => {
+    if (!_ccIds.has(t.accountId) || t.isTransfer || !txnCounts(t)) return;
+    if ((t.date || '').slice(0, 7) !== month) return;
+    reimb += payReimbPortion(t);
+  });
   const budget = payBudgetSnapshot(month);
-  const carried = charged - paid;
+  const carried = charged + reimb - paid;   // what the balances actually did
   // Interest for THE MONTH, from the Interest Expense category — not
   // st.moInterest, which is today's run rate and would stamp the same figure
   // onto every month you close.
   const _intCat = (D.budget?.categories || []).find(c => /interest expense/i.test(c.name || ''));
   const interest = _intCat ? budgetGetCatActuals(_intCat.id, month)
                            : st.reduce((s2, x) => s2 + (x.moInterest || 0), 0);
-  return { month, charged, paid, carried, budget, states: st, interest };
+  return { month, charged, paid, carried, reimb, budget, states: st, interest };
 }
 
 // ── Minimums standing between today and the end of the month ────────────
@@ -8904,11 +8925,33 @@ function payProjectNext(tpl, afterDue) {
 // it just cannot jump the queue.
 
 // New (non-transfer) charges on a card within a budget month, net of refunds.
+// Reimbursable spend is someone else's money passing through the card. It comes
+// back with a lag, so it is deliberately carried rather than funded from this
+// month's cash. Shiva, 2026-09-11: "I cant include that as typically money comes
+// back to me only with a lag. I got to carry that balance in my credit card. I
+// will have to plan and pay the rest of my budgeted spending in the card."
+// Taking it out here puts "Charged to cards" and "To stop the cards rising" on
+// the SAME definition the budget's spending figure has always used, so the two
+// halves of the review stop counting different things.
+let _payReimbIds = null, _payReimbVer = -1;
+function payReimbCatIds() {
+  if (_payReimbIds && _payReimbVer === _txnDataVersion) return _payReimbIds;
+  _payReimbIds = new Set((D.budget?.categories || []).filter(c => c.reimbursable).map(c => c.id));
+  _payReimbVer = _txnDataVersion;
+  return _payReimbIds;
+}
+function payReimbPortion(t) {
+  const ids = payReimbCatIds();
+  if (!ids.size) return 0;
+  if (t.splits && t.splits.length)
+    return t.splits.reduce((s, x) => s + (ids.has(x.categoryId) ? (+x.amount || 0) : 0), 0);
+  return ids.has(t.categoryId) ? ((+t.debit || 0) - (+t.credit || 0)) : 0;
+}
 function payChargesInMonth(acctId, ym) {
   return (D.transactions || []).reduce((s, t) => {
     if (t.accountId !== acctId || t.isTransfer || !txnCounts(t)) return s;
     if ((t.date || '').slice(0, 7) !== ym) return s;
-    return s + (+t.debit || 0) - (+t.credit || 0);
+    return s + (+t.debit || 0) - (+t.credit || 0) - payReimbPortion(t);
   }, 0);
 }
 // Payments landing on the card within the same month, whatever cycle they belong to.
@@ -10491,13 +10534,26 @@ function renderPayments() {
   // already over is fully elapsed and pace equals plan, which is what you want.
   const _bTarget = MS.budget.elapsed >= 1 ? MS.budget.planned : MS.budget.onPace;
   const _bOver   = MS.budget.actual - _bTarget;
-  const q = (n, title, value, sub, tone, lead) => `
-     <div style="display:flex;gap:12px;align-items:flex-start;padding:${lead?'4px 0 13px':'11px 0'};${lead?'':'border-top:1px solid var(--border)'}">
-       <span style="flex:none;width:20px;height:20px;border-radius:50%;background:${lead?'color-mix(in srgb,var(--primary) 14%,transparent)':'var(--surface2)'};color:${lead?'var(--primary)':'var(--text3)'};font-size:.66rem;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:2px">${n}</span>
-       <div style="flex:1;min-width:180px"><div style="font-size:${lead?'.9rem':'.82rem'};font-weight:${lead?'600':'400'};color:${lead?'var(--text)':'var(--text2)'}">${title}</div>
-         <div style="font-size:.68rem;color:var(--text3);margin-top:2px">${sub}</div></div>
-       <div style="font-size:${lead?'1.35rem':'1.15rem'};font-weight:700;white-space:nowrap;color:${tone||'var(--text)'};font-variant-numeric:tabular-nums">${value}</div>
+  // One row. `why` is the arithmetic, and it lives in the tooltip — on screen a
+  // row says what it is and what to do, never how it was derived.
+  //   Shiva, 2026-09-11: "the subtext below each heading is very cryptic ...
+  //    There is so much text to read each month, its unrealistic."
+  // op turns the last three rows into a visible sum (+ / =) so the relationship
+  // between them is shown rather than cross-referenced in prose ("on top of row
+  // 2", "less rows 2 and 3" — the two worst offenders).
+  const q = (o) => {
+    const { title, value, sub = '', tone, why = '', lead = false, op = '', total = false } = o;
+    return `
+     <div title="${esc(why)}" style="display:flex;gap:10px;align-items:baseline;padding:${lead?'2px 0 12px':total?'9px 0 2px':'8px 0'};
+          ${lead||total?'border-top:'+(total?'1px solid var(--text3)':'none'):'border-top:1px solid var(--border)'};${why?'cursor:help':''}">
+       <span style="flex:none;width:14px;text-align:center;font-size:.85rem;font-weight:700;color:var(--text3)">${op}</span>
+       <div style="flex:1;min-width:150px">
+         <span style="font-size:${lead?'.92rem':'.84rem'};font-weight:${lead||total?'600':'400'};color:${lead||total?'var(--text)':'var(--text2)'}">${title}</span>
+         ${sub ? `<span style="font-size:.7rem;color:var(--text3);margin-left:8px">${sub}</span>` : ''}
+       </div>
+       <div style="font-size:${lead?'1.3rem':total?'1.2rem':'1.05rem'};font-weight:700;white-space:nowrap;color:${tone||'var(--text)'};font-variant-numeric:tabular-nums">${value}</div>
      </div>`;
+  };
 
   // ── Row 0: did the month pay for itself? ────────────────────────────────
   // Shiva, 2026-09-06: "the budget I think doesnt consider whether it aligns
@@ -10519,38 +10575,52 @@ function renderPayments() {
        </span>
        ${_rec ? `<span style="font-size:.68rem;color:var(--ok);font-weight:600">✓ closed ${fmtDate(_rec.closedAt)}</span>` : ''}
        ${_prevRec ? `<span style="font-size:.68rem;color:var(--text3)">${bFmtMonth(_prev)}: carried ${payFmt(_prevRec.carried)}, deployed ${payFmt(_prevRec.deployed||0)}</span>` : ''}
-       ${_curYM !== _am ? `<span style="font-size:.68rem;color:var(--text3)">rows 2–4 are as of today</span>` : ''}
+       ${_curYM !== _am ? `<span style="font-size:.68rem;color:var(--text3)">bottom three are as of today</span>` : ''}
        <button onclick="PAY.closeMonth('${_am}')" style="margin-left:auto;font-size:.72rem;font-weight:600;padding:5px 12px;border:1px solid var(--primary);border-radius:6px;background:${_rec?'var(--surface)':'var(--primary)'};color:${_rec?'var(--primary)':'#fff'};cursor:pointer">${_rec?'Re-close':'Close the month'}</button>
      </div>
-     ${q(0, _partial ? 'Month to date' : 'Did the month pay for itself?',
-          `${_net >= 0 ? '+' : '−'}${payFmt(Math.abs(_net))}`,
-          `${payFmt(MS.budget.income)} in against ${payFmt(MS.budget.actual)} spent${_partial ? ' so far' : ''}` +
-          (_partial
-            // Mid-month this figure means very little: income arrives in a lump
-            // and spending trickles, so a fortnight in it is always flattering.
-            // Say what the PLAN lands at instead, and leave the partial number
-            // uncoloured so it cannot be read as a verdict.
-            ? ` · on plan the month lands ${_planNet >= 0 ? payFmt(_planNet) + ' inside' : payFmt(-_planNet) + ' beyond'} the ${payFmt(MS.budget.incomePlanned)} you expect`
-            : ` · the plan itself was ${_planNet >= 0 ? payFmt(_planNet) + ' inside' : payFmt(-_planNet) + ' beyond'} the ${payFmt(MS.budget.incomePlanned)} expected`),
-          _partial ? 'var(--text2)' : (_net >= 0 ? 'var(--ok)' : 'var(--danger)'), true)}
-     ${q(1, _curYM === _am ? 'What did the month cost?' : `What did ${bFmtMonth(_am)} cost?`,
-          payFmt(MS.charged),
-          `charged to cards · budget ${payFmt(MS.budget.actual)} against ${payFmt(_bTarget)} ${MS.budget.elapsed>=1?'planned':'due by today'}${
-            _bOver > 0.5 ? ` · <span style="color:var(--danger)">${payFmt(_bOver)} over</span>`
-                         : ` · <span style="color:var(--ok)">${payFmt(-_bOver)} under</span>`}`)}
-     ${q(2, 'What must be paid?',
-          payFmt(_mustPayTot),
-          _mustPay.length ? _mustPay.slice(0,4).map(x=>`${esc(x.name)} ${payFmt(_mustPayOf(x))} ${fmtDate(x.dueDate)}`).join(' · ') + (_mustPay.length>4?` · +${_mustPay.length-4} more`:'') : 'nothing outstanding',
-          _mustPayTot > R.safe ? 'var(--danger)' : 'var(--text)')}
-     ${q(3, 'What holds the balances flat?',
-          payFmt(_holdFlat),
-          `on top of row 2 — ${bFmtMonth(_curYM)} has put ${payFmt(_growthGross)} on the cards that is not settled${
-            _overlap > 0.5 ? `, and ${payFmt(_overlap)} of that sits inside row 2 already` : ''}`)}
-     ${q(4, 'What is genuinely excess?',
-          payFmt(_excess),
-          _excess > 0.5 ? 'cash, less the floor, less rows 2 and 3 — deploy it below'
-                        : `nothing — ${payFmt(_mustPayTot + _holdFlat - R.safe)} short of covering rows 2 and 3`,
-          _excess > 0.5 ? 'var(--ok)' : 'var(--danger)')}
+     ${q({ lead: true,
+          title: _partial ? 'Month to date' : 'The month paid for itself',
+          sub:   `income ${payFmt(MS.budget.income)} · spending ${payFmt(MS.budget.actual)}` +
+                 (_bOver > 0.5 ? ` — <span style="color:var(--danger)">${payFmt(_bOver)} over budget</span>`
+                               : ` — <span style="color:var(--ok)">${payFmt(-_bOver)} under budget</span>`),
+          value: `${_net >= 0 ? '+' : '−'}${payFmt(Math.abs(_net))}`,
+          tone:  _partial ? 'var(--text2)' : (_net >= 0 ? 'var(--ok)' : 'var(--danger)'),
+          why:   `Income is everything tagged as income that landed this month (family deposits are not counted). Spending is every budgeted category across ALL accounts, cards and bank — reimbursables excluded, interest included. Money in against money out, not spending against plan; the budget comparison is the clause after the dash, against ${payFmt(_bTarget)} ${MS.budget.elapsed>=1?'planned for the month':'due by this point in the month'}.` +
+                 (_partial
+                  ? ` Income arrives in a lump and spending trickles, so a part-month figure always flatters: on plan the month lands ${_planNet >= 0 ? payFmt(_planNet) + ' inside' : payFmt(-_planNet) + ' beyond'} the ${payFmt(MS.budget.incomePlanned)} you expect.`
+                  : ` The plan itself was ${_planNet >= 0 ? payFmt(_planNet) + ' inside' : payFmt(-_planNet) + ' beyond'} the ${payFmt(MS.budget.incomePlanned)} expected.`) })}
+     ${q({ title: 'Charged to cards',
+          sub:   (MS.reimb > 0.5 ? `${payFmt(MS.reimb)} reimbursable carried · ` : '') +
+                 `${payFmt(MS.paid)} paid back · ` + (MS.carried > 0.5
+                 ? `<span style="color:var(--danger)">balances up ${payFmt(MS.carried)}</span>`
+                 : `<span style="color:var(--ok)">balances down ${payFmt(-MS.carried)}</span>`),
+          value: payFmt(MS.charged),
+          why:   `Your own card spending this month${MS.interest>0.5?`, interest included (${payFmt(MS.interest)} of it)`:''}. ` +
+                 (MS.reimb > 0.5
+                  ? `Reimbursable charges (${payFmt(MS.reimb)}) are left out — that money comes back with a lag, so you carry it rather than fund it. It still moves the balance: ${payFmt(MS.charged)} + ${payFmt(MS.reimb)} − ${payFmt(MS.paid)} paid = balances ${MS.carried>0.5?'up':'down'} ${payFmt(Math.abs(MS.carried))}. `
+                  : `Against ${payFmt(MS.paid)} of payments the balances ${MS.carried>0.5?'rose':'fell'} by ${payFmt(Math.abs(MS.carried))}. `) +
+                 `A card figure only — not the spending number above, which spans every account.` })}
+     ${q({ title: 'Due now', op: '',
+          sub:   _mustPay.length
+                 ? _mustPay.slice(0,3).map(x=>esc(x.name)).join(' · ') + (_mustPay.length>3?` · +${_mustPay.length-3}`:'')
+                 : 'nothing outstanding',
+          value: payFmt(_mustPayTot),
+          tone:  _mustPayTot > R.safe ? 'var(--danger)' : 'var(--text)',
+          why:   _mustPay.length
+                 ? 'Minimums and pay-in-full statements falling due: ' + _mustPay.map(x=>`${x.name} ${payFmt(_mustPayOf(x))} by ${fmtDate(x.dueDate)}`).join(' · ')
+                 : 'No minimum or statement is outstanding right now.' })}
+     ${q({ title: 'To stop the cards rising', op: '+',
+          sub:   'charged this month, not yet settled',
+          value: payFmt(_holdFlat),
+          why:   `${bFmtMonth(_curYM)} put ${payFmt(_growthGross)} on the cards.` +
+                 (_overlap > 0.5 ? ` ${payFmt(_overlap)} of it is already covered by the minimums above, so only ${payFmt(_holdFlat)} is extra.` : '') })}
+     ${q({ total: true, op: '=',
+          title: 'Needed',
+          sub:   _excess > 0.5
+                 ? `${payFmt(R.safe)} available — <span style="color:var(--ok);font-weight:600">${payFmt(_excess)} free to deploy</span>`
+                 : `${payFmt(R.safe)} available — <span style="color:var(--danger);font-weight:600">${payFmt(_mustPayTot + _holdFlat - R.safe)} short</span>`,
+          value: payFmt(_mustPayTot + _holdFlat),
+          why:   `The two rows above add up to ${payFmt(_mustPayTot + _holdFlat)}. Cash above the ${payFmt(R.floor)} floor is ${payFmt(R.safe)}.` })}
    </div>`;
 
   const modeToggle = `
@@ -16236,6 +16306,17 @@ function txnRunningBalances(acct, txns) {
     const c = parseFloat(t.credit) || 0;
     // Bank/Asset: balance = prev + credits – debits  |  CC/Loan (liability): balance = prev + debits – credits
     bal = (isCC || isLoan) ? bal + d - c : bal + c - d;
+    // Round the ACCUMULATOR, not just the display. Every amount is already a
+    // 2-dp figure, so this cannot lose real money — but binary floats cannot
+    // represent them exactly, and 45 rows of adds and subtracts left PNC Reserve
+    // at −5.17e−12. That printed as $0.00 while the colour test (bal < 0) and
+    // the OD badge (t._bal < 0) both saw a negative, so a settled account showed
+    // a red, overdrawn zero. PNC Growth landed on +2.60e−11 out of the same
+    // arithmetic and looked fine, which is why it seemed arbitrary.
+    // Fixed here rather than at each display site: txnCurrentBalance() reads the
+    // last _bal, so one rounding cures the nav colour, the balance column, the
+    // OD badge and the group subtotals together.
+    bal = Math.round(bal * 100) / 100;
     return { ...t, _bal: bal };
   });
 }
