@@ -1226,7 +1226,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 <!-- Income Schedule Modal -->
 <div id="incomeScheduleModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center">
   <div class="modal" style="width:580px">
-    <div class="modal-title">⚙ Pay Schedules <span style="font-size:.75rem;font-weight:400;color:var(--text3)">(bi-weekly, paid every other Friday)</span></div>
+    <div class="modal-title">⚙ Pay Schedules <span id="iscModalSub" style="font-size:.75rem;font-weight:400;color:var(--text3)"></span></div>
     <div id="incomeScheduleList" style="margin-bottom:14px;max-height:55vh;overflow-y:auto"></div>
     <div style="margin-bottom:14px">
       <button class="btn btn-sm" onclick="BA.addIncomeScheduleRow()">＋ Add Person</button>
@@ -1614,6 +1614,28 @@ function _applyData(raw) {
   if (!D.budget.expenseSchedules) D.budget.expenseSchedules = [];
   if (!D.budget.ccRepayments)     D.budget.ccRepayments     = [];
   if (!D.budget.rolloverPotLinks) D.budget.rolloverPotLinks = {};
+  // Every income schedule gets an explicit pay cycle. A file written before
+  // cycleHistory existed was biweekly-from-startDate by assumption, so that is
+  // what the migration writes — no month's planned income moves. The shift is
+  // seeded to prev-business-day because BOTH employers pull a credit back to
+  // the prior working day off a weekend or holiday (Wells Fargo publishes it;
+  // Shiva confirmed Enovis does the same, 2026-09-17). Enabling it moves three
+  // historical dates and all three stay inside their own month, so again no
+  // total moves — but it does move the final biweekly cheque from 1 Jan 2027
+  // to 31 Dec 2026, which is the day the money actually lands.
+  (D.budget.incomeSchedules || []).forEach(sc => {
+    if (!Array.isArray(sc.cycleHistory) || !sc.cycleHistory.length) {
+      sc.cycleHistory = [{
+        id: 'cyc_' + uid(),
+        effectiveDate: sc.startDate || '1900-01-01',
+        kind: 'biweekly',
+        anchor: sc.startDate || '',
+        shift: 'prev-business-day'
+      }];
+      dirty();
+    }
+  });
+  payHolidayInvalidate();
   // D.accounts was a list of bare strings used only to fill two dropdowns. It is
   // gone; account pickers read the real register (D.txnAccounts) now. Deleted on
   // load as well as in the data, so an older file cannot reintroduce it.
@@ -4111,6 +4133,7 @@ function renderSetup() {
       <button class="stab ${UI.setupTab==='accounts'?'active':''}" id="stab-accounts" onclick="switchSetupTab('accounts')">Accounts</button>
       <button class="stab ${UI.setupTab==='recurring'?'active':''}" id="stab-recurring" onclick="switchSetupTab('recurring')">Recurring Expenses</button>
       <button class="stab ${UI.setupTab==='transfers'?'active':''}" id="stab-transfers" onclick="switchSetupTab('transfers')">Standing Transfers</button>
+      <button class="stab ${UI.setupTab==='payschedule'?'active':''}" id="stab-payschedule" onclick="switchSetupTab('payschedule')">Pay Schedule</button>
       <button class="stab ${UI.setupTab==='categories'?'active':''}" id="stab-categories" onclick="switchSetupTab('categories')">Categories</button>
       <button class="stab ${UI.setupTab==='templates'?'active':''}" id="stab-templates" onclick="switchSetupTab('templates')">Payment Templates</button>
     </div>
@@ -4126,6 +4149,7 @@ function renderSetupContent() {
   else if (UI.setupTab === 'accounts')  renderAccounts(sc);
   else if (UI.setupTab === 'recurring') renderRecurringExpenses(sc);
   else if (UI.setupTab === 'transfers') renderStandingTransfers(sc);
+  else if (UI.setupTab === 'payschedule') renderPaySchedule(sc);
   else renderCategories(sc);
 }
 
@@ -4135,6 +4159,164 @@ function renderSetupContent() {
 // is for acting on cash, this is for defining a rule. The runway still reads
 // the same `D.payments.recurringTransfers` store, so moving the screen changed
 // nothing about the records themselves.
+// ── Setup → Pay Schedule ──────────────────────────────────────────────────
+// Reads the one generator, so whatever this page shows is exactly what the
+// Budget tab plans against and the runway spends. Past dates are matched to the
+// real bank deposit, which is the only way a projection that has quietly drifted
+// off reality ever becomes visible.
+function renderPaySchedule(c) {
+  const today = centralToday();
+  const yNow  = +today.slice(0, 4);
+  const years = [yNow, yNow + 1];
+  const scs   = (D.budget.incomeSchedules || []).filter(s => s.enabled !== false && s.startDate);
+  if (!scs.length) {
+    c.innerHTML = `<div style="padding:28px;text-align:center;color:var(--text3);font-size:.85rem">
+      No pay schedules yet. Add one under Budget → Pay Schedules.</div>`;
+    return;
+  }
+  const COLORS = ['#7C3AED','#0EA5E9','#2E8B57','#C07A0A','#EC4899','#C0392B'];
+  const colOf  = (s, i) => s.color || COLORS[i % COLORS.length];
+
+  // real deposits, for the past-date reconciliation
+  const bankIds = new Set((D.txnAccounts || [])
+    .filter(a => ['Bank','Savings','Cash'].includes(a.type)).map(a => a.id));
+  const deposits = (D.transactions || []).filter(t =>
+    bankIds.has(t.accountId) && t.categoryId === '__income__' &&
+    (+t.credit || 0) > 100 && txnCounts(t));
+  const actualFor = (iso, amt) => {
+    let best = null, bestGap = 99;
+    deposits.forEach(t => {
+      if (Math.abs((+t.credit) - amt) > Math.max(5, amt * 0.03)) return;
+      const g = Math.abs(payDiffDays(iso, t.date));
+      if (g <= 5 && g < bestGap) { best = t; bestGap = g; }
+    });
+    return best;
+  };
+
+  // every pay event for both years, once
+  const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const evByYM = {};
+  const perYear = {};
+  years.forEach(y => {
+    perYear[y] = { total: 0, byS: {} };
+    for (let m = 1; m <= 12; m++) {
+      const ym = y + '-' + String(m).padStart(2, '0');
+      evByYM[ym] = [];
+      scs.forEach((s, i) => {
+        schedulePaydatesForMonth(s, ym).forEach(d => {
+          const amt   = incomeScheduleAmountForPaydate(s, d);
+          const sched = payScheduledDateFor(s, d);
+          const act   = d < today ? actualFor(d, amt) : null;
+          evByYM[ym].push({ d, amt, sched, sc: s, col: colOf(s, i), act,
+                            drift: act && act.date !== d ? act.date : null });
+          perYear[y].total += amt;
+          perYear[y].byS[s.id] = (perYear[y].byS[s.id] || 0) + amt;
+        });
+      });
+      evByYM[ym].sort((a, b) => a.d.localeCompare(b.d));
+    }
+  });
+
+  // upcoming strip
+  const upcoming = [];
+  years.forEach(y => { for (let m = 1; m <= 12; m++) {
+    (evByYM[y + '-' + String(m).padStart(2,'0')] || []).forEach(e => { if (e.d >= today) upcoming.push(e); });
+  }});
+  upcoming.sort((a,b) => a.d.localeCompare(b.d));
+  const nextUp = upcoming.slice(0, 6).map(e => {
+    const away = payDiffDays(today, e.d);
+    return `<div style="flex:1 1 130px;min-width:130px;background:var(--surface);border:1px solid var(--border);
+        border-left:3px solid ${e.col};border-radius:8px;padding:9px 11px">
+      <div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">${esc(e.sc.name||'Pay')}</div>
+      <div style="font-family:var(--mono,monospace);font-size:1rem;font-weight:700;color:var(--text);margin-top:2px">${fmtC(e.amt)}</div>
+      <div style="font-size:.72rem;color:var(--text2);margin-top:2px">${new Date(e.d+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}</div>
+      <div style="font-size:.68rem;color:var(--text3)">${away === 0 ? 'today' : 'in ' + away + ' day' + (away===1?'':'s')}</div>
+    </div>`;
+  }).join('');
+
+  const chip = e => {
+    const dd  = new Date(e.d + 'T00:00:00');
+    const dow = dd.toLocaleDateString('en-US',{weekday:'short'});
+    const past = e.d < today;
+    const notes = [];
+    if (e.sched) notes.push('moved from ' + fmtDate(e.sched));
+    if (e.drift) notes.push('bank shows ' + fmtDate(e.drift));
+    const title = `${esc(e.sc.name||'Pay')} · ${fmtDate(e.d)} · ${fmtC(e.amt)}${notes.length? ' · '+notes.join(' · ') : ''}`;
+    return `<span title="${esc(title)}" style="display:inline-flex;align-items:center;gap:5px;
+        padding:3px 8px;border-radius:999px;border:1px solid var(--border);
+        background:${past?'transparent':'var(--surface)'};opacity:${past?'.62':'1'};
+        font-size:.73rem;white-space:nowrap">
+      <span style="width:7px;height:7px;border-radius:50%;background:${e.col};flex-shrink:0"></span>
+      <span style="color:var(--text2)">${dow} ${dd.getDate()}</span>
+      <span style="font-family:var(--mono,monospace);color:var(--text);font-weight:600">${fmtC(e.amt)}</span>
+      ${e.sched ? `<span style="color:var(--warn,#C07A0A);font-size:.64rem" title="moved from ${fmtDate(e.sched)}">↤${
+          e.sched.slice(0,7) === e.d.slice(0,7)
+            ? new Date(e.sched+'T00:00:00').getDate()
+            : new Date(e.sched+'T00:00:00').toLocaleDateString('en-US',{day:'numeric',month:'short'})}</span>` : ''}
+      ${e.drift ? `<span style="color:var(--danger);font-size:.64rem">≠</span>` : ''}
+    </span>`;
+  };
+
+  const th = 'padding:7px 10px;text-align:left;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.045em;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap';
+  const yearBlock = y => {
+    const rows = [];
+    for (let m = 1; m <= 12; m++) {
+      const ym = y + '-' + String(m).padStart(2,'0');
+      const ev = evByYM[ym] || [];
+      const tot = ev.reduce((a,b) => a + b.amt, 0);
+      const isNow = ym === today.slice(0,7);
+      rows.push(`<tr style="border-bottom:1px solid var(--border-light);${isNow?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
+        <td style="padding:7px 10px;font-size:.78rem;font-weight:${isNow?'700':'600'};color:var(--text);white-space:nowrap">
+          ${MN[m-1]}${isNow?' <span style="font-size:.6rem;color:var(--primary);font-weight:700">NOW</span>':''}</td>
+        <td style="padding:6px 10px"><div style="display:flex;gap:6px;flex-wrap:wrap">${ev.map(chip).join('')}</div></td>
+        <td style="padding:7px 10px;text-align:right;font-family:var(--mono,monospace);font-size:.78rem;color:var(--text2);white-space:nowrap">${fmtC(tot)}</td>
+      </tr>`);
+    }
+    const legend = scs.map((s,i) => {
+      const cy    = payCycleForDate(s, y + '-12-31');
+      const hist  = (s.payHistory || []).map(h => h.effectiveDate || '').sort();
+      const stale = cy.effectiveDate && cy.effectiveDate <= y + '-12-31' &&
+                    !hist.some(d => d >= cy.effectiveDate);
+      return `<span style="display:inline-flex;align-items:center;gap:5px;font-size:.72rem;color:var(--text2)">
+        <span style="width:8px;height:8px;border-radius:50%;background:${colOf(s,i)}"></span>
+        ${esc(s.name||'Pay')} <span style="color:var(--text3)">${esc(payCycleLabel(cy))} · ${fmtC(perYear[y].byS[s.id]||0)}</span>
+        ${stale ? `<span title="The pay cycle changed on ${fmtDate(cy.effectiveDate)} but no pay change has been recorded on or after that date, so these figures are still using the old per-cheque amount." style="font-size:.63rem;font-weight:700;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--warn,#C07A0A) 15%,transparent);color:var(--warn,#C07A0A)">rate not updated</span>` : ''}</span>`;
+    }).join('');
+    const count = Object.keys(evByYM).filter(k => k.startsWith(y+'-')).reduce((a,k)=>a+evByYM[k].length,0);
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:14px">
+      <div style="padding:11px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <span style="font-size:1rem;font-weight:700;color:var(--text)">${y}</span>
+          <span style="font-size:.74rem;color:var(--text3)">${count} credits</span>
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">${legend}
+          <span style="font-family:var(--mono,monospace);font-size:.85rem;font-weight:700;color:var(--ok)">${fmtC(perYear[y].total)}</span></div>
+      </div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:520px">
+        <thead><tr><th style="${th}">Month</th><th style="${th}">Pay dates</th><th style="${th};text-align:right">Total</th></tr></thead>
+        <tbody>${rows.join('')}</tbody>
+      </table></div>
+    </div>`;
+  };
+
+  const anyShift = Object.values(evByYM).some(a => a.some(e => e.sched));
+  const anyDrift = Object.values(evByYM).some(a => a.some(e => e.drift));
+  c.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div>
+        <div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px">Next up</div>
+        <div style="display:flex;gap:9px;flex-wrap:wrap">${nextUp || '<span style="font-size:.8rem;color:var(--text3)">Nothing scheduled ahead.</span>'}</div>
+      </div>
+      ${years.map(yearBlock).join('')}
+      <div style="font-size:.72rem;color:var(--text3);line-height:1.55">
+        ${anyShift ? '<b style="color:var(--warn,#C07A0A)">↤</b> a date pulled back off a weekend or a holiday, showing the day it was scheduled for. ' : ''}
+        ${anyDrift ? '<b style="color:var(--danger)">≠</b> the bank shows a deposit on a different day from the projection. ' : ''}
+        Cycles and shift rules are set per person under <b>Budget → Pay Schedules</b>. This page reads the same
+        generator the Budget tab plans against and the cash runway spends, so if a date is wrong here it is wrong everywhere.
+      </div>
+    </div>`;
+}
+
 function renderStandingTransfers(c) {
   const P     = payDefaults();
   const today = centralToday();
@@ -7339,13 +7521,121 @@ let _ccHealthCollapsed = false;
 let _ccChartsCollapsed = false;
 
 // ── Income helpers ───────────────────────────────────────────
-function schedulePaydatesForMonth(sc, month) {
-  if (sc.enabled === false || !sc.startDate) return [];
+// ── Pay cycles ────────────────────────────────────────────────────────────
+// Frequency is a property of a PERIOD of a schedule, not of the schedule, in
+// exactly the way the pay rate already is. Wells Fargo moves Shiva from
+// biweekly to semi-monthly on 2 Jan 2027 while Enovis does not move Mona, and
+// re-rendering 2022-2026 on the new cycle would silently shift every historic
+// planned-income figure. So cycleHistory mirrors payHistory: effective-dated
+// entries resolved per DATE, never a single flag on the schedule.
+function _payCycleEntries(sc) {
+  const list = ((sc && sc.cycleHistory) || []).slice()
+    .sort((a, b) => (a.effectiveDate || '').localeCompare(b.effectiveDate || ''));
+  if (list.length) return list;
+  // No cycleHistory means the file predates the concept: biweekly from
+  // startDate with no shift, which is exactly what the old code did.
+  return [{ id: '_legacy', effectiveDate: (sc && sc.startDate) || '1900-01-01',
+            kind: 'biweekly', anchor: (sc && sc.startDate) || '', shift: 'none' }];
+}
+// Index rather than object identity: _payCycleEntries builds a fresh array (and
+// a fresh legacy object) on every call, so `===` on the entry would never hold.
+function payCycleIndexForDate(sc, iso) {
+  const list = _payCycleEntries(sc);
+  let idx = 0;
+  for (let i = 0; i < list.length; i++) if ((list[i].effectiveDate || '') <= iso) idx = i;
+  return idx;
+}
+function payCycleForDate(sc, iso)  { return _payCycleEntries(sc)[payCycleIndexForDate(sc, iso)]; }
+function payCycleForMonth(sc, month) { return payCycleForDate(sc, month + '-31'); }
+function payCycleLabel(cy) {
+  if (!cy) return '';
+  if (cy.kind !== 'semi-monthly') return 'biweekly';
+  const days = (cy.days && cy.days.length) ? cy.days : [15, 'EOM'];
+  return days.map(d => d === 'EOM' ? 'last day' : d + 'th').join(' & ');
+}
+function payCycleDetail(cy) {
+  if (!cy) return '';
+  if (cy.kind === 'semi-monthly') return payCycleLabel(cy) + ' of the month';
+  const a = cy.anchor || '';
+  const dow = a ? new Date(a + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' }) : '';
+  return 'every other ' + (dow || 'fortnight') + (a ? ' from ' + fmtDate(a) : '');
+}
+
+// ── US federal holidays, with the observance shift ────────────────────────
+// Wells Fargo pays on "the prior business day" when a pay date falls on a
+// weekend OR a holiday, and its published 2027 calendar moves two dates on
+// holidays alone: Presidents' Day Mon 15 Feb and Memorial Day Mon 31 May. A
+// weekend-only rule gets both wrong, and one of them is the tightest month of
+// the year. Computed rather than tabulated, with an override list in
+// D.budget.payHolidays because employers differ (WF observes Columbus Day).
+function payUTCISO(d) {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+function _payNthDow(y, m, dow, n) {
+  const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  return new Date(Date.UTC(y, m - 1, 1 + ((dow - first + 7) % 7) + (n - 1) * 7));
+}
+function _payLastDow(y, m, dow) {
+  const last = new Date(Date.UTC(y, m, 0));   // Date.UTC(y, m, 0) === last day of month m
+  return new Date(Date.UTC(y, m - 1, last.getUTCDate() - ((last.getUTCDay() - dow + 7) % 7)));
+}
+function _payObserved(d) {
+  const w = d.getUTCDay();
+  if (w === 6) return new Date(d.getTime() - 86400000);   // Saturday -> Friday
+  if (w === 0) return new Date(d.getTime() + 86400000);   // Sunday   -> Monday
+  return d;
+}
+function payHolidaySet(year) {
+  const extra = ((D.budget && D.budget.payHolidays) || []);
+  const key   = year + '|' + extra.join(',');
+  payHolidaySet._c = payHolidaySet._c || {};
+  if (payHolidaySet._c[key]) return payHolidaySet._c[key];
+  const U = (m, d) => new Date(Date.UTC(year, m - 1, d));
+  const raw = [
+    U(1, 1), _payNthDow(year, 1, 1, 3), _payNthDow(year, 2, 1, 3),
+    _payLastDow(year, 5, 1), U(6, 19), U(7, 4), _payNthDow(year, 9, 1, 1),
+    _payNthDow(year, 10, 1, 2), U(11, 11), _payNthDow(year, 11, 4, 4), U(12, 25)
+    // Deliberately NOT rolling a Saturday 1 Jan of the following year back onto
+    // 31 Dec of this one. The federal calendar does; Wells Fargo's published
+    // 2027 calendar pays on Friday 31 December 2027 even though 1 Jan 2028 is a
+    // Saturday. The published dates win. An employer that does observe it can
+    // add the date to D.budget.payHolidays.
+  ];
+  const set = new Set();
+  raw.forEach(d => {
+    const o = _payObserved(d);
+    if (o.getUTCFullYear() === year) set.add(payUTCISO(o));
+  });
+  extra.forEach(s => { if (String(s).slice(0, 4) === String(year)) set.add(s); });
+  payHolidaySet._c[key] = set;
+  return set;
+}
+function payHolidayInvalidate() { payHolidaySet._c = {}; }
+// 'none' | 'weekend' | 'prev-business-day'
+function payShiftDate(iso, rule) {
+  if (!rule || rule === 'none' || !iso) return iso;
+  let d = new Date(iso + 'T00:00:00Z'), guard = 0;
+  const bad = x => {
+    const w = x.getUTCDay();
+    if (w === 0 || w === 6) return true;
+    return rule === 'prev-business-day' && payHolidaySet(x.getUTCFullYear()).has(payUTCISO(x));
+  };
+  while (bad(d) && guard++ < 10) d = new Date(d.getTime() - 86400000);
+  return payUTCISO(d);
+}
+
+// ── The two generators ────────────────────────────────────────────────────
+// _paydatesBiweekly is the previous body of schedulePaydatesForMonth, moved
+// here unchanged except that the anchor now comes from the cycle entry. Keep
+// it that way: every assertion that history did not move rests on it.
+function _paydatesBiweekly(sc, cy, month) {
+  const anchor = (cy && cy.anchor) || sc.startDate;
+  if (!anchor) return [];
   const [y, m] = month.split('-').map(Number);
   const DAY_MS = 86400000, DAY14 = 14 * DAY_MS;
   const monthStartUTC = Date.UTC(y, m-1, 1);
   const monthEndUTC   = Date.UTC(y, m, 0);
-  const [ay, am, ad]  = sc.startDate.split('-').map(Number);
+  const [ay, am, ad]  = anchor.split('-').map(Number);
   const anchorUTC     = Date.UTC(ay, am-1, ad);
   const anchorDOW     = new Date(anchorUTC).getUTCDay();
   const daysToFri     = anchorDOW >= 5 ? anchorDOW - 5 : anchorDOW + 2;
@@ -7363,6 +7653,58 @@ function schedulePaydatesForMonth(sc, month) {
     curUTC += DAY14;
   }
   return dates;
+}
+function _paydatesSemiMonthly(cy, month) {
+  const [y, m] = month.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  const days = (cy.days && cy.days.length) ? cy.days : [15, 'EOM'];
+  return days
+    .map(d => d === 'EOM' ? last : Math.min(parseInt(d, 10) || 1, last))
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .sort((a, b) => a - b)
+    .map(dd => payMonthDay(y, m, dd));   // reuse the existing clamp, never a second one
+}
+// Raw, unshifted dates for a month. EVERY cycle entry proposes and the per-date
+// owner check decides, so a month that straddles a cycle change comes out right
+// with no special case — January 2027 keeps the final biweekly cheque dated the
+// 1st from the old entry and the 15th/31st from the new one.
+function _payRawDatesForMonth(sc, month) {
+  const list = _payCycleEntries(sc);
+  const out = [];
+  list.forEach((cy, i) => {
+    const raws = cy.kind === 'semi-monthly'
+      ? _paydatesSemiMonthly(cy, month)
+      : _paydatesBiweekly(sc, cy, month);
+    raws.forEach(r => { if (payCycleIndexForDate(sc, r) === i) out.push(r); });
+  });
+  return out;
+}
+function schedulePaydatesForMonth(sc, month) {
+  if (sc.enabled === false || !sc.startDate) return [];
+  // A shift can carry a date out of the month that generated it: 1 Jan 2027 is
+  // the last biweekly cheque and it lands 31 Dec 2026. So generate the
+  // neighbouring months too and filter on the SHIFTED value, not the raw one.
+  const out = new Set();
+  [bShiftMonth(month, -1), month, bShiftMonth(month, 1)].forEach(mm => {
+    _payRawDatesForMonth(sc, mm).forEach(raw => {
+      const d = payShiftDate(raw, payCycleForDate(sc, raw).shift);
+      if (d.slice(0, 7) === month) out.add(d);
+    });
+  });
+  return [...out].sort();
+}
+// The scheduled date a paid date came from, so a view can say "Fri 12 Feb,
+// moved from Mon 15 Feb". Null when nothing moved.
+function payScheduledDateFor(sc, paidISO) {
+  const m = paidISO.slice(0, 7);
+  let hit = null;
+  [bShiftMonth(m, -1), m, bShiftMonth(m, 1)].forEach(mm => {
+    _payRawDatesForMonth(sc, mm).forEach(raw => {
+      if (raw !== paidISO &&
+          payShiftDate(raw, payCycleForDate(sc, raw).shift) === paidISO) hit = raw;
+    });
+  });
+  return hit;
 }
 
 function allScheduledPaydatesForMonth(month) {
@@ -8127,7 +8469,7 @@ function renderBudgetIncomeSection(month) {
         <td class="btable-name" style="min-width:120px;white-space:nowrap;">${fmtDate(p.date)}</td>
         <td class="btable-name" style="color:var(--ok);font-weight:500;">
           <span class="isc-dot" style="background:${sc.color||'#2E8B57'}"></span>
-          ${esc(sc.name||'Pay')} <span class="isc-tag">biweekly</span>
+          ${esc(sc.name||'Pay')} <span class="isc-tag">${esc(payCycleLabel(payCycleForDate(sc, p.date)))}</span>
         </td>
         <td class="btable-num" style="color:var(--ok)">${fmtC(amt)}</td>
         <td style="width:36px"></td>
@@ -9187,15 +9529,25 @@ function payIncomeEvents(from, to, bankId) {
       .sort((a, b) => a.date.localeCompare(b.date));
     const last   = matches[matches.length - 1] || null;
     const amount = last ? +last.credit : target;
-    // The anchor deposit is a real, already-posted transaction — it's already baked into
-    // the current cash balance. Project from one cycle AFTER it, never on the same date,
-    // or a same-day deposit gets counted twice (once in the balance, once as a "future" event).
-    let d        = last ? payAddDays(last.date, 14) : (s.startDate || from);
-    let guard    = 0;
-    while (d < from && guard++ < 400) d = payAddDays(d, 14);
-    while (d <= to && guard++ < 400) {
-      out.push({ date: d, label: s.name, amount, kind: 'income' });
-      d = payAddDays(d, 14);
+    // DATES come from the one generator, not from a second 14-day walk living
+    // here. That walk was right only while every schedule was biweekly and
+    // nothing ever shifted; from Jan 2027 it would drift off the 15th/last-day
+    // grid within a fortnight and the runway's dip date is the whole point of
+    // this function. The AMOUNT still self-corrects off the last real deposit,
+    // which is the part of this that was worth keeping: payHistory drifts
+    // (the schedule says 7,112.56 while the bank credits 7,116.52).
+    //
+    // The anchor deposit is a real, already-posted transaction, so it is
+    // already baked into the current cash balance. Never re-emit it or a
+    // same-day deposit is counted twice.
+    const after = last ? last.date : '';
+    let ym = from.slice(0, 7), guard = 0;
+    while (ym <= to.slice(0, 7) && guard++ < 60) {
+      schedulePaydatesForMonth(s, ym).forEach(d => {
+        if (d <= after || d < from || d > to) return;
+        out.push({ date: d, label: s.name, amount, kind: 'income' });
+      });
+      ym = bShiftMonth(ym, 1);
     }
   });
 
@@ -15618,6 +15970,23 @@ const BA = {
               <button class="ibtn del" style="padding:0 4px;font-size:.7rem" onclick="BA._deletePayHistoryEntry('${sc.id}','${h.id}')" title="Remove this entry">✕</button>
             </div>`).join('')}
         </div>` : '';
+      const cyc = _payCycleEntries(sc);
+      const SHIFTLBL = { 'none':'no shift', 'weekend':'weekend → prior Friday',
+                         'prev-business-day':'weekend or holiday → prior business day' };
+      const cycHTML = `
+        <div style="margin-top:6px;padding:6px 8px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
+          <div style="font-size:.67rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Pay Cycle</div>
+          ${cyc.map(c => `
+            <div style="padding:3px 0;border-bottom:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:8px;font-size:.78rem">
+                <span style="color:var(--text3);min-width:88px">${esc(c.effectiveDate||'')}</span>
+                <span style="font-weight:600;color:var(--primary);min-width:96px">${esc(c.kind==='semi-monthly'?'Semi-monthly':'Biweekly')}</span>
+                <span style="color:var(--text2);flex:1;min-width:0">${esc(payCycleDetail(c))}</span>
+                ${c.id==='_legacy' ? '' : `<button class="ibtn del" style="padding:0 4px;font-size:.7rem" onclick="BA._deleteCycleEntry('${sc.id}','${c.id}')" title="Remove this entry">✕</button>`}
+              </div>
+              <div style="font-size:.69rem;color:var(--text3);padding-left:88px;margin-top:1px">${esc(SHIFTLBL[c.shift||'none']||'')}</div>
+            </div>`).join('')}
+        </div>`;
       const currentAmt = hist.length ? parseFloat(hist[hist.length-1].amount)||0 : parseFloat(sc.amount)||0;
       return `
       <div class="isc-row" id="isc-row-${sc.id}" style="flex-direction:column;gap:6px;align-items:flex-start">
@@ -15642,9 +16011,40 @@ const BA = {
           <button class="ibtn del" style="align-self:center" onclick="BA._deleteIncomeSchedule('${sc.id}')">🗑</button>
         </div>
         ${histHTML}
+        ${cycHTML}
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:0 2px">
           <span style="font-size:.75rem;color:var(--text2)">Current: <strong style="color:var(--ok)">${fmtC(currentAmt)}/paycheck</strong></span>
           <button class="btn btn-xs btn-sm" style="font-size:.72rem;padding:2px 8px" onclick="BA._showPayChangeForm('${sc.id}')">📈 Record Pay Change</button>
+          <button class="btn btn-xs btn-sm" style="font-size:.72rem;padding:2px 8px" onclick="BA._showCycleChangeForm('${sc.id}')">🗓 Record Cycle Change</button>
+        </div>
+        <div id="cycle-change-form-${sc.id}" style="display:none;padding:8px;background:var(--surface2);border-radius:6px;border:1px dashed var(--primary);width:100%">
+          <div style="font-size:.72rem;color:var(--text3);margin-bottom:6px;font-weight:600">New pay cycle effective from:</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="date" id="cyc-date-${sc.id}" class="finput" style="font-size:.78rem;padding:3px 7px;width:140px">
+            <select id="cyc-kind-${sc.id}" class="finput" style="font-size:.78rem;padding:3px 7px" onchange="BA._cycleKindChanged('${sc.id}')">
+              <option value="semi-monthly">Semi-monthly</option>
+              <option value="biweekly">Biweekly</option>
+            </select>
+            <span id="cyc-sm-${sc.id}" style="display:inline-flex;gap:5px;align-items:center">
+              <input type="number" id="cyc-d1-${sc.id}" class="finput" style="font-size:.78rem;padding:3px 7px;width:60px" min="1" max="31" value="15" title="First pay day of the month">
+              <span style="font-size:.74rem;color:var(--text3)">&amp;</span>
+              <select id="cyc-d2-${sc.id}" class="finput" style="font-size:.78rem;padding:3px 7px">
+                <option value="EOM">last day</option>
+                ${Array.from({length:31},(_,i)=>`<option value="${i+1}">${i+1}</option>`).join('')}
+              </select>
+            </span>
+            <span id="cyc-bw-${sc.id}" style="display:none;align-items:center;gap:5px">
+              <span style="font-size:.74rem;color:var(--text3)">anchor</span>
+              <input type="date" id="cyc-anchor-${sc.id}" class="finput" style="font-size:.78rem;padding:3px 7px;width:140px">
+            </span>
+            <select id="cyc-shift-${sc.id}" class="finput" style="font-size:.78rem;padding:3px 7px" title="What happens when a pay date lands on a weekend or a holiday">
+              <option value="prev-business-day">weekend or holiday → prior business day</option>
+              <option value="weekend">weekend → prior Friday</option>
+              <option value="none">no shift</option>
+            </select>
+            <button class="btn btn-sm btn-primary" style="font-size:.72rem;padding:3px 9px" onclick="BA._saveCycleChange('${sc.id}')">✓ Save</button>
+            <button class="btn btn-sm btn-ghost" style="font-size:.72rem;padding:3px 7px" onclick="document.getElementById('cycle-change-form-${sc.id}').style.display='none'">✕</button>
+          </div>
         </div>
         <div id="pay-change-form-${sc.id}" style="display:none;padding:6px 8px;background:var(--surface2);border-radius:6px;border:1px dashed var(--primary);width:100%">
           <div style="font-size:.72rem;color:var(--text3);margin-bottom:6px;font-weight:600">New pay amount effective from:</div>
@@ -15657,6 +16057,16 @@ const BA = {
         </div>
       </div>`;
     }).join('');
+    this._iscModalSubtitle();
+  },
+  _iscModalSubtitle() {
+    const el = document.getElementById('iscModalSub');
+    if (!el) return;
+    const today = centralToday();
+    const parts = (D.budget.incomeSchedules || [])
+      .filter(s => s.enabled !== false && s.startDate)
+      .map(s => (s.name || 'Pay') + ': ' + payCycleDetail(payCycleForDate(s, today)));
+    el.textContent = parts.length ? '(' + parts.join(' · ') + ')' : '';
   },
   _updateScheduleField(scId, field, value) {
     const idx = (D.budget.incomeSchedules||[]).findIndex(s => s.id===scId);
@@ -15718,6 +16128,58 @@ const BA = {
     sc.payHistory.sort((a,b) => a.effectiveDate.localeCompare(b.effectiveDate));
     dirty(); this._renderIncomeScheduleList(); renderBudget();
     toast('Pay change recorded ✓', 'ok');
+  },
+  _showCycleChangeForm(scId) {
+    const el = document.getElementById('cycle-change-form-' + scId);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  },
+  _cycleKindChanged(scId) {
+    const kind = document.getElementById('cyc-kind-' + scId)?.value;
+    const sm = document.getElementById('cyc-sm-' + scId);
+    const bw = document.getElementById('cyc-bw-' + scId);
+    if (sm) sm.style.display = kind === 'semi-monthly' ? 'inline-flex' : 'none';
+    if (bw) bw.style.display = kind === 'semi-monthly' ? 'none' : 'inline-flex';
+  },
+  _saveCycleChange(scId) {
+    const sc = (D.budget.incomeSchedules||[]).find(s => s.id === scId);
+    if (!sc) return;
+    const date  = document.getElementById('cyc-date-'  + scId)?.value || '';
+    const kind  = document.getElementById('cyc-kind-'  + scId)?.value || 'semi-monthly';
+    const shift = document.getElementById('cyc-shift-' + scId)?.value || 'none';
+    if (!date) { toast('Please enter an effective date','err'); return; }
+    const entry = { id: 'cyc_' + uid(), effectiveDate: date, kind, shift };
+    if (kind === 'semi-monthly') {
+      const d1 = parseInt(document.getElementById('cyc-d1-' + scId)?.value, 10) || 15;
+      const d2 = document.getElementById('cyc-d2-' + scId)?.value || 'EOM';
+      entry.days = [d1, d2 === 'EOM' ? 'EOM' : parseInt(d2, 10)];
+    } else {
+      entry.anchor = document.getElementById('cyc-anchor-' + scId)?.value || sc.startDate || '';
+      if (!entry.anchor) { toast('Biweekly needs an anchor pay date','err'); return; }
+    }
+    // Seed the pre-existing cycle explicitly the first time one is recorded, or
+    // the new entry would silently claim every month back to the beginning.
+    if (!Array.isArray(sc.cycleHistory) || !sc.cycleHistory.length) {
+      sc.cycleHistory = [{ id: 'cyc_' + uid(), effectiveDate: sc.startDate || '1900-01-01',
+        kind: 'biweekly', anchor: sc.startDate || '', shift: 'prev-business-day' }];
+    }
+    const dup = sc.cycleHistory.find(c => c.effectiveDate === date);
+    if (dup) Object.assign(dup, entry, { id: dup.id });
+    else sc.cycleHistory.push(entry);
+    sc.cycleHistory.sort((a,b) => (a.effectiveDate||'').localeCompare(b.effectiveDate||''));
+    payHolidayInvalidate(); payBudgetInvalidate();
+    dirty(); this._renderIncomeScheduleList(); renderBudget();
+    const el = document.getElementById('cycle-change-form-' + scId); if (el) el.style.display = 'none';
+    toast('Pay cycle recorded ✓', 'ok');
+  },
+  async _deleteCycleEntry(scId, cid) {
+    const sc = (D.budget.incomeSchedules||[]).find(s => s.id === scId);
+    if (!sc || !Array.isArray(sc.cycleHistory)) return;
+    if (sc.cycleHistory.length <= 1) { toast('A schedule needs at least one pay cycle','err'); return; }
+    const ok = await budgetConfirm('Remove Pay Cycle','Remove this pay cycle entry?');
+    if (!ok) return;
+    sc.cycleHistory = sc.cycleHistory.filter(c => c.id !== cid);
+    payHolidayInvalidate(); payBudgetInvalidate();
+    dirty(); this._renderIncomeScheduleList(); renderBudget();
   },
   _deletePayHistoryEntry(scId, hid) {
     const sc = (D.budget.incomeSchedules||[]).find(s => s.id===scId);
