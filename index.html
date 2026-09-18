@@ -3153,9 +3153,13 @@ function switchSetupTab(t) {
   UI.setupTab = t;
   UI.setupSearch = '';
   UI.setupStatusFilter = 'all';
-  ['templates','accounts','categories','recurring'].forEach(k => {
-    const el = id('stab-'+k);
-    if (el) el.classList.toggle('active', k===t);
+  // Derived from the rendered buttons, never a hard-coded list. The list here
+  // named four of the six tabs, so Standing Transfers never highlighted and any
+  // tab added later silently inherited the same bug. Only the six Setup tab
+  // buttons carry an id starting with "stab-" (the Obligations bar uses
+  // "obl-stab-"), so this selector cannot reach another tab strip.
+  document.querySelectorAll('[id^="stab-"]').forEach(el => {
+    el.classList.toggle('active', el.id === 'stab-' + t);
   });
   renderSetupContent();
 }
@@ -4160,14 +4164,18 @@ function renderSetupContent() {
 // the same `D.payments.recurringTransfers` store, so moving the screen changed
 // nothing about the records themselves.
 // ── Setup → Pay Schedule ──────────────────────────────────────────────────
-// Reads the one generator, so whatever this page shows is exactly what the
-// Budget tab plans against and the runway spends. Past dates are matched to the
-// real bank deposit, which is the only way a projection that has quietly drifted
-// off reality ever becomes visible.
+// A calendar, not a list. The first version printed one pill per credit with
+// the amount in bold, which meant 105 pills repeating the same two numbers
+// while the things that actually vary — the gaps, the three-credit months, the
+// cycle change, the dates that moved — were either invisible or a 6px glyph.
+// Here the amount lives in the hover, one row is one month, and the rhythm
+// draws itself: biweekly walks across the month, semi-monthly stands still on
+// the 15th and the last day, and a fortnight with no money is just whitespace.
+// Reads the one generator, so whatever this shows is exactly what the Budget
+// tab plans against and the runway spends.
 function renderPaySchedule(c) {
   const today = centralToday();
   const yNow  = +today.slice(0, 4);
-  const years = [yNow, yNow + 1];
   const scs   = (D.budget.incomeSchedules || []).filter(s => s.enabled !== false && s.startDate);
   if (!scs.length) {
     c.innerHTML = `<div style="padding:28px;text-align:center;color:var(--text3);font-size:.85rem">
@@ -4176,143 +4184,207 @@ function renderPaySchedule(c) {
   }
   const COLORS = ['#7C3AED','#0EA5E9','#2E8B57','#C07A0A','#EC4899','#C0392B'];
   const colOf  = (s, i) => s.color || COLORS[i % COLORS.length];
+  const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-  // real deposits, for the past-date reconciliation
+  // real deposits, for reconciling anything already in the past
   const bankIds = new Set((D.txnAccounts || [])
     .filter(a => ['Bank','Savings','Cash'].includes(a.type)).map(a => a.id));
   const deposits = (D.transactions || []).filter(t =>
     bankIds.has(t.accountId) && t.categoryId === '__income__' &&
     (+t.credit || 0) > 100 && txnCounts(t));
   const actualFor = (iso, amt) => {
-    let best = null, bestGap = 99;
+    let best = null, gap = 99;
     deposits.forEach(t => {
       if (Math.abs((+t.credit) - amt) > Math.max(5, amt * 0.03)) return;
       const g = Math.abs(payDiffDays(iso, t.date));
-      if (g <= 5 && g < bestGap) { best = t; bestGap = g; }
+      if (g <= 5 && g < gap) { best = t; gap = g; }
     });
     return best;
   };
 
-  // every pay event for both years, once
-  const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const evByYM = {};
-  const perYear = {};
-  years.forEach(y => {
-    perYear[y] = { total: 0, byS: {} };
-    for (let m = 1; m <= 12; m++) {
-      const ym = y + '-' + String(m).padStart(2, '0');
-      evByYM[ym] = [];
-      scs.forEach((s, i) => {
-        schedulePaydatesForMonth(s, ym).forEach(d => {
-          const amt   = incomeScheduleAmountForPaydate(s, d);
-          const sched = payScheduledDateFor(s, d);
-          const act   = d < today ? actualFor(d, amt) : null;
-          evByYM[ym].push({ d, amt, sched, sc: s, col: colOf(s, i), act,
-                            drift: act && act.date !== d ? act.date : null });
-          perYear[y].total += amt;
-          perYear[y].byS[s.id] = (perYear[y].byS[s.id] || 0) + amt;
-        });
+  const showPast = !!UI.paySchedShowPast;
+  const months = [];
+  let m = showPast ? yNow + '-01' : today.slice(0, 7);
+  const lastM = (yNow + 1) + '-12';
+  while (m <= lastM) { months.push(m); m = bShiftMonth(m, 1); }
+
+  const ev = {}, totals = [];
+  months.forEach(ym => {
+    ev[ym] = [];
+    scs.forEach((s, i) => {
+      schedulePaydatesForMonth(s, ym).forEach(d => {
+        const amt = incomeScheduleAmountForPaydate(s, d);
+        const act = d < today ? actualFor(d, amt) : null;
+        ev[ym].push({ d, amt, sc: s, col: colOf(s, i),
+                      sched: payScheduledDateFor(s, d),
+                      drift: act && act.date !== d ? act.date : null });
       });
-      evByYM[ym].sort((a, b) => a.d.localeCompare(b.d));
+    });
+    ev[ym].sort((x, y) => x.d.localeCompare(y.d));
+    totals.push(+ev[ym].reduce((a, b) => a + b.amt, 0).toFixed(2));
+  });
+  // the ordinary month, so the unusual ones can be the ones in bold
+  const freq = {}; totals.forEach(t => freq[t] = (freq[t] || 0) + 1);
+  const baseline = +Object.keys(freq).sort((a, b) => freq[b] - freq[a])[0] || 0;
+
+  const ruler = () => {
+    let out = '';
+    for (let d = 1; d <= 31; d++)
+      out += `<div style="text-align:center;font-size:.58rem;color:var(--text3);font-family:var(--mono,monospace)">${
+        (d === 1 || d % 5 === 0 || d === 31) ? d : ''}</div>`;
+    return out;
+  };
+
+  const row = ym => {
+    const [y, mm] = ym.split('-').map(Number);
+    const last = new Date(y, mm, 0).getDate();
+    const list = ev[ym] || [];
+    const byDay = {};
+    list.forEach(e => { const dd = +e.d.slice(8,10); (byDay[dd] = byDay[dd] || []).push(e); });
+    let cells = '';
+    for (let d = 1; d <= 31; d++) {
+      if (d > last) { cells += '<div></div>'; continue; }
+      const iso = payMonthDay(y, mm, d);
+      const dow = new Date(iso + 'T00:00:00').getDay();
+      const we  = (dow === 0 || dow === 6);
+      const es  = byDay[d] || [];
+      const sz  = es.length > 1 ? 7 : 9;
+      const dots = es.map(e => `<span style="width:${sz}px;height:${sz}px;border-radius:50%;box-sizing:border-box;display:inline-block;${
+        e.sched ? `border:2px solid ${e.col};background:var(--surface)` : `background:${e.col}`}"></span>`).join('');
+      const tip = es.length
+        ? iso + ' — ' + es.map(e => (e.sc.name || 'Pay') + ' ' + fmtC(e.amt) +
+            (e.sched ? ' · moved from ' + fmtDate(e.sched) : '') +
+            (e.drift ? ' · bank shows ' + fmtDate(e.drift) : '')).join('  |  ')
+        : iso;
+      cells += `<div title="${esc(tip)}" style="height:21px;display:flex;align-items:center;justify-content:center;gap:1px;
+        ${we ? 'background:color-mix(in srgb,var(--text3) 9%,transparent);' : ''}
+        ${iso === today ? 'box-shadow:inset 0 0 0 1.5px var(--primary);border-radius:3px;' : ''}
+        ${es.some(e => e.drift) ? 'border-bottom:2px solid var(--danger);' : ''}">${dots}</div>`;
     }
+    const tot = +list.reduce((a, b) => a + b.amt, 0).toFixed(2);
+    const hot = tot > baseline + 0.5;
+    const isNow = ym === today.slice(0, 7);
+    return `<div style="display:flex;align-items:center;gap:8px;padding:1px 0;${
+        isNow ? 'background:color-mix(in srgb,var(--primary) 7%,transparent);border-radius:5px;' : ''}">
+      <div style="width:52px;flex-shrink:0;font-size:.74rem;font-weight:${isNow?'700':'600'};color:var(--text);padding-left:4px">
+        ${MN[mm-1]}</div>
+      <div style="flex:1;min-width:300px;display:grid;grid-template-columns:repeat(31,1fr)">${cells}</div>
+      <div style="width:26px;flex-shrink:0;text-align:right;font-size:.7rem;color:var(--text3);font-family:var(--mono,monospace)">${list.length}</div>
+      <div style="width:92px;flex-shrink:0;text-align:right;font-family:var(--mono,monospace);font-size:.74rem;
+        color:${hot?'var(--ok)':'var(--text3)'};font-weight:${hot?'700':'400'};padding-right:4px">${fmtC(tot)}</div>
+    </div>`;
+  };
+
+  // year headers, and a marker wherever a cycle actually changes
+  const cycleChanges = [];
+  scs.forEach(s => (s.cycleHistory || []).forEach((cy, i) => {
+    if (i === 0) return;
+    if (cy.effectiveDate >= months[0] + '-01' && cy.effectiveDate <= lastM + '-31')
+      cycleChanges.push({ s, cy });
+  }));
+
+  let body = '', lastYear = null;
+  months.forEach(ym => {
+    const y = +ym.slice(0, 4);
+    if (y !== lastYear) {
+      lastYear = y;
+      const inY = months.filter(x => x.startsWith(y + '-'));
+      const cnt = inY.reduce((a, x) => a + ev[x].length, 0);
+      const sum = inY.reduce((a, x) => a + ev[x].reduce((p, q) => p + q.amt, 0), 0);
+      const legend = scs.map((s, i) => {
+        const cy = payCycleForDate(s, y + '-12-31');
+        const yr = inY.reduce((a, x) => a + ev[x].filter(e => e.sc.id === s.id).reduce((p, q) => p + q.amt, 0), 0);
+        const hist = (s.payHistory || []).map(h => h.effectiveDate || '');
+        const stale = cy.effectiveDate && cy.effectiveDate <= y + '-12-31' && !hist.some(d => d >= cy.effectiveDate);
+        return `<span style="display:inline-flex;align-items:center;gap:5px;font-size:.71rem;color:var(--text2);white-space:nowrap">
+          <span style="width:8px;height:8px;border-radius:50%;background:${colOf(s,i)}"></span>
+          ${esc(s.name||'Pay')} <span style="color:var(--text3)">${esc(payCycleLabel(cy))} · ${fmtC(yr)}</span>
+          ${stale ? `<span title="The pay cycle changed on ${fmtDate(cy.effectiveDate)} but no pay change has been recorded on or after it, so these figures still use the old per-cheque amount." style="font-size:.6rem;font-weight:700;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--warn,#C07A0A) 16%,transparent);color:var(--warn,#C07A0A)">rate not updated</span>` : ''}</span>`;
+      }).join('');
+      body += `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:${lastYear===+months[0].slice(0,4)?'0':'16px'} 0 4px">
+          <span style="font-size:.95rem;font-weight:700;color:var(--text)">${y}</span>
+          <span style="font-size:.7rem;color:var(--text3)">${cnt} credits${
+            inY.length<12 ? ` · ${MN[+inY[0].slice(5)-1]}–${MN[+inY[inY.length-1].slice(5)-1]} only` : ''}</span>
+          <span style="flex:1"></span>${legend}
+          <span style="font-family:var(--mono,monospace);font-size:.8rem;font-weight:700;color:var(--ok)">${fmtC(sum)}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding-bottom:2px;border-bottom:1px solid var(--border)">
+          <div style="width:52px;flex-shrink:0"></div>
+          <div style="flex:1;min-width:300px;display:grid;grid-template-columns:repeat(31,1fr)">${ruler()}</div>
+          <div style="width:26px;flex-shrink:0"></div><div style="width:92px;flex-shrink:0"></div>
+        </div>`;
+    }
+    cycleChanges.forEach(cc => {
+      if (cc.cy.effectiveDate.slice(0, 7) === ym) {
+        body += `<div style="display:flex;align-items:center;gap:8px;margin:5px 0 3px">
+          <div style="width:52px;flex-shrink:0"></div>
+          <div style="flex:1;display:flex;align-items:center;gap:8px">
+            <span style="flex:0 0 auto;font-size:.67rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--primary);white-space:nowrap">
+              ${esc(cc.s.name||'')} → ${esc(payCycleLabel(cc.cy))}, ${fmtDate(cc.cy.effectiveDate)}</span>
+            <span style="flex:1;height:1px;background:var(--primary);opacity:.35"></span>
+          </div>
+          <div style="width:26px;flex-shrink:0"></div><div style="width:92px;flex-shrink:0"></div>
+        </div>`;
+      }
+    });
+    body += row(ym);
   });
 
-  // upcoming strip
-  const upcoming = [];
-  years.forEach(y => { for (let m = 1; m <= 12; m++) {
-    (evByYM[y + '-' + String(m).padStart(2,'0')] || []).forEach(e => { if (e.d >= today) upcoming.push(e); });
-  }});
-  upcoming.sort((a,b) => a.d.localeCompare(b.d));
-  const nextUp = upcoming.slice(0, 6).map(e => {
-    const away = payDiffDays(today, e.d);
-    return `<div style="flex:1 1 130px;min-width:130px;background:var(--surface);border:1px solid var(--border);
-        border-left:3px solid ${e.col};border-radius:8px;padding:9px 11px">
-      <div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">${esc(e.sc.name||'Pay')}</div>
-      <div style="font-family:var(--mono,monospace);font-size:1rem;font-weight:700;color:var(--text);margin-top:2px">${fmtC(e.amt)}</div>
-      <div style="font-size:.72rem;color:var(--text2);margin-top:2px">${new Date(e.d+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}</div>
-      <div style="font-size:.68rem;color:var(--text3)">${away === 0 ? 'today' : 'in ' + away + ' day' + (away===1?'':'s')}</div>
-    </div>`;
-  }).join('');
-
-  const chip = e => {
-    const dd  = new Date(e.d + 'T00:00:00');
-    const dow = dd.toLocaleDateString('en-US',{weekday:'short'});
-    const past = e.d < today;
-    const notes = [];
-    if (e.sched) notes.push('moved from ' + fmtDate(e.sched));
-    if (e.drift) notes.push('bank shows ' + fmtDate(e.drift));
-    const title = `${esc(e.sc.name||'Pay')} · ${fmtDate(e.d)} · ${fmtC(e.amt)}${notes.length? ' · '+notes.join(' · ') : ''}`;
-    return `<span title="${esc(title)}" style="display:inline-flex;align-items:center;gap:5px;
-        padding:3px 8px;border-radius:999px;border:1px solid var(--border);
-        background:${past?'transparent':'var(--surface)'};opacity:${past?'.62':'1'};
-        font-size:.73rem;white-space:nowrap">
-      <span style="width:7px;height:7px;border-radius:50%;background:${e.col};flex-shrink:0"></span>
-      <span style="color:var(--text2)">${dow} ${dd.getDate()}</span>
-      <span style="font-family:var(--mono,monospace);color:var(--text);font-weight:600">${fmtC(e.amt)}</span>
-      ${e.sched ? `<span style="color:var(--warn,#C07A0A);font-size:.64rem" title="moved from ${fmtDate(e.sched)}">↤${
-          e.sched.slice(0,7) === e.d.slice(0,7)
-            ? new Date(e.sched+'T00:00:00').getDate()
-            : new Date(e.sched+'T00:00:00').toLocaleDateString('en-US',{day:'numeric',month:'short'})}</span>` : ''}
-      ${e.drift ? `<span style="color:var(--danger);font-size:.64rem">≠</span>` : ''}
-    </span>`;
-  };
-
-  const th = 'padding:7px 10px;text-align:left;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.045em;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap';
-  const yearBlock = y => {
-    const rows = [];
-    for (let m = 1; m <= 12; m++) {
-      const ym = y + '-' + String(m).padStart(2,'0');
-      const ev = evByYM[ym] || [];
-      const tot = ev.reduce((a,b) => a + b.amt, 0);
-      const isNow = ym === today.slice(0,7);
-      rows.push(`<tr style="border-bottom:1px solid var(--border-light);${isNow?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
-        <td style="padding:7px 10px;font-size:.78rem;font-weight:${isNow?'700':'600'};color:var(--text);white-space:nowrap">
-          ${MN[m-1]}${isNow?' <span style="font-size:.6rem;color:var(--primary);font-weight:700">NOW</span>':''}</td>
-        <td style="padding:6px 10px"><div style="display:flex;gap:6px;flex-wrap:wrap">${ev.map(chip).join('')}</div></td>
-        <td style="padding:7px 10px;text-align:right;font-family:var(--mono,monospace);font-size:.78rem;color:var(--text2);white-space:nowrap">${fmtC(tot)}</td>
-      </tr>`);
+  // exceptions, listed once instead of a glyph on every credit
+  const moved = [], drifted = [];
+  months.forEach(ym => (ev[ym] || []).forEach(e => {
+    if (e.sched) {
+      const w = new Date(e.sched + 'T00:00:00').getDay();
+      moved.push(`${fmtDate(e.d)} <span style="color:var(--text3)">${esc(e.sc.name||'')}, from ${
+        new Date(e.sched+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',day:'numeric',month:'short'})} · ${
+        (w===0||w===6) ? 'weekend' : 'holiday'}</span>`);
     }
-    const legend = scs.map((s,i) => {
-      const cy    = payCycleForDate(s, y + '-12-31');
-      const hist  = (s.payHistory || []).map(h => h.effectiveDate || '').sort();
-      const stale = cy.effectiveDate && cy.effectiveDate <= y + '-12-31' &&
-                    !hist.some(d => d >= cy.effectiveDate);
-      return `<span style="display:inline-flex;align-items:center;gap:5px;font-size:.72rem;color:var(--text2)">
-        <span style="width:8px;height:8px;border-radius:50%;background:${colOf(s,i)}"></span>
-        ${esc(s.name||'Pay')} <span style="color:var(--text3)">${esc(payCycleLabel(cy))} · ${fmtC(perYear[y].byS[s.id]||0)}</span>
-        ${stale ? `<span title="The pay cycle changed on ${fmtDate(cy.effectiveDate)} but no pay change has been recorded on or after that date, so these figures are still using the old per-cheque amount." style="font-size:.63rem;font-weight:700;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--warn,#C07A0A) 15%,transparent);color:var(--warn,#C07A0A)">rate not updated</span>` : ''}</span>`;
-    }).join('');
-    const count = Object.keys(evByYM).filter(k => k.startsWith(y+'-')).reduce((a,k)=>a+evByYM[k].length,0);
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:14px">
-      <div style="padding:11px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-          <span style="font-size:1rem;font-weight:700;color:var(--text)">${y}</span>
-          <span style="font-size:.74rem;color:var(--text3)">${count} credits</span>
-        </div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">${legend}
-          <span style="font-family:var(--mono,monospace);font-size:.85rem;font-weight:700;color:var(--ok)">${fmtC(perYear[y].total)}</span></div>
-      </div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:520px">
-        <thead><tr><th style="${th}">Month</th><th style="${th}">Pay dates</th><th style="${th};text-align:right">Total</th></tr></thead>
-        <tbody>${rows.join('')}</tbody>
-      </table></div>
-    </div>`;
-  };
+    if (e.drift) drifted.push(`${fmtDate(e.d)} <span style="color:var(--text3)">${esc(e.sc.name||'')} projected, bank shows ${fmtDate(e.drift)}</span>`);
+  }));
+  const note = (title, items, col) => items.length ? `
+    <div style="flex:1 1 260px;min-width:240px">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:${col};font-weight:700;margin-bottom:5px">${title} · ${items.length}</div>
+      <div style="display:flex;flex-direction:column;gap:2px;font-size:.73rem;font-family:var(--mono,monospace);color:var(--text2)">
+        ${items.slice(0,14).map(x=>`<div>${x}</div>`).join('')}
+        ${items.length>14?`<div style="color:var(--text3)">+${items.length-14} more</div>`:''}
+      </div></div>` : '';
 
-  const anyShift = Object.values(evByYM).some(a => a.some(e => e.sched));
-  const anyDrift = Object.values(evByYM).some(a => a.some(e => e.drift));
   c.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:14px">
-      <div>
-        <div style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px">Next up</div>
-        <div style="display:flex;gap:9px;flex-wrap:wrap">${nextUp || '<span style="font-size:.8rem;color:var(--text3)">Nothing scheduled ahead.</span>'}</div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
+        <div style="font-size:.64rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">Next up</div>
+        <button class="btn btn-sm btn-ghost" style="font-size:.71rem;padding:2px 9px" onclick="BA.paySchedTogglePast()">
+          ${showPast ? '− hide earlier months' : '+ show earlier ' + yNow + ' months'}</button>
       </div>
-      ${years.map(yearBlock).join('')}
-      <div style="font-size:.72rem;color:var(--text3);line-height:1.55">
-        ${anyShift ? '<b style="color:var(--warn,#C07A0A)">↤</b> a date pulled back off a weekend or a holiday, showing the day it was scheduled for. ' : ''}
-        ${anyDrift ? '<b style="color:var(--danger)">≠</b> the bank shows a deposit on a different day from the projection. ' : ''}
-        Cycles and shift rules are set per person under <b>Budget → Pay Schedules</b>. This page reads the same
-        generator the Budget tab plans against and the cash runway spends, so if a date is wrong here it is wrong everywhere.
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${
+        months.flatMap(ym => ev[ym]).filter(e => e.d >= today).slice(0, 4).map(e => {
+          const away = payDiffDays(today, e.d);
+          return `<div style="flex:1 1 150px;min-width:150px;background:var(--surface);border:1px solid var(--border);
+            border-left:3px solid ${e.col};border-radius:8px;padding:8px 11px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px">
+              <span style="font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">${esc(e.sc.name||'Pay')}</span>
+              <span style="font-size:.66rem;color:var(--text3)">${away === 0 ? 'today' : 'in ' + away + 'd'}</span></div>
+            <div style="font-family:var(--mono,monospace);font-size:.98rem;font-weight:700;color:var(--text);margin-top:1px">${fmtC(e.amt)}</div>
+            <div style="font-size:.71rem;color:var(--text2)">${new Date(e.d+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}</div>
+          </div>`; }).join('') || '<span style="font-size:.8rem;color:var(--text3)">Nothing scheduled ahead.</span>'}
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;overflow-x:auto">
+        <div style="min-width:480px">${body}</div>
+      </div>
+
+      <div style="display:flex;gap:22px;flex-wrap:wrap">
+        ${note('Dates that move', moved, 'var(--warn,#C07A0A)')}
+        ${note('Bank disagrees', drifted, 'var(--danger)')}
+        <div style="flex:1 1 220px;min-width:200px">
+          <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);font-weight:700;margin-bottom:5px">Reading it</div>
+          <div style="font-size:.72rem;color:var(--text3);line-height:1.6">
+            One row per month, one column per day. A filled dot is a credit; a
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;border:2px solid var(--text3);box-sizing:border-box;vertical-align:-1px"></span>
+            hollow one moved off a weekend or a holiday. Shaded columns are weekends.
+            Hover any day for the amount. Cycles are set per person under <b>Budget → Pay Schedules</b>.
+          </div>
+        </div>
       </div>
     </div>`;
 }
@@ -16129,6 +16201,7 @@ const BA = {
     dirty(); this._renderIncomeScheduleList(); renderBudget();
     toast('Pay change recorded ✓', 'ok');
   },
+  paySchedTogglePast() { UI.paySchedShowPast = !UI.paySchedShowPast; renderSetupContent(); },
   _showCycleChangeForm(scId) {
     const el = document.getElementById('cycle-change-form-' + scId);
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
