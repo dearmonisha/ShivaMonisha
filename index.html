@@ -15217,7 +15217,7 @@ const BA = {
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Category</label>
-        <select id="mob-at-cat" style="${fldStyle}"${ro}>${catOptsHtml}</select>
+        <select id="mob-at-cat" onchange="BA._mobSheetCatChanged()" style="${fldStyle}"${ro}>${catOptsHtml}</select>
       </div>
       <div style="${rowStyle}">
         <label style="${lblStyle}">Notes</label>
@@ -15316,6 +15316,19 @@ const BA = {
     if (!cat) return;
     if (type === 'credit' && !cat.value)                 cat.value = '__income__';
     else if (type === 'debit' && cat.value === '__income__') cat.value = '';
+    BA._mobSheetSyncSave();
+  },
+
+  // The other half of that binding, which was missing. Type is the field that
+  // decides debit vs credit, and it defaults to Expense, so picking 💰 Income
+  // and tapping Save wrote the salary out of the account instead of into it.
+  // Nothing on the sheet said so. Choosing an income category now sets the
+  // type; the reverse is deliberately NOT symmetric, because a refund posted
+  // to an expense category is a real credit and must stay possible.
+  _mobSheetCatChanged() {
+    const cat  = document.getElementById('mob-at-cat');
+    const type = document.getElementById('mob-at-type');
+    if (cat && type && cat.value === '__income__' && type.value === 'debit') type.value = 'credit';
     BA._mobSheetSyncSave();
   },
 
