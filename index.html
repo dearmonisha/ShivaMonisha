@@ -4163,6 +4163,48 @@ function renderSetupContent() {
 // is for acting on cash, this is for defining a rule. The runway still reads
 // the same `D.payments.recurringTransfers` store, so moving the screen changed
 // nothing about the records themselves.
+// A real hover card for the pay calendar. The browser's own title tooltip takes
+// about a second to appear and cannot show the person's colour or two credits on
+// one day, which is exactly what a shared pay date needs to say.
+function paySchedTipEl() {
+  let el = document.getElementById('paySchedTip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'paySchedTip';
+    el.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;opacity:0;transition:opacity .08s;' +
+      'background:var(--text);color:var(--surface);border-radius:8px;padding:9px 12px;font-size:.76rem;' +
+      'line-height:1.45;min-width:170px;box-shadow:0 6px 22px rgba(0,0,0,.28)';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function paySchedBindTips(root) {
+  if (!root) return;
+  const tip = paySchedTipEl();
+  const place = e => {
+    const pad = 14, r = tip.getBoundingClientRect();
+    let x = e.clientX + pad, y = e.clientY - r.height - pad;
+    if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - pad;
+    if (y < 8) y = e.clientY + pad;
+    tip.style.left = Math.max(8, x) + 'px';
+    tip.style.top  = y + 'px';
+  };
+  root.addEventListener('mouseover', e => {
+    const cell = e.target.closest('[data-paytip]');
+    if (!cell || !root.contains(cell)) return;
+    tip.innerHTML = cell.dataset.paytip;
+    tip.style.opacity = '1';
+    place(e);
+  });
+  root.addEventListener('mousemove', e => {
+    if (tip.style.opacity === '1' && e.target.closest('[data-paytip]')) place(e);
+  });
+  root.addEventListener('mouseout', e => {
+    const to = e.relatedTarget;
+    if (!to || !to.closest || !to.closest('[data-paytip]')) tip.style.opacity = '0';
+  });
+}
+
 // ── Setup → Pay Schedule ──────────────────────────────────────────────────
 // A calendar, not a list. The first version printed one pill per credit with
 // the amount in bold, which meant 105 pills repeating the same two numbers
@@ -4185,6 +4227,12 @@ function renderPaySchedule(c) {
   const COLORS = ['#7C3AED','#0EA5E9','#2E8B57','#C07A0A','#EC4899','#C0392B'];
   const colOf  = (s, i) => s.color || COLORS[i % COLORS.length];
   const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  // One letter per person inside the dot, so identity never depends on telling
+  // two colours apart. Two initials collide -> use two letters for everyone.
+  const firsts = scs.map(s => (s.name || '?').trim().charAt(0).toUpperCase());
+  const clash  = firsts.some((f, i) => firsts.indexOf(f) !== i);
+  const iniOf  = s => (s.name || '?').trim().slice(0, clash ? 2 : 1)
+                        .replace(/^./, m => m.toUpperCase());
 
   // real deposits, for reconciling anything already in the past
   const bankIds = new Set((D.txnAccounts || [])
@@ -4230,8 +4278,9 @@ function renderPaySchedule(c) {
   const ruler = () => {
     let out = '';
     for (let d = 1; d <= 31; d++)
-      out += `<div style="text-align:center;font-size:.58rem;color:var(--text3);font-family:var(--mono,monospace)">${
-        (d === 1 || d % 5 === 0 || d === 31) ? d : ''}</div>`;
+      out += `<div style="text-align:center;font-size:.62rem;font-family:var(--mono,monospace);
+        color:${(d % 5 === 0 || d === 1 || d === 31) ? 'var(--text2)' : 'var(--text3)'};
+        font-weight:${(d % 5 === 0 || d === 1 || d === 31) ? '700' : '400'}">${d}</div>`;
     return out;
   };
 
@@ -4248,30 +4297,50 @@ function renderPaySchedule(c) {
       const dow = new Date(iso + 'T00:00:00').getDay();
       const we  = (dow === 0 || dow === 6);
       const es  = byDay[d] || [];
-      const sz  = es.length > 1 ? 7 : 9;
-      const dots = es.map(e => `<span style="width:${sz}px;height:${sz}px;border-radius:50%;box-sizing:border-box;display:inline-block;${
-        e.sched ? `border:2px solid ${e.col};background:var(--surface)` : `background:${e.col}`}"></span>`).join('');
-      const tip = es.length
-        ? iso + ' — ' + es.map(e => (e.sc.name || 'Pay') + ' ' + fmtC(e.amt) +
-            (e.sched ? ' · moved from ' + fmtDate(e.sched) : '') +
-            (e.drift ? ' · bank shows ' + fmtDate(e.drift) : '')).join('  |  ')
-        : iso;
-      cells += `<div title="${esc(tip)}" style="height:21px;display:flex;align-items:center;justify-content:center;gap:1px;
-        ${we ? 'background:color-mix(in srgb,var(--text3) 9%,transparent);' : ''}
+      const two = es.length > 1;
+      const dots = es.map(e => `<span style="
+        width:${two ? 'clamp(12px,46%,16px)' : 'clamp(14px,74%,19px)'};aspect-ratio:1;
+        border-radius:50%;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;
+        font-family:var(--mono,monospace);font-weight:700;font-size:${two ? '.56rem' : '.64rem'};letter-spacing:-.02em;
+        ${e.sched ? `border:2px solid ${e.col};background:var(--surface);color:${e.col}`
+                  : `background:${e.col};color:#fff`}">${esc(iniOf(e.sc))}</span>`).join('');
+      const dayTot = es.reduce((a, b) => a + b.amt, 0);
+      const tip = es.length ? `
+        <div style="font-weight:700;margin-bottom:5px">${new Date(iso+'T00:00:00')
+          .toLocaleDateString('en-US',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</div>
+        ${es.map(e => `<div style="display:flex;align-items:center;gap:7px;margin:3px 0">
+            <span style="width:15px;height:15px;border-radius:50%;background:${e.col};color:#fff;flex-shrink:0;
+              display:inline-flex;align-items:center;justify-content:center;font-size:.55rem;font-weight:700">${esc(iniOf(e.sc))}</span>
+            <span style="flex:1">${esc(e.sc.name||'Pay')}</span>
+            <span style="font-weight:700;font-variant-numeric:tabular-nums">${fmtC(e.amt)}</span>
+          </div>
+          ${e.sched ? `<div style="opacity:.75;font-size:.92em;padding-left:22px">moved from ${
+            new Date(e.sched+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',day:'numeric',month:'short'})}</div>`:''}
+          ${e.drift ? `<div style="opacity:.75;font-size:.92em;padding-left:22px">bank shows ${fmtDate(e.drift)}</div>`:''}`).join('')}
+        ${es.length > 1 ? `<div style="display:flex;justify-content:space-between;gap:14px;margin-top:5px;padding-top:4px;
+          border-top:1px solid rgba(255,255,255,.22)"><span style="opacity:.75">that day</span>
+          <span style="font-weight:700;font-variant-numeric:tabular-nums">${fmtC(dayTot)}</span></div>`:''}` : '';
+      cells += `<div ${tip ? `data-paytip="${esc(tip)}"` : ''} style="height:28px;${tip?'cursor:default;':''}display:flex;align-items:center;justify-content:center;gap:2px;
+        ${we ? 'background:color-mix(in srgb,var(--text3) 10%,transparent);' : ''}
         ${iso === today ? 'box-shadow:inset 0 0 0 1.5px var(--primary);border-radius:3px;' : ''}
-        ${es.some(e => e.drift) ? 'border-bottom:2px solid var(--danger);' : ''}">${dots}</div>`;
+        ${es.some(e => e.drift) ? 'box-shadow:inset 0 -2px 0 var(--danger);' : ''}">${dots}</div>`;
     }
     const tot = +list.reduce((a, b) => a + b.amt, 0).toFixed(2);
     const hot = tot > baseline + 0.5;
     const isNow = ym === today.slice(0, 7);
-    return `<div style="display:flex;align-items:center;gap:8px;padding:1px 0;${
-        isNow ? 'background:color-mix(in srgb,var(--primary) 7%,transparent);border-radius:5px;' : ''}">
-      <div style="width:52px;flex-shrink:0;font-size:.74rem;font-weight:${isNow?'700':'600'};color:var(--text);padding-left:4px">
-        ${MN[mm-1]}</div>
-      <div style="flex:1;min-width:300px;display:grid;grid-template-columns:repeat(31,1fr)">${cells}</div>
-      <div style="width:26px;flex-shrink:0;text-align:right;font-size:.7rem;color:var(--text3);font-family:var(--mono,monospace)">${list.length}</div>
-      <div style="width:92px;flex-shrink:0;text-align:right;font-family:var(--mono,monospace);font-size:.74rem;
-        color:${hot?'var(--ok)':'var(--text3)'};font-weight:${hot?'700':'400'};padding-right:4px">${fmtC(tot)}</div>
+    // Zebra banding plus a hairline, because sixteen rows of sparse dots is
+    // exactly the layout where the eye loses which row it is on.
+    const band = (mm % 2 === 0);
+    return `<div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border-light);${
+        isNow ? 'background:color-mix(in srgb,var(--primary) 9%,transparent);'
+              : band ? 'background:color-mix(in srgb,var(--text3) 4%,transparent);' : ''}">
+      <div style="width:46px;flex-shrink:0;font-size:.76rem;font-weight:700;padding-left:5px;
+        color:${isNow?'var(--primary)':'var(--text)'};border-right:1px solid var(--border-light);align-self:stretch;
+        display:flex;align-items:center">${MN[mm-1]}</div>
+      <div style="flex:1;min-width:0;display:grid;grid-template-columns:repeat(31,1fr)">${cells}</div>
+      <div style="width:22px;flex-shrink:0;text-align:right;font-size:.7rem;color:var(--text3);font-family:var(--mono,monospace)">${list.length}</div>
+      <div style="width:88px;flex-shrink:0;text-align:right;font-family:var(--mono,monospace);font-size:.74rem;
+        color:${hot?'var(--ok)':'var(--text3)'};font-weight:${hot?'700':'400'};padding-right:5px">${fmtC(tot)}</div>
     </div>`;
   };
 
@@ -4308,22 +4377,22 @@ function renderPaySchedule(c) {
           <span style="flex:1"></span>${legend}
           <span style="font-family:var(--mono,monospace);font-size:.8rem;font-weight:700;color:var(--ok)">${fmtC(sum)}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;padding-bottom:2px;border-bottom:1px solid var(--border)">
-          <div style="width:52px;flex-shrink:0"></div>
-          <div style="flex:1;min-width:300px;display:grid;grid-template-columns:repeat(31,1fr)">${ruler()}</div>
-          <div style="width:26px;flex-shrink:0"></div><div style="width:92px;flex-shrink:0"></div>
+        <div style="display:flex;align-items:center;gap:8px;padding-bottom:3px;border-bottom:1px solid var(--border)">
+          <div style="width:46px;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0;display:grid;grid-template-columns:repeat(31,1fr)">${ruler()}</div>
+          <div style="width:22px;flex-shrink:0"></div><div style="width:88px;flex-shrink:0"></div>
         </div>`;
     }
     cycleChanges.forEach(cc => {
       if (cc.cy.effectiveDate.slice(0, 7) === ym) {
         body += `<div style="display:flex;align-items:center;gap:8px;margin:5px 0 3px">
-          <div style="width:52px;flex-shrink:0"></div>
+          <div style="width:46px;flex-shrink:0"></div>
           <div style="flex:1;display:flex;align-items:center;gap:8px">
             <span style="flex:0 0 auto;font-size:.67rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--primary);white-space:nowrap">
               ${esc(cc.s.name||'')} → ${esc(payCycleLabel(cc.cy))}, ${fmtDate(cc.cy.effectiveDate)}</span>
             <span style="flex:1;height:1px;background:var(--primary);opacity:.35"></span>
           </div>
-          <div style="width:26px;flex-shrink:0"></div><div style="width:92px;flex-shrink:0"></div>
+          <div style="width:22px;flex-shrink:0"></div><div style="width:88px;flex-shrink:0"></div>
         </div>`;
       }
     });
@@ -4370,7 +4439,7 @@ function renderPaySchedule(c) {
       </div>
 
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;overflow-x:auto">
-        <div style="min-width:480px">${body}</div>
+        <div style="min-width:900px">${body}</div>
       </div>
 
       <div style="display:flex;gap:22px;flex-wrap:wrap">
@@ -4379,14 +4448,17 @@ function renderPaySchedule(c) {
         <div style="flex:1 1 220px;min-width:200px">
           <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);font-weight:700;margin-bottom:5px">Reading it</div>
           <div style="font-size:.72rem;color:var(--text3);line-height:1.6">
-            One row per month, one column per day. A filled dot is a credit; a
-            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;border:2px solid var(--text3);box-sizing:border-box;vertical-align:-1px"></span>
-            hollow one moved off a weekend or a holiday. Shaded columns are weekends.
-            Hover any day for the amount. Cycles are set per person under <b>Budget → Pay Schedules</b>.
+            One row per month, one column per day, and the letter in each dot is
+            whose credit it is. A filled dot landed on its scheduled day; an
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:2px solid var(--text3);box-sizing:border-box;font-size:.52rem;font-weight:700;font-family:var(--mono,monospace);color:var(--text3);vertical-align:-3px">S</span>
+            outlined one moved off a weekend or a holiday. Shaded columns are
+            weekends, and a red underline means the bank disagrees. Hover any day
+            for the amount. Cycles are set per person under <b>Budget → Pay Schedules</b>.
           </div>
         </div>
       </div>
     </div>`;
+  paySchedBindTips(c);
 }
 
 function renderStandingTransfers(c) {
