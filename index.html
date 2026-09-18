@@ -4275,12 +4275,19 @@ function renderPaySchedule(c) {
   const freq = {}; totals.forEach(t => freq[t] = (freq[t] || 0) + 1);
   const baseline = +Object.keys(freq).sort((a, b) => freq[b] - freq[a])[0] || 0;
 
+  // Every fifth rule is stronger, matching the bolded header numbers, so the eye
+  // has anchors to count from instead of tracking one hairline across 31 of them.
+  const RULE  = 'inset -1px 0 0 color-mix(in srgb,var(--text3) 15%,transparent)';
+  const RULE5 = 'inset -1px 0 0 color-mix(in srgb,var(--text3) 32%,transparent)';
+  const ruleFor = d => d === 31 ? '' : (d % 5 === 0 ? RULE5 : RULE);
   const ruler = () => {
     let out = '';
-    for (let d = 1; d <= 31; d++)
-      out += `<div style="text-align:center;font-size:.62rem;font-family:var(--mono,monospace);
-        color:${(d % 5 === 0 || d === 1 || d === 31) ? 'var(--text2)' : 'var(--text3)'};
-        font-weight:${(d % 5 === 0 || d === 1 || d === 31) ? '700' : '400'}">${d}</div>`;
+    for (let d = 1; d <= 31; d++) {
+      const key = (d % 5 === 0 || d === 1 || d === 31);
+      out += `<div style="text-align:center;font-size:.62rem;font-family:var(--mono,monospace);padding-bottom:2px;
+        color:${key ? 'var(--text2)' : 'var(--text3)'};font-weight:${key ? '700' : '400'};
+        ${ruleFor(d) ? 'box-shadow:' + ruleFor(d) + ';' : ''}">${d}</div>`;
+    }
     return out;
   };
 
@@ -4292,10 +4299,12 @@ function renderPaySchedule(c) {
     list.forEach(e => { const dd = +e.d.slice(8,10); (byDay[dd] = byDay[dd] || []).push(e); });
     let cells = '';
     for (let d = 1; d <= 31; d++) {
-      if (d > last) { cells += '<div></div>'; continue; }
+      if (d > last) {
+        cells += `<div style="height:28px;background:color-mix(in srgb,var(--text3) 7%,transparent);
+          ${ruleFor(d) ? 'box-shadow:' + ruleFor(d) + ';' : ''}"></div>`;
+        continue;
+      }
       const iso = payMonthDay(y, mm, d);
-      const dow = new Date(iso + 'T00:00:00').getDay();
-      const we  = (dow === 0 || dow === 6);
       const es  = byDay[d] || [];
       const two = es.length > 1;
       const dots = es.map(e => `<span style="
@@ -4320,10 +4329,13 @@ function renderPaySchedule(c) {
         ${es.length > 1 ? `<div style="display:flex;justify-content:space-between;gap:14px;margin-top:5px;padding-top:4px;
           border-top:1px solid rgba(255,255,255,.22)"><span style="opacity:.75">that day</span>
           <span style="font-weight:700;font-variant-numeric:tabular-nums">${fmtC(dayTot)}</span></div>`:''}` : '';
+      const shadow = [];
+      if (iso === today)            shadow.push('inset 0 0 0 1.5px var(--primary)');
+      if (es.some(e => e.drift))    shadow.push('inset 0 -2px 0 var(--danger)');
+      if (ruleFor(d))               shadow.push(ruleFor(d));
       cells += `<div ${tip ? `data-paytip="${esc(tip)}"` : ''} style="height:28px;${tip?'cursor:default;':''}display:flex;align-items:center;justify-content:center;gap:2px;
-        ${we ? 'background:color-mix(in srgb,var(--text3) 10%,transparent);' : ''}
-        ${iso === today ? 'box-shadow:inset 0 0 0 1.5px var(--primary);border-radius:3px;' : ''}
-        ${es.some(e => e.drift) ? 'box-shadow:inset 0 -2px 0 var(--danger);' : ''}">${dots}</div>`;
+        ${iso === today ? 'border-radius:3px;' : ''}
+        ${shadow.length ? 'box-shadow:' + shadow.join(',') + ';' : ''}">${dots}</div>`;
     }
     const tot = +list.reduce((a, b) => a + b.amt, 0).toFixed(2);
     const hot = tot > baseline + 0.5;
@@ -4451,9 +4463,10 @@ function renderPaySchedule(c) {
             One row per month, one column per day, and the letter in each dot is
             whose credit it is. A filled dot landed on its scheduled day; an
             <span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:2px solid var(--text3);box-sizing:border-box;font-size:.52rem;font-weight:700;font-family:var(--mono,monospace);color:var(--text3);vertical-align:-3px">S</span>
-            outlined one moved off a weekend or a holiday. Shaded columns are
-            weekends, and a red underline means the bank disagrees. Hover any day
-            for the amount. Cycles are set per person under <b>Budget → Pay Schedules</b>.
+            outlined one moved off a weekend or a holiday — hover it, or read the
+            list to the left, for what it moved from. A red underline means the
+            bank disagrees with the projection. Hover any day for the amount and
+            the weekday. Cycles are set per person under <b>Budget → Pay Schedules</b>.
           </div>
         </div>
       </div>
