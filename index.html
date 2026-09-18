@@ -13891,12 +13891,17 @@ function mobPayeeIndex() {
     if (!name || name === '(no payee)') return;
     const k = name.toLowerCase();
     let e = map.get(k);
-    if (!e) { e = { payee: name, n: 0, recent: 0, lastDate: '', acct: null, cat: null, cats: new Map() }; map.set(k, e); }
+    if (!e) { e = { payee: name, n: 0, recent: 0, lastDate: '', acct: null, cat: null, cats: new Map(), db: 0, cr: 0, dir: 'debit' }; map.set(k, e); }
     e.n++;
     const d = t.date || '';
     // Splits have no single category, so they inform the account but not the guess.
     const cat = (t.splits && t.splits.length) ? null : (t.categoryId || null);
-    if (d >= e.lastDate) { e.lastDate = d; e.acct = t.accountId || null; if (cat) e.cat = cat; }
+    // Direction is learnt the same way as account and category: whatever this
+    // payee did last. Salary has never once been a debit, so a single glance at
+    // history is worth more than any rule about category names.
+    const dir = (+t.credit || 0) > (+t.debit || 0) ? 'credit' : 'debit';
+    if (dir === 'credit') e.cr++; else e.db++;
+    if (d >= e.lastDate) { e.lastDate = d; e.acct = t.accountId || null; e.dir = dir; if (cat) e.cat = cat; }
     if (cat) e.cats.set(cat, (e.cats.get(cat) || 0) + 1);
   });
   // "Recent" for the chip row = last 60 days, so the shortlist tracks this
@@ -13916,7 +13921,10 @@ function mobPayeeGuess(name) {
   const ranked = [...e.cats.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]);
   // Most recent leads; the two most frequent others follow as one-tap chips.
   const alts = ranked.filter(c => c !== e.cat).slice(0, 2);
-  return { payee: e.payee, acctId: e.acct, catId: e.cat || ranked[0] || null, alts, n: e.n };
+  // Mixed history (a refund against a shop) stays a debit unless the credits
+  // are the clear majority — the last row alone shouldn't flip a spend payee.
+  const dir = e.cr > 0 && (e.dir === 'credit' ? e.cr * 2 >= e.n : e.cr > e.db) ? 'credit' : 'debit';
+  return { payee: e.payee, acctId: e.acct, catId: e.cat || ranked[0] || null, alts, n: e.n, dir, cr: e.cr, db: e.db };
 }
 function mobRecentPayees(limit) {
   return [...mobPayeeIndex().values()]
@@ -14025,7 +14033,7 @@ let _desktopRendered = false;
 // decide whether the Save icon is live, and whether Cancel should confirm.
 const _MOB_SHEET_FIELDS = ['mob-at-date','mob-at-payee','mob-at-amt','mob-at-type','mob-at-acct','mob-at-cat','mob-at-notes'];
 let _mobSheetBaseline = '';
-let _mobFast = { raw:'', payee:'', acctId:'', catId:'', alts:[], custom:false, taps:0 };
+let _mobFast = { raw:'', payee:'', acctId:'', catId:'', alts:[], custom:false, taps:0, dir:'debit' };
 // Set when the owner is changed from inside a sheet. The Home greeting shows
 // the owner's name, so closing the sheet has to repaint the view — but only
 // then, since a full mobile re-render walks every transaction.
@@ -15428,7 +15436,7 @@ const BA = {
   // mobPayeeGuess: 78.6% on category, 70.6% on account, both one tap to change).
   mobFastOpen() {
     document.getElementById('mob-fast')?.remove();
-    _mobFast = { raw: '', payee: '', acctId: '', catId: '', alts: [], custom: false, taps: 0 };
+    _mobFast = { raw: '', payee: '', acctId: '', catId: '', alts: [], custom: false, taps: 0, dir: 'debit' };
     const ov = document.createElement('div');
     ov.id = 'mob-fast';
     ov.className = 'mob-sheet-overlay';
@@ -15436,7 +15444,7 @@ const BA = {
     ov.innerHTML = `
       <div class="mob-sheet" role="dialog" aria-label="Add spend">
         <div class="mob-sheet-head">
-          <div><div class="mob-sheet-title">Add spend</div>
+          <div><div class="mob-sheet-title" id="mf-title">Add spend</div>
             <div id="mf-step" style="font-size:.72rem;color:var(--text3)">Amount first</div></div>
           <button onclick="BA.mobFastClose()" aria-label="Close"
             style="background:none;border:none;color:var(--text3);font-size:1.4rem;min-height:44px;min-width:44px;cursor:pointer">✕</button>
@@ -15473,6 +15481,7 @@ const BA = {
       if (f.payee && g('mob-at-payee')) g('mob-at-payee').value = f.payee;
       if (f.acctId && g('mob-at-acct')) g('mob-at-acct').value  = f.acctId;
       if (f.catId && g('mob-at-cat'))   g('mob-at-cat').value   = f.catId;
+      if (g('mob-at-type'))             g('mob-at-type').value  = f.dir;
       BA._mobSheetSyncSave?.();
     }, 60);
   },
@@ -15493,9 +15502,20 @@ const BA = {
     f.catId  = (g && g.catId)  || '';
     f.alts   = (g && g.alts)   || [];
     f.custom = !g;
+    f.dir    = (g && g.dir)    || 'debit';
     BA._mobFastPaint();
   },
-  mobFastSetCat(catId) { _mobFast.taps++; _mobFast.catId = catId; BA._mobFastPaint(); },
+  mobFastSetCat(catId) {
+    _mobFast.taps++; _mobFast.catId = catId;
+    // Income is money in by definition; picking it is as good as saying so.
+    if (catId === '__income__') _mobFast.dir = 'credit';
+    BA._mobFastPaint();
+  },
+  mobFastFlip() {
+    _mobFast.taps++;
+    _mobFast.dir = _mobFast.dir === 'credit' ? 'debit' : 'credit';
+    BA._mobFastPaint();
+  },
   mobFastSetAcct(v)    { _mobFast.taps++; _mobFast.acctId = v;    BA._mobFastPaint(); },
   mobFastSearch(v) {
     const q = (v || '').trim().toLowerCase();
@@ -15514,13 +15534,19 @@ const BA = {
     const f = _mobFast, g = id => document.getElementById(id);
     if (!g('mob-fast')) return;
     const amt = Math.round((parseFloat(f.raw || '0') || 0) * 100) / 100;
+    const inb = f.dir === 'credit';
     const disp = g('mf-amt');
-    disp.textContent = f.raw ? fmtCurrency(amt) : '$0.00';
-    disp.style.color = f.raw ? 'var(--text)' : 'var(--text3)';
-    g('mf-step').textContent = !f.raw ? 'Amount first' : !f.payee ? 'Now, who did you pay?' : 'Check and add';
+    disp.textContent = f.raw ? (inb ? '+' : '') + fmtCurrency(amt) : '$0.00';
+    disp.style.color = !f.raw ? 'var(--text3)' : inb ? 'var(--ok)' : 'var(--text)';
+    if (g('mf-title')) g('mf-title').textContent = inb ? 'Add money in' : 'Add spend';
+    g('mf-step').textContent = !f.raw ? 'Amount first'
+      : !f.payee ? 'Now, who did you pay?'
+      : inb ? 'Money in — check and add' : 'Check and add';
 
     const accts = (D.txnAccounts || []).filter(a => a.active !== false && a.status !== 'closed');
-    const catName = c => (D.budget?.categories || []).find(x => x.id === c)?.name || '';
+    // The pseudo-categories (Income, Family Deposits, Pot Withdrawal) are not in
+    // the category list, so a plain lookup left this line blank on every credit.
+    const catName = c => txnCatLabel(c) || (D.budget?.categories || []).find(x => x.id === c)?.name || '';
     const body = g('mf-body');
     if (!f.payee) {
       body.innerHTML = `
@@ -15534,11 +15560,14 @@ const BA = {
       // The category line carries how confident the guess is, because "seen once"
       // and "seen 162 times" deserve different amounts of trust from the reader.
       const gInfo = mobPayeeGuess(f.payee);
-      const ctx = BA._mobFastCtx(f.catId, amt);
+      const ctx = inb ? '' : BA._mobFastCtx(f.catId, amt);
       body.innerHTML = `
-        <div class="mob-guess"><span>Paid <b>${esc(f.payee)}</b>${gInfo ? ` <span style="color:var(--text3)">· ${gInfo.n}×</span>` : ''}</span>
+        <div class="mob-guess"><span>${inb ? 'From' : 'Paid'} <b>${esc(f.payee)}</b>${gInfo ? ` <span style="color:var(--text3)">· ${gInfo.n}×</span>` : ''}</span>
           <button onclick="BA.mobFastPick('')" style="background:none;border:none;color:var(--primary);font-weight:700;font-size:.74rem;min-height:36px;cursor:pointer">change</button></div>
-        <div class="mob-guess"><span>Card &nbsp;
+        <div class="mob-guess" style="${inb ? 'background:var(--ok-bg)' : ''}">
+          <span>${inb ? 'Money <b>in</b>' : 'Money <b>out</b>'}${gInfo && gInfo.cr && gInfo.db === 0 ? ` <span style="color:var(--text3)">· always has been</span>` : ''}</span>
+          <button onclick="BA.mobFastFlip()" style="background:none;border:none;color:var(--primary);font-weight:700;font-size:.74rem;min-height:36px;cursor:pointer">switch</button></div>
+        <div class="mob-guess"><span>${inb ? 'Into' : 'Card'} &nbsp;
           <select onchange="BA.mobFastSetAcct(this.value)" style="border:none;background:none;font-weight:700;color:var(--text);font-size:.82rem;max-width:170px">
             <option value="">Select…</option>
             ${accts.map(a => `<option value="${esc(a.id)}"${a.id === f.acctId ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
@@ -15558,7 +15587,7 @@ const BA = {
     btn.textContent = !f.raw ? 'Add amount to continue'
       : !f.payee ? 'Pick who you paid'
       : !f.acctId ? 'Pick a card or account'
-      : `Add ${fmtCurrency(amt)}`;
+      : inb ? `Add +${fmtCurrency(amt)} in` : `Add ${fmtCurrency(amt)}`;
   },
 
   // One line of fact at the only moment it can change a decision. Not a warning,
@@ -15582,10 +15611,14 @@ const BA = {
     const f = _mobFast;
     const amt = Math.round((parseFloat(f.raw || '0') || 0) * 100) / 100;
     if (!(amt > 0) || !f.payee || !f.acctId) return;
+    const inb = f.dir === 'credit';
     const txn = {
       id: uid(), accountId: f.acctId, date: centralToday(),
-      payee: f.payee, debit: amt, credit: 0,
-      categoryId: f.catId || null, notes: '',
+      payee: f.payee,
+      debit:  inb ? 0   : amt,
+      credit: inb ? amt : 0,
+      // Same safety net as the full sheet: an uncategorised credit is income.
+      categoryId: f.catId || (inb ? '__income__' : null), notes: '',
       cleared: false, status: 'approved', source: 'mobile',
       enteredBy: ghGetOwner() || undefined,
       _addedAt: new Date().toISOString()
@@ -15596,7 +15629,7 @@ const BA = {
     dirty();
     BA.mobFastClose();
     mobRender('keep');
-    toast(`Saved: ${txn.payee} −${fmtC(amt)} · ${f.taps + 1} taps`, 'ok');
+    toast(`Saved: ${txn.payee} ${inb ? '+' : '−'}${fmtC(amt)} · ${f.taps + 1} taps`, 'ok');
   },
 
   mobileAddTxnSubmit() {
