@@ -734,6 +734,22 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .isc-toggle-slider:before{content:"";position:absolute;width:14px;height:14px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
 .isc-toggle input:checked+.isc-toggle-slider:before{transform:translateX(16px)}
 .isc-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px;flex-shrink:0}
+/* The salary editor grew up in a 580px modal, where .finput's width:100% was
+   harmless because nothing had room to sprawl. On the full-width Setup page it
+   gave the name field the whole row and pushed pay and start date onto the next
+   line. Sized here rather than inline so the row stays one line and the two
+   history panels sit side by side instead of stacking in a narrow column. */
+.salary-panel .isc-row{padding:12px 0}
+.salary-panel .isc-row:first-child{padding-top:2px}
+.salary-panel .isc-fields{gap:12px;align-items:flex-end;flex-wrap:wrap}
+.salary-panel .isc-fields .finput{width:auto}
+.salary-panel .isc-name{flex:0 1 200px;min-width:140px}
+/* width, not flex-basis: these inputs sit inside a column-direction wrapper,
+   where a basis would size their HEIGHT and give you three tall empty boxes. */
+.salary-panel .isc-num{width:132px;flex:none}
+.salary-panel .isc-fields > div{flex:none}
+.salary-panel .isc-boxes{display:flex;gap:10px;flex-wrap:wrap;width:100%}
+.salary-panel .isc-boxes > div{flex:1 1 300px;min-width:260px;margin-top:0!important}
 .isc-tag{display:inline-flex;padding:1px 5px;background:var(--surface3);color:var(--text3);border-radius:3px;font-size:.68rem;font-weight:600;text-transform:uppercase;margin-left:4px}
 .isc-section-hdr td{padding:5px 10px;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);background:var(--surface2);border-top:1px solid var(--border-light)}
 .isc-income-row{background:#FAFFF7}
@@ -1112,7 +1128,6 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       </div>
       <!-- Action buttons -->
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
-        <button class="btn btn-sm" onclick="BA.openIncomeScheduleModal()">⚙ Pay Schedules</button>
         <button class="btn btn-sm" onclick="BA.copyBudgetFromPrior()">📋 Copy Prior Month</button>
         <button class="btn btn-sm" onclick="BA.importBudgetData()" style="display:none">⬆ Import Budget</button>
         <span style="width:1px;height:18px;background:var(--border);display:inline-block;margin:0 2px;"></span>
@@ -1219,20 +1234,6 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
     <div class="mfoot">
       <button class="btn" onclick="BA.closeBudgetIncomeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="BA.saveBudgetIncomeRow()">Save</button>
-    </div>
-  </div>
-</div>
-
-<!-- Income Schedule Modal -->
-<div id="incomeScheduleModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center">
-  <div class="modal" style="width:580px">
-    <div class="modal-title">⚙ Pay Schedules <span id="iscModalSub" style="font-size:.75rem;font-weight:400;color:var(--text3)"></span></div>
-    <div id="incomeScheduleList" style="margin-bottom:14px;max-height:55vh;overflow-y:auto"></div>
-    <div style="margin-bottom:14px">
-      <button class="btn btn-sm" onclick="BA.addIncomeScheduleRow()">＋ Add Person</button>
-    </div>
-    <div class="mfoot">
-      <button class="btn btn-primary" onclick="BA.closeIncomeScheduleModal()">Done</button>
     </div>
   </div>
 </div>
@@ -4190,7 +4191,7 @@ function renderSetup() {
       <button class="stab ${UI.setupTab==='accounts'?'active':''}" id="stab-accounts" onclick="switchSetupTab('accounts')">Accounts</button>
       <button class="stab ${UI.setupTab==='recurring'?'active':''}" id="stab-recurring" onclick="switchSetupTab('recurring')">Recurring Expenses</button>
       <button class="stab ${UI.setupTab==='transfers'?'active':''}" id="stab-transfers" onclick="switchSetupTab('transfers')">Standing Transfers</button>
-      <button class="stab ${UI.setupTab==='payschedule'?'active':''}" id="stab-payschedule" onclick="switchSetupTab('payschedule')">Pay Schedule</button>
+      <button class="stab ${UI.setupTab==='payschedule'?'active':''}" id="stab-payschedule" onclick="switchSetupTab('payschedule')">Salary</button>
       <button class="stab ${UI.setupTab==='categories'?'active':''}" id="stab-categories" onclick="switchSetupTab('categories')">Categories</button>
       <button class="stab ${UI.setupTab==='templates'?'active':''}" id="stab-templates" onclick="switchSetupTab('templates')">Payment Templates</button>
     </div>
@@ -4268,13 +4269,41 @@ function paySchedBindTips(root) {
 // the 15th and the last day, and a fortnight with no money is just whitespace.
 // Reads the one generator, so whatever this shows is exactly what the Budget
 // tab plans against and the runway spends.
+// The salary editor, which used to be a modal hung off the Budget tab. Two
+// copies of the same thing is how the Ford anchor went missing, so there is one
+// now and it lives here, next to the calendar it drives — change a cycle and the
+// grid underneath redraws on the spot.
+//
+// The id `incomeScheduleList` is kept deliberately: BA._renderIncomeScheduleList
+// and every handler under it paint into that node, and they did not need to
+// change to move house.
+function paySalaryEditorHTML() {
+  return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="font-size:.95rem;font-weight:700;color:var(--text)">People &amp; pay</span>
+        <span id="iscModalSub" style="font-size:.75rem;font-weight:400;color:var(--text3)"></span>
+        <span style="flex:1"></span>
+        <button class="btn btn-sm" onclick="BA.addIncomeScheduleRow()">＋ Add Person</button>
+      </div>
+      <div style="font-size:.72rem;color:var(--text3);line-height:1.55;margin-bottom:6px;max-width:74ch">
+        A raise is recorded as a <b>pay change</b> with the date it takes effect — not by editing the base
+        amount. The base is what the schedule started on, and every past paydate keeps the rate that was
+        in force on the day, so history does not silently rewrite itself when you get a rise. A move to a
+        different cadence goes in the same way, as a <b>cycle change</b>.
+      </div>
+      <div id="incomeScheduleList" class="salary-panel"></div>
+    </div>`;
+}
+
 function renderPaySchedule(c) {
   const today = centralToday();
   const yNow  = +today.slice(0, 4);
   const scs   = (D.budget.incomeSchedules || []).filter(s => s.enabled !== false && s.startDate);
   if (!scs.length) {
-    c.innerHTML = `<div style="padding:28px;text-align:center;color:var(--text3);font-size:.85rem">
-      No pay schedules yet. Add one under Budget → Pay Schedules.</div>`;
+    c.innerHTML = paySalaryEditorHTML() + `<div style="padding:22px;text-align:center;color:var(--text3);font-size:.85rem">
+      No pay schedule to draw yet. Add a person above and give them a first paycheck date.</div>`;
+    BA._renderIncomeScheduleList();
     return;
   }
   const COLORS = ['#7C3AED','#0EA5E9','#2E8B57','#C07A0A','#EC4899','#C0392B'];
@@ -4483,7 +4512,7 @@ function renderPaySchedule(c) {
         ${items.length>14?`<div style="color:var(--text3)">+${items.length-14} more</div>`:''}
       </div></div>` : '';
 
-  c.innerHTML = `
+  c.innerHTML = paySalaryEditorHTML() + `
     <div style="display:flex;flex-direction:column;gap:12px">
       <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
         <div style="font-size:.64rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em">Next up</div>
@@ -4519,11 +4548,12 @@ function renderPaySchedule(c) {
             outlined one moved off a weekend or a holiday — hover it, or read the
             list to the left, for what it moved from. A red underline means the
             bank disagrees with the projection. Hover any day for the amount and
-            the weekday. Cycles are set per person under <b>Budget → Pay Schedules</b>.
+            the weekday. Cycles and rates are set per person in <b>People &amp; pay</b>, above.
           </div>
         </div>
       </div>
     </div>`;
+  BA._renderIncomeScheduleList();
   paySchedBindTips(c);
 }
 
@@ -7715,11 +7745,10 @@ function closeModal() { id('modal-root').innerHTML = ''; }
 document.addEventListener('keydown', e => {
   if (e.key==='Escape') {
     closeModal();
-    // Close budget modals
+    // Close budget modals. The pay-schedule modal is gone — salary lives on
+    // Setup → Salary now, as a page, so there is nothing here to dismiss.
     const bim = id('budgetIncomeModal');
-    const ism = id('incomeScheduleModal');
     if (bim) bim.style.display = 'none';
-    if (ism) ism.style.display = 'none';
   }
 });
 
@@ -16247,13 +16276,15 @@ const BA = {
     dirty(); renderBudget();
   },
 
-  // ── Income Schedules ─────────────────────────────────────
-  openIncomeScheduleModal() {
-    this._renderIncomeScheduleList();
-    const m = id('incomeScheduleModal'); if(m) m.style.display='flex';
-  },
-  closeIncomeScheduleModal() {
-    const m = id('incomeScheduleModal'); if(m) m.style.display='none';
+  // ── Salary schedules (Setup → Salary) ─────────────────────────────────────
+  // Editing a schedule changes two things on screen at once now: the list
+  // itself, and the pay calendar sitting under it on the same page. Rebuilding
+  // the Setup page covers both. Budget still repaints because its income rows
+  // are derived from these schedules — it is off-screen at this point, but it
+  // has to be right the moment it is looked at.
+  _afterScheduleChange() {
+    if (UI.view === 'setup' && UI.setupTab === 'payschedule') renderSetupContent();
+    else this._renderIncomeScheduleList();
     renderBudget();
   },
   _renderIncomeScheduleList() {
@@ -16299,16 +16330,16 @@ const BA = {
       <div class="isc-row" id="isc-row-${sc.id}" style="flex-direction:column;gap:6px;align-items:flex-start">
         <div class="isc-fields" style="width:100%">
           <div class="isc-color" style="background:${sc.color||COLORS[idx%COLORS.length]};align-self:center"></div>
-          <input class="isc-inp finput" placeholder="Name (e.g. Monisha)" value="${esc(sc.name||'')}"
-            onchange="BA._updateScheduleField('${sc.id}','name',this.value)" style="min-width:100px">
+          <input class="isc-inp finput isc-name" placeholder="Name (e.g. Monisha)" value="${esc(sc.name||'')}"
+            onchange="BA._updateScheduleField('${sc.id}','name',this.value)">
           <div style="display:flex;flex-direction:column;gap:2px">
             <label style="font-size:.68rem;color:var(--text3)">Base pay/paycheck</label>
-            <input class="isc-inp finput" type="number" placeholder="Amount" value="${sc.amount||''}"
-              onchange="BA._updateScheduleField('${sc.id}','amount',parseFloat(this.value)||0)" style="min-width:110px">
+            <input class="isc-inp finput isc-num" type="number" placeholder="Amount" value="${sc.amount||''}"
+              onchange="BA._updateScheduleField('${sc.id}','amount',parseFloat(this.value)||0)">
           </div>
           <div style="display:flex;flex-direction:column;gap:2px">
             <label style="font-size:.68rem;color:var(--text3)">First paycheck date</label>
-            <input class="isc-inp finput" type="date" value="${sc.startDate||''}"
+            <input class="isc-inp finput isc-num" type="date" value="${sc.startDate||''}"
               onchange="BA._updateScheduleField('${sc.id}','startDate',this.value)">
           </div>
           <label class="isc-toggle" title="Enable/disable" style="align-self:center">
@@ -16317,8 +16348,7 @@ const BA = {
           </label>
           <button class="ibtn del" style="align-self:center" onclick="BA._deleteIncomeSchedule('${sc.id}')">🗑</button>
         </div>
-        ${histHTML}
-        ${cycHTML}
+        <div class="isc-boxes">${histHTML}${cycHTML}</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:0 2px">
           <span style="font-size:.75rem;color:var(--text2)">Current: <strong style="color:var(--ok)">${fmtC(currentAmt)}/paycheck</strong></span>
           <button class="btn btn-xs btn-sm" style="font-size:.72rem;padding:2px 8px" onclick="BA._showPayChangeForm('${sc.id}')">📈 Record Pay Change</button>
@@ -16380,19 +16410,21 @@ const BA = {
     if (idx<0) return;
     D.budget.incomeSchedules[idx][field] = value;
     dirty();
-    if (field==='startDate'||field==='enabled') renderBudget();
+    // Name, amount and date all feed the calendar underneath, so any of them
+    // repaints the page. onchange fires on blur, so nothing steals focus.
+    this._afterScheduleChange();
   },
   addIncomeScheduleRow() {
     const COLORS = ['#7C3AED','#0EA5E9','#2E8B57','#C07A0A','#EC4899','#C0392B'];
     const idx = (D.budget.incomeSchedules||[]).length;
     D.budget.incomeSchedules.push({ id:'isc_'+uid(), name:'', amount:0, startDate:'', color:COLORS[idx%COLORS.length], enabled:true });
-    dirty(); this._renderIncomeScheduleList();
+    dirty(); this._afterScheduleChange();
   },
   async _deleteIncomeSchedule(scId) {
     const ok = await budgetConfirm('Remove Schedule','Remove this pay schedule?');
     if (!ok) return;
     D.budget.incomeSchedules = (D.budget.incomeSchedules||[]).filter(s => s.id!==scId);
-    dirty(); this._renderIncomeScheduleList(); renderBudget();
+    dirty(); this._afterScheduleChange();
   },
   _showPayChangeForm(scId) {
     const el = document.getElementById('pay-change-form-' + scId);
@@ -16433,7 +16465,7 @@ const BA = {
       sc.payHistory.push({ id: uid(), effectiveDate: date, amount, prevAmount: prevRate });
     }
     sc.payHistory.sort((a,b) => a.effectiveDate.localeCompare(b.effectiveDate));
-    dirty(); this._renderIncomeScheduleList(); renderBudget();
+    dirty(); this._afterScheduleChange();
     toast('Pay change recorded ✓', 'ok');
   },
   paySchedTogglePast() { UI.paySchedShowPast = !UI.paySchedShowPast; renderSetupContent(); },
@@ -16475,7 +16507,7 @@ const BA = {
     else sc.cycleHistory.push(entry);
     sc.cycleHistory.sort((a,b) => (a.effectiveDate||'').localeCompare(b.effectiveDate||''));
     payHolidayInvalidate(); payBudgetInvalidate();
-    dirty(); this._renderIncomeScheduleList(); renderBudget();
+    dirty(); this._afterScheduleChange();
     const el = document.getElementById('cycle-change-form-' + scId); if (el) el.style.display = 'none';
     toast('Pay cycle recorded ✓', 'ok');
   },
@@ -16487,13 +16519,13 @@ const BA = {
     if (!ok) return;
     sc.cycleHistory = sc.cycleHistory.filter(c => c.id !== cid);
     payHolidayInvalidate(); payBudgetInvalidate();
-    dirty(); this._renderIncomeScheduleList(); renderBudget();
+    dirty(); this._afterScheduleChange();
   },
   _deletePayHistoryEntry(scId, hid) {
     const sc = (D.budget.incomeSchedules||[]).find(s => s.id===scId);
     if (!sc || !sc.payHistory) return;
     sc.payHistory = sc.payHistory.filter(h => h.id !== hid);
-    dirty(); this._renderIncomeScheduleList(); renderBudget();
+    dirty(); this._afterScheduleChange();
   },
 
   // ── Recurring Expense Schedules ──────────────────────────
