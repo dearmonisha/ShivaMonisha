@@ -1886,6 +1886,35 @@ function oblDueDatesInMonth(o, type, ym) {
   }
   return [];
 }
+// ── Which month's pay a charge comes out of ──────────────────────────────
+// A charge has two months and they are not always the same one. Ford Lightning
+// falls due on the 2nd, so the payment dated 2 October is funded by September's
+// salary: it is September's problem, planned in September's cycle, even though
+// the money leaves the account in October.
+//
+// The Payment Templates carried this as `dueNextMonth` — Ford Finance was
+// statement day 4, due day 2, due next month — and buildDates()/findBillYM()
+// put the row in the cycle that pays for it. Moving the obligations out of
+// Payment Templates dropped the flag, and nothing in the obligation model
+// replaced it, so Ford re-anchored to whichever month its date happens to fall
+// in and turned up as October's first charge.
+//
+// Two questions, two functions, and the difference between them IS the anchor:
+//   oblDueDatesInMonth(o,t,ym) — what falls due IN calendar month ym. The
+//                                calendar, the cadence preview, "due this
+//                                month" counts. Never shifted.
+//   oblCycleDueDates(o,t,ym)   — what cycle month ym has to PAY FOR. Shifted
+//                                by one when the anchor is set. Generation,
+//                                the dedup key, the Monthly tab.
+// This is why a generated row has always stored `oblMonth` separately from
+// `date`: oblMonth is the cycle month, and only now do the two differ.
+function oblCycleYM(o, calYM) {
+  return (o && o.dueNextMonth) ? shiftYM(calYM, -1) : calYM;
+}
+function oblCycleDueDates(o, type, cycleYM) {
+  return oblDueDatesInMonth(o, type, (o && o.dueNextMonth) ? shiftYM(cycleYM, 1) : cycleYM);
+}
+
 // Which occurrences are finished with. Approved means it happened; rejected
 // means you decided it will not. Pending is NOT done — it is still the next
 // thing you have to deal with.
@@ -1922,7 +1951,9 @@ function oblNextChargeDate(o, type, opts) {
     const dues = oblDueDatesInMonth(o, type, ym);
     for (let occ = 0; occ < dues.length; occ++) {
       if (dues[occ] < today) continue;
-      if (done && done.has(ym + '::' + occ)) continue;
+      // `done` is keyed by cycle month, so an anchored charge must be looked up
+      // by the month that pays for it, not the month it lands in.
+      if (done && done.has(oblCycleYM(o, ym) + '::' + occ)) continue;
       return dues[occ];
     }
     m++; if (m > 12) { m = 1; y++; }
@@ -2283,6 +2314,23 @@ function oblMigrate() {
     ['nextRenewalDate','currency','website','category'].forEach(k => {
       if (obj[k] !== undefined) { delete obj[k]; changed++; }
     });
+  });
+  // ── Re-anchor history when a charge is paid from the previous month's pay ──
+  // Setting dueNextMonth changes what `oblMonth` MEANS for that obligation: the
+  // month that funds the charge, not the month the date falls in. Rows written
+  // under the old meaning still carry their own date-month, which mislabels the
+  // history and — because the dedup key is obligationId::oblMonth::occ — leaves
+  // the incoming charge's key already taken, so it would never generate at all.
+  // Shifting them back one month fixes both. Self-limiting: afterwards oblMonth
+  // no longer equals date-month, so a second pass matches nothing. It is a
+  // one-way move, which is the honest trade for a flag that redefines the key.
+  const _anchored = new Set();
+  oblAll().forEach(({obj}) => { if (obj.dueNextMonth) _anchored.add(obj.id); });
+  if (_anchored.size) (D.transactions || []).forEach(t => {
+    if (!t.obligationId || !_anchored.has(t.obligationId)) return;
+    if (!t.date || !t.oblMonth) return;
+    if (t.oblMonth !== t.date.slice(0, 7)) return;
+    t.oblMonth = shiftYM(t.oblMonth, -1); changed++;
   });
   if (!D.settings) D.settings = {};
   if (!D.settings.oblStartMonth) { D.settings.oblStartMonth = '2026-04'; changed++; }
@@ -3685,7 +3733,12 @@ function mtxAmount(p, strict) {
 // The row the obligation engine already posted for this month, if it is still waiting.
 function mtxPendingOblTxn(p) {
   if (!p.obligationId) return null;
-  const ym = (p.statementDate || p.dueDate || p.paidDate || centralToday()).slice(0, 7);
+  // An anchored obligation's due date is in the month AFTER the cycle that pays
+  // for it, and oblMonth is the cycle month — so derive one from the other
+  // rather than reading the due date's month and missing the row.
+  const _oe = oblAll().find(e => e.obj.id === p.obligationId);
+  const _raw = (p.statementDate || p.dueDate || p.paidDate || centralToday()).slice(0, 7);
+  const ym = (!p.statementDate && _oe) ? oblCycleYM(_oe.obj, _raw) : _raw;
   return (D.transactions || []).find(t =>
     t.obligationId === p.obligationId && t.status === 'pending' &&
     ((t.oblMonth || (t.date || '').slice(0, 7)) === ym)) ||
@@ -3896,7 +3949,7 @@ function generateCycle() {
   // T-Mobile had already drifted (326.46 against 327.00). Now the amount, due
   // day and paying account live in exactly one place.
   const oblMonthly = oblAll().filter(({obj, type}) =>
-    obj.trackInMonthly && oblIsActive(obj) && oblDueDatesInMonth(obj, type, ym).length > 0);
+    obj.trackInMonthly && oblIsActive(obj) && oblCycleDueDates(obj, type, ym).length > 0);
 
   if (!firing.length && !expTotals.length && !oblMonthly.length) {
     toast('No active templates or recurring expenses match this month. Check Setup.', 'err');
@@ -3976,7 +4029,7 @@ function generateCycle() {
   const existOblIds = new Set(existing.filter(p => p.obligationId).map(p => p.obligationId));
   oblMonthly.forEach(({ obj, type }) => {
     if (existOblIds.has(obj.id)) return;
-    const dues = oblDueDatesInMonth(obj, type, ym);
+    const dues = oblCycleDueDates(obj, type, ym);
     D.cycles[ym].payments.push({
       id: uid(), templateId: null, obligationId: obj.id, oblType: type,
       name: oblName(obj),
@@ -12913,6 +12966,8 @@ function oblPostingFields(o) {
               'Creates a pending transaction on each due date for you to approve. Turn off for anything you record by hand.')}
         ${box('obl-trackmonthly', month, 'Also track in the Monthly tab',
               'Adds a payment row to Generate from Templates each month, built from this obligation — so the amount, due day and paying account live in one place instead of two.')}
+        ${box('obl-duenext', !!(o && o.dueNextMonth), 'Paid from the previous month\u2019s pay',
+              'For a charge that falls in the first days of a month but is funded by the month before — due the 2nd, planned and paid out of the previous month\u2019s salary. This is the “due next month” setting the Payment Templates carried.')}
       </div>
     </div>`;
 }
@@ -13051,6 +13106,7 @@ function oblPostBadges(o) {
   const b = [];
   if (!oblAutoPost(o)) b.push(`<span title="Not posted to Transactions — you record this by hand" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:var(--surface2);color:var(--text3);border:1px solid var(--border);white-space:nowrap">manual</span>`);
   if (o.trackInMonthly)  b.push(`<span title="Also generated as a Monthly tab payment row" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:var(--primary);color:#fff;opacity:.85;white-space:nowrap">monthly</span>`);
+  if (o.dueNextMonth) b.push(`<span title="Paid from the previous month\u2019s pay — a charge due early in the month is planned and funded by the month before" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok);border:1px solid color-mix(in srgb,var(--ok) 30%,transparent);white-space:nowrap">prev-mo pay</span>`);
   if (o.amountType === 'variable') b.push(`<span title="Variable — posts using the most recent actual charge" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--info) 14%,transparent);color:var(--info);border:1px solid color-mix(in srgb,var(--info) 30%,transparent);white-space:nowrap">variable</span>`);
   if (oblAutoPost(o) && !o.expenseTypeId && !oblHasSplitTemplate(o)) b.push(`<span title="No expense type — this will not post until one is set" style="font-size:.62rem;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:99px;background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger);border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);white-space:nowrap">no type</span>`);
   return b.length ? ' ' + b.join(' ') : '';
@@ -13281,6 +13337,7 @@ function oblSaveSub(editId) {
     splitTemplate: _splitTpl,
     autoPost: _autoPost,
     trackInMonthly: !!id('obl-trackmonthly')?.checked,
+    dueNextMonth: !!id('obl-duenext')?.checked,
     notes: id('osub-notes').value.trim(),
     dateAdded: editId ? undefined : ymNow() + '-01'
   };
@@ -13471,6 +13528,7 @@ function oblSaveEmi(editId) {
     notes: id('oemi-notes').value.trim(),
     autoPost: _autoPost,
     trackInMonthly: !!id('obl-trackmonthly')?.checked,
+    dueNextMonth: !!id('obl-duenext')?.checked,
   };
   if (editId) {
     const idx = D.obligations.emis.findIndex(x => x.id === editId);
@@ -13640,6 +13698,7 @@ function oblSaveSplit(editId) {
     status: paid >= count ? 'Completed' : 'Active',
     autoPost: _autoPost,
     trackInMonthly: !!id('obl-trackmonthly')?.checked,
+    dueNextMonth: !!id('obl-duenext')?.checked,
   };
   if (editId) {
     const idx = D.obligations.splits.findIndex(x => x.id === editId);
@@ -15379,6 +15438,10 @@ const BA = {
     // Tapping the greyed Save with nothing changed used to do nothing at all.
     if (_mobSheetSnapshot() === _mobSheetBaseline) { toast('No changes to save', 'err'); return; }
 
+    // Same rule as the desktop ledger, applied to the same three fields.
+    const _was = { reconciled: txn.reconciled, accountId: txn.accountId,
+                   date: txn.date, debit: txn.debit, credit: txn.credit };
+
     txn.date       = f.date;
     txn.payee      = f.payee || '(no payee)';
     txn.debit      = f.type === 'debit'  ? f.amt : 0;
@@ -15387,12 +15450,17 @@ const BA = {
     txn.categoryId = f.catId || (f.type === 'credit' ? '__income__' : null);
     txn.notes      = f.notes;
 
+    const _recDropped = txnReconMatchBroken(_was, txn);
+    if (_recDropped) txn.reconciled = false;
+
     // Budget bars read from D.budget.txnActuals, which only this rebuilds.
     recomputeTxnActuals();
     dirty();
     BA.mobileCloseTxnSheet();
     mobRender('keep');
-    toast(`Updated: ${txn.payee}`, 'ok');
+    toast(_recDropped
+      ? `Updated: ${txn.payee} · no longer reconciled`
+      : `Updated: ${txn.payee}`, 'ok');
   },
 
   mobileDeleteTxn(txnId) {
@@ -17063,7 +17131,7 @@ function oblAutoGenerateTxns() {
       return false;
     }
     // Past its end date, or no longer due on that date at all (cycle edited)
-    const dues = oblDueDatesInMonth(entry.obj, entry.type, t.oblMonth || (t.date||'').slice(0,7));
+    const dues = oblCycleDueDates(entry.obj, entry.type, t.oblMonth || oblCycleYM(entry.obj, (t.date||'').slice(0,7)));
     if (!dues.length) { _removedPending.push(t.payee || oblName(entry.obj) || 'obligation'); return false; }
     return true;
   });
@@ -17089,7 +17157,7 @@ function oblAutoGenerateTxns() {
     if (t.status !== 'pending' || !t.obligationId || !t.oblMonth) return;
     const entry = oblById[t.obligationId];
     if (!entry) return;
-    const dues = oblDueDatesInMonth(entry.obj, entry.type, t.oblMonth);
+    const dues = oblCycleDueDates(entry.obj, entry.type, t.oblMonth);
     const correctDate  = dues[t.oblOcc || 0] || dues[0] || null;
     const correctDebit = oblExpectedAmount(entry.obj, entry.type);
     if (entry.type === 'emi') {
@@ -17146,7 +17214,7 @@ function oblAutoGenerateTxns() {
       if (!obj.expenseTypeId && !oblHasSplitTemplate(obj)) { skippedNoType++; return; }
       const acctId = obj.paymentMethod ? acctMap[obj.paymentMethod.trim().toLowerCase()] : null;
       if (!acctId) return; // no matching account — skip
-      const dues = oblDueDatesInMonth(obj, type, ym);
+      const dues = oblCycleDueDates(obj, type, ym);
       dues.forEach((dueISO, occ) => {
         const key = obj.id + '::' + ym + '::' + occ;
         if (existing.has(key)) return;
@@ -17311,6 +17379,26 @@ function txnCatLeaf(catId) {
   const full = txnCatLabel(catId);
   const i = full.lastIndexOf(' › ');
   return i >= 0 ? full.slice(i + 3) : full;
+}
+
+// ── When a reconciliation stops being true ──────────────────────────────────
+// "Reconciled" is a claim: this row matched a line on a bank statement. The
+// match was made on three things and only three — which account, what date,
+// how much. Payee, expense type, notes and splits are labels we keep for our
+// own sake and can be corrected at any time without touching the bank's view.
+// Change one of the three and the claim no longer holds, so the R comes off.
+//
+// Nothing in the app had ever set this flag back to false. It was written in
+// exactly one place (the Reconcile button) and the pill was rendered inert
+// with cursor:default and the title "Reconciled (locked)", so an edited row
+// wore an R for a match that no longer existed and no one could take it off.
+function txnReconMatchBroken(before, after) {
+  if (!before || !before.reconciled) return false;
+  const near = (a, b) => Math.abs((+a || 0) - (+b || 0)) < 0.005;
+  return (before.accountId || '') !== (after.accountId || '')
+      || (before.date      || '') !== (after.date      || '')
+      || !near(before.debit,  after.debit)
+      || !near(before.credit, after.credit);
 }
 
 function txnCatLabel(catId) {
@@ -18849,7 +18937,7 @@ function renderTxnRight() {
         <td class="r">${creditTd}</td>
         <td class="r txn-bal" style="${_fut?'color:var(--text3)':(balColor?'color:'+balColor:'')}">${_fut?'—':fmtCurrency(Math.abs(t._bal))+(t._bal<0&&!isCC?' OD':'')}</td>
         <td style="text-align:center">
-          <span class="txn-pill-clr ${t.reconciled?'rec':t.cleared?'yes':'no'}" onclick="${t.reconciled?'':'BA.txnToggleCleared(\''+t.id+'\')'}" title="${t.reconciled?'Reconciled (locked)':t.cleared?'Cleared — click to unmark':'Uncleared — click to mark cleared'}" style="${t.reconciled?'cursor:default':''}">${t.reconciled?'R':t.cleared?'✓':'○'}</span>
+          <span class="txn-pill-clr ${t.reconciled?'rec':t.cleared?'yes':'no'}" onclick="${t.reconciled?'':'BA.txnToggleCleared(\''+t.id+'\')'}" title="${t.reconciled?'Reconciled — matched to a bank statement. Editing the amount, date or account releases it.':t.cleared?'Cleared — click to unmark':'Uncleared — click to mark cleared'}" style="${t.reconciled?'cursor:default':''}">${t.reconciled?'R':t.cleared?'✓':'○'}</span>
         </td>
         <td style="text-align:center;padding:0 2px">
           <button class="btn btn-sm btn-ghost btn-xs" onclick="event.stopPropagation();BA.txnRowMenu('${t.id}',this)" title="Actions — edit, move, delete" style="font-weight:700;letter-spacing:1px;padding:2px 6px">⋯</button>
@@ -22272,6 +22360,7 @@ Object.assign(BA, {
       }
     });
 
+    let _recDropped = 0;
     if (editId) {
       const existing = (D.transactions||[]).find(t => t.id === editId);
       const idx = (D.transactions||[]).findIndex(t => t.id === editId);
@@ -22293,6 +22382,10 @@ Object.assign(BA, {
         if (!obj.splits) delete merged.splits;
         if (splitLines || !obj.familyMemberId) { delete merged.familyMemberId; delete merged.famEntryId; }
         Object.assign(obj, merged);
+        // The merge above deliberately carries `reconciled` across, because the
+        // form does not own that key. But if this edit moved the money, the
+        // reconciliation it carried is stale — see txnReconMatchBroken.
+        if (txnReconMatchBroken(existing, obj)) { obj.reconciled = false; _recDropped++; }
         // Preserve transfer metadata when editing a transfer leg
         if (existing?.isTransfer) {
           obj.isTransfer         = true;
@@ -22304,11 +22397,16 @@ Object.assign(BA, {
           const pairIdx = (D.transactions||[]).findIndex(t => t.id === existing.transferPairId);
           if (pairIdx >= 0) {
             const pair = D.transactions[pairIdx];
+            // Snapshot before the sync: the far leg is being moved by this edit
+            // just as surely as the near one, so it loses its R on the same test.
+            const _pairWas = { reconciled: pair.reconciled, accountId: pair.accountId,
+                               date: pair.date, debit: pair.debit, credit: pair.credit };
             pair.date  = date;
             pair.notes = obj.notes;
             // Keep amounts consistent: debit leg → amount is debit; credit leg → amount is credit
             if (pair.debit  > 0) { pair.debit  = debit || credit; pair.credit = 0; }
             else                  { pair.credit = debit || credit; pair.debit  = 0; }
+            if (txnReconMatchBroken(_pairWas, pair)) { pair.reconciled = false; _recDropped++; }
           }
         }
         D.transactions[idx] = obj;
@@ -22327,6 +22425,11 @@ Object.assign(BA, {
     UI._txnCurNotes     = '';
     recomputeTxnActuals();
     dirty();
+    // Never silent: dropping an R changes what the Reconcile button will pick up
+    // next time, so say so rather than letting the pill quietly change colour.
+    if (_recDropped) toast(_recDropped === 1
+      ? 'Reconciled mark removed — the amount, date or account changed, so it no longer matches the statement'
+      : `Reconciled mark removed from ${_recDropped} rows — both legs of the transfer moved`);
     if (openNew) {
       UI.txnNewRow = true; // keep new-row open for next entry
       renderTransactions();
