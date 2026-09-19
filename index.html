@@ -6926,11 +6926,13 @@ function editCCCardModal(cardId) {
 function renderCCTracker() {
   const c = id('view-cc');
   const cct = D.ccTracker;
-  // Silently keep stored interest/outstanding in sync on every visit to this tab —
-  // no manual "Sync" click required. Cheap and idempotent once already in sync;
-  // this is also what self-heals a stale interestCategoryId (see ccResolveInterestCategoryId)
-  // without needing a fresh data file.
-  ccSyncAllMonths();
+  // Opening a tab must not change the file. This used to call ccSyncAllMonths()
+  // here on every render, so the stored numbers moved and the Save button lit up
+  // simply because the tab had been looked at — with nothing genuinely unsaved.
+  // Sync is now the only thing that writes these numbers, which is what the
+  // button has always claimed to do. A read-only count keeps the fact that a
+  // sync is due visible, so nothing goes quietly stale in exchange.
+  const _syncDue = ccSyncAllMonths(null, true);
   const months = (cct.months || []).slice().sort();
   const latestMonth = months[months.length - 1] || ymNow();
   // Derive sorted years list
@@ -6983,7 +6985,12 @@ function renderCCTracker() {
         <span class="cc-title">CC Tracker</span>
         <button class="btn btn-sm" style="border-color:var(--primary);color:var(--primary)" onclick="addCCCardModal()">&#65291; Add Card</button>
         <button class="btn btn-primary btn-sm" onclick="addMonthModal()">&#65291; Add Month</button>
-        <button class="btn btn-sm" style="color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--border));font-size:.76rem" onclick="BA.ccSyncNow()" title="Pull interest from Transactions and statement balance from Monthly tab for all registered months">🔄 Sync</button>
+        <button class="btn btn-sm" style="font-size:.76rem;${_syncDue
+            ? 'color:#fff;background:var(--ok);border-color:var(--ok);font-weight:700'
+            : 'color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--border))'}"
+          onclick="BA.ccSyncNow()" title="${_syncDue
+            ? _syncDue + ' stored value' + (_syncDue !== 1 ? 's' : '') + ' differ from Transactions and the Monthly tab — click to pull them in'
+            : 'Every stored value already matches Transactions and the Monthly tab'}">🔄 Sync${_syncDue ? ' (' + _syncDue + ')' : ''}</button>
       </div>
       <div class="sum-row" style="margin-bottom:0;padding-top:8px">
         <div class="sum-card c-danger">
@@ -7489,12 +7496,19 @@ function saveCCCell(cardId, month) {
 // exists — e.g. after a category was renamed/merged at some point). Falls back to
 // whatever category is literally named "Interest Expense", and repairs the card's
 // stored id in memory so this only has to self-heal once per session.
+// Set while the sync is only being COUNTED, never applied. Everything under a
+// dry run has to be readable without writing — the whole point is that opening
+// the tab leaves the file exactly as it was found.
+let _ccDryRun = false;
+
 function ccResolveInterestCategoryId(card) {
   if (!card.interestCategoryId) return null;
   const exists = (D.budget?.categories||[]).some(c => c.id === card.interestCategoryId);
   if (exists) return card.interestCategoryId;
   const fallback = (D.budget?.categories||[]).find(c => (c.name||'').trim().toLowerCase() === 'interest expense');
   if (fallback) {
+    // A dry run reports what the id would resolve to and repairs nothing.
+    if (_ccDryRun) return fallback.id;
     card.interestCategoryId = fallback.id; // self-heal so future lookups (and the next save) use the real id
     dirty();
     return fallback.id;
@@ -7556,30 +7570,52 @@ function ccGetAutoData(cardId, month) {
 
 // Sync CC Tracker months from their auto-sources.
 // Pass a specific month to limit sync to just that month; omit to sync all 2026+ months.
-function ccSyncAllMonths(onlyMonth) {
+// `updated` used to be incremented once per card-month that HAD a source, not
+// once per card-month whose value actually MOVED. On an already-in-sync file
+// that is 215 phantom updates across 14 cards and 9 months, and the
+// `updated > 0` test then called dirty() — which is why the Save button lit up
+// on a tab that had changed nothing, and why the Sync toast always claimed to
+// have synced hundreds of values. Build the row the sync WANTS, compare it with
+// the row that is there, and only count and write a genuine difference.
+//
+// Pass dryRun to get the count without touching anything, which is how the tab
+// can show that a sync is due without performing one.
+function ccSyncAllMonths(onlyMonth, dryRun) {
   const cct = D.ccTracker;
   let updated = 0;
   const months = onlyMonth
     ? [onlyMonth]
     : (cct.months||[]).filter(m => m >= '2026-01');
-  months.forEach(month => {
-    (cct.cards||[]).forEach(card => {
-      const auto = ccGetAutoData(card.id, month);
-      if (!cct.data[card.id]) cct.data[card.id] = {};
-      if (!cct.data[card.id][month]) cct.data[card.id][month] = { interest: 0, outstanding: 0 };
-      const entry = cct.data[card.id][month];
-      if (auto.interest !== null) {
-        entry.interest = auto.interest; entry._intSource = 'transactions'; updated++;
-      }
-      if (auto.outstanding !== null) {
-        entry.outstanding = auto.outstanding; entry._osSource = 'monthly'; updated++;
-      } else if (entry._osSource === 'monthly') {
-        // Previously auto-synced but no longer valid (e.g. statement date is in the future) — clear it
-        entry.outstanding = 0; delete entry._osSource; updated++;
-      }
+  const _wasDry = _ccDryRun;
+  if (dryRun) _ccDryRun = true;
+  try {
+    months.forEach(month => {
+      (cct.cards||[]).forEach(card => {
+        const auto = ccGetAutoData(card.id, month);
+        const had  = (cct.data[card.id] || {})[month] || null;
+        // Built on a copy, so a dry run can answer "would anything change?"
+        const entry = had ? { ...had } : { interest: 0, outstanding: 0 };
+        if (auto.interest !== null) {
+          entry.interest = auto.interest; entry._intSource = 'transactions';
+        }
+        if (auto.outstanding !== null) {
+          entry.outstanding = auto.outstanding; entry._osSource = 'monthly';
+        } else if (entry._osSource === 'monthly') {
+          // Previously auto-synced but no longer valid (e.g. statement date is in the future) — clear it
+          entry.outstanding = 0; delete entry._osSource;
+        }
+        // An untouched card-month with no sources is left alone rather than
+        // seeded with a zero row nobody asked for.
+        if (!had && auto.interest === null && auto.outstanding === null) return;
+        if (had && JSON.stringify(entry) === JSON.stringify(had)) return;
+        updated++;
+        if (dryRun) return;
+        if (!cct.data[card.id]) cct.data[card.id] = {};
+        cct.data[card.id][month] = entry;
+      });
     });
-  });
-  if (updated > 0) dirty();
+  } finally { _ccDryRun = _wasDry; }
+  if (!dryRun && updated > 0) dirty();
   return updated;
 }
 
@@ -22953,8 +22989,13 @@ Object.assign(BA, {
     // because statement dates and billing periods may cross month boundaries.
     const n = ccSyncAllMonths();
     renderCCTracker();
-    if (n > 0) toast(`Synced ${n} value${n!==1?'s':''} across all months ✓`, 'ok');
-    else toast('Nothing to sync — check card & template links', '');
+    if (n > 0) { toast(`Synced ${n} value${n!==1?'s':''} across all months ✓`, 'ok'); return; }
+    // Zero now means "already correct", which is not the same as "nothing is
+    // linked" — saying the wrong one sends you looking for a problem that is
+    // not there. Tell them apart by whether any source exists at all.
+    const linked = (D.ccTracker?.cards || []).some(c =>
+      c.linkedTxnAccountId || c.interestCategoryId || (D.templates||[]).some(t => t.ccCardId === c.id));
+    toast(linked ? 'Already up to date — nothing changed' : 'Nothing to sync — check card & template links', '');
   },
   txnBulkAssignExpType() {
     if (!(UI.txnSelected||[]).length) return;
