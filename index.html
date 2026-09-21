@@ -2325,13 +2325,30 @@ function oblMigrate() {
   // Shifting them back one month fixes both. Self-limiting: afterwards oblMonth
   // no longer equals date-month, so a second pass matches nothing. It is a
   // one-way move, which is the honest trade for a flag that redefines the key.
-  const _anchored = new Set();
-  oblAll().forEach(({obj}) => { if (obj.dueNextMonth) _anchored.add(obj.id); });
-  if (_anchored.size) (D.transactions || []).forEach(t => {
-    if (!t.obligationId || !_anchored.has(t.obligationId)) return;
-    if (!t.date || !t.oblMonth) return;
-    if (t.oblMonth !== t.date.slice(0, 7)) return;
-    t.oblMonth = shiftYM(t.oblMonth, -1); changed++;
+  //
+  // The first version of this decided "already migrated?" by testing whether
+  // oblMonth still equalled the date's own month. That is not a fact about the
+  // migration, it is a coincidence — and it stopped holding the moment an OLDER
+  // deployed build opened the migrated file. That build has no dueNextMonth, so
+  // its fix-up pass rebuilt the pending row's date from its own oblMonth and
+  // dragged 2 Oct back to 2 Sep. oblMonth and date-month matched again, the
+  // next load shifted it a second time onto August's key — which an approved
+  // payment already held — and September's key, now free, generated a second
+  // 2 Oct row. Two Ford charges to approve, one of them already paid.
+  //
+  // A stamp on the obligation cannot be talked out of itself that way. Files
+  // migrated by the first version are recognised and stamped without moving
+  // anything, so this is safe to meet data in either state.
+  oblAll().forEach(({obj}) => {
+    if (!obj.dueNextMonth || obj.anchorMigrated) return;
+    const rows = (D.transactions || []).filter(t =>
+      t.obligationId === obj.id && t.date && t.oblMonth);
+    const already = rows.some(t => t.oblMonth === shiftYM(t.date.slice(0, 7), -1));
+    if (!already) rows.forEach(t => {
+      if (t.oblMonth !== t.date.slice(0, 7)) return;
+      t.oblMonth = shiftYM(t.oblMonth, -1); changed++;
+    });
+    obj.anchorMigrated = true; changed++;
   });
   if (!D.settings) D.settings = {};
   if (!D.settings.oblStartMonth) { D.settings.oblStartMonth = '2026-04'; changed++; }
@@ -17219,6 +17236,44 @@ function oblAutoGenerateTxns() {
     if (!t.oblMonth && t.date) { t.oblMonth = t.date.slice(0, 7); fixedCount++; }
     if (t.oblOcc === undefined) { t.oblOcc = 0; fixedCount++; }
   });
+
+  // ── One occurrence, one row ─────────────────────────────────────────
+  // obligationId::oblMonth::occ IS the identity of a charge — it is the key the
+  // generator dedups on. Two rows sharing it is a contradiction: the same
+  // month's payment both made and not made. Nothing downstream is built to
+  // choose between them, so the contradiction has to be resolved here, before
+  // the fix-up pass starts grooming a row that should not exist.
+  //
+  // The row that was actioned wins; an un-actioned twin is noise and goes. An
+  // approved row is never removed — that is a recorded payment, and if two of
+  // those ever share a key it is a question for a human, not a silent delete.
+  const _occKey = {};
+  (D.transactions || []).forEach(t => {
+    if (!t.obligationId || !t.oblMonth) return;
+    const k = t.obligationId + '::' + t.oblMonth + '::' + (t.oblOcc || 0);
+    (_occKey[k] = _occKey[k] || []).push(t);
+  });
+  const _dupIds = new Set(), _dupNames = [];
+  Object.keys(_occKey).forEach(k => {
+    const rows = _occKey[k];
+    if (rows.length < 2) return;
+    const rank = t => t.status === 'approved' ? 2 : t.status === 'rejected' ? 1 : 0;
+    const keep = rows.slice().sort((a, b) =>
+      rank(b) - rank(a) || (a._addedAt || '').localeCompare(b._addedAt || ''))[0];
+    rows.forEach(t => {
+      if (t === keep || t.status === 'approved') return;
+      _dupIds.add(t.id);
+      _dupNames.push((t.payee || 'obligation') + ' ' + (t.date || ''));
+    });
+  });
+  if (_dupIds.size) {
+    D.transactions = (D.transactions || []).filter(t => !_dupIds.has(t.id));
+    fixedCount++;
+    console.info('[obligations] removed duplicate occurrence rows:', _dupNames.join(', '));
+    try {
+      toast(`Removed ${_dupNames.length} duplicate obligation row${_dupNames.length !== 1 ? 's' : ''} — already recorded: ${_dupNames.slice(0, 3).join(', ')}${_dupNames.length > 3 ? '…' : ''}`, 'ok');
+    } catch (e) { /* toast container not mounted yet during early load */ }
+  }
 
   // ── Fix-up pass: keep un-actioned pending rows in step with the obligation ──
   (D.transactions || []).forEach(t => {
