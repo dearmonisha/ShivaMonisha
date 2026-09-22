@@ -9813,14 +9813,24 @@ function payIncomeEvents(from, to, bankId) {
     (+t.credit || 0) > 100 && txnCounts(t));
 
   (D.budget?.incomeSchedules || []).filter(s => s.enabled !== false).forEach(s => {
-    const hist = (s.payHistory || []).slice().sort((a, b) => (a.effectiveDate||'').localeCompare(b.effectiveDate||''));
-    const target = hist.length ? +hist[hist.length-1].amount : (+s.amount || 0);
+    // The rate effective TODAY, not the last row in payHistory. Those are the
+    // same thing only until a future rise is recorded — and one is: Shiva's
+    // 2027-01-02 entry at 7,709.56. Reading the last row made every projected
+    // 2026 cheque 593 too high, and worse, no real deposit fell within 3% of it,
+    // so the self-correction below found no match and the runway ran on a
+    // number the bank has never paid. A runway that overstates income is the
+    // one kind of wrong that matters here: it inflates safe-to-deploy.
+    const asOf   = centralToday();
+    const target = incomeScheduleAmountForPaydate(s, asOf) || (+s.amount || 0);
     if (!target) return;
     const matches = deposits
       .filter(t => Math.abs((+t.credit) - target) <= Math.max(5, target * 0.03))
       .sort((a, b) => a.date.localeCompare(b.date));
     const last   = matches[matches.length - 1] || null;
-    const amount = last ? +last.credit : target;
+    // Carry the observed gap between the schedule and the bank (7,112.56 on
+    // file against 7,116.52 credited) forward as a constant, so a future rise
+    // keeps its own effective date instead of being flattened to today's cheque.
+    const drift  = last ? (+last.credit - target) : 0;
     // DATES come from the one generator, not from a second 14-day walk living
     // here. That walk was right only while every schedule was biweekly and
     // nothing ever shifted; from Jan 2027 it would drift off the 15th/last-day
@@ -9837,7 +9847,8 @@ function payIncomeEvents(from, to, bankId) {
     while (ym <= to.slice(0, 7) && guard++ < 60) {
       schedulePaydatesForMonth(s, ym).forEach(d => {
         if (d <= after || d < from || d > to) return;
-        out.push({ date: d, label: s.name, amount, kind: 'income' });
+        const amt = Math.round((incomeScheduleAmountForPaydate(s, d) + drift) * 100) / 100;
+        out.push({ date: d, label: s.name, amount: amt, kind: 'income' });
       });
       ym = bShiftMonth(ym, 1);
     }
@@ -10891,6 +10902,7 @@ function renderPayments() {
    <div style="${card};padding:11px 15px;margin-bottom:14px;border-color:${_growthOK ? 'color-mix(in srgb,var(--ok) 35%,var(--border))' : 'color-mix(in srgb,var(--warn) 45%,var(--border))'}">
      <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
        <div style="${lbl}">This month first</div>
+       <span style="font-size:.6rem;font-weight:700;letter-spacing:.06em;padding:2px 7px;border-radius:99px;background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)">ON</span>
        <span style="font-size:.78rem;color:var(--text2)">this plan covers
          <b style="color:${_growthOK?'var(--ok)':'var(--warn)'}">${payFmt(PA.growth || 0)}</b>
          of the ${payFmt(_growthTarget)} needed${_growthOK ? ' — nothing financed' : ` · <b style="color:var(--warn)">${payFmt(_growthShort)} carries</b>`}</span>
@@ -10900,15 +10912,31 @@ function renderPayments() {
            PA.heldReason === 'growth' ? '· this month not covered yet'
            : PA.heldReason === 'budget' ? '· ' + payFmt(PA.heldBack) + ' not saved against plan yet'
            : ''}</span></span>
-       <button onclick="PAY.toggleFundCurrent()" title="Turn off to go back to minimums-then-strategy"
-         style="margin-left:auto;font-size:.66rem;padding:3px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text3);cursor:pointer">on</button>
+       <button onclick="PAY.toggleFundCurrent()" title="Go back to minimums, then strategy — this month's charges may then be financed"
+         style="margin-left:auto;font-size:.66rem;padding:3px 9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text3);cursor:pointer">turn off</button>
      </div>
      ${_growthShort > 0.005 ? `
        <div style="margin-top:8px;font-size:.7rem;line-height:1.55;color:var(--text3)">
          Carried, dearest first — raise Deploy to fund down this list:
          ${(PA.growthShortfalls||[]).slice(0,6).map(x => `<span style="color:var(--text2)">${esc(x.name)} ${payFmt(x.short)} at ${x.apr.toFixed(2)}%</span>`).join(' · ')}${(PA.growthShortfalls||[]).length>6?' …':''}
        </div>` : ''}
-   </div>` : '';
+   </div>`
+  // ── The way back ──────────────────────────────────────────────
+  // This used to render nothing when the rule was off, and the only button that
+  // could turn it back on lived inside the block above. One click and the
+  // setting was unreachable short of editing the file by hand — a one-way door
+  // on the switch that decides whether your balances are allowed to grow. Off
+  // is the state that deserves to be visible, not the one that hides.
+  : `
+   <div style="${card};padding:10px 15px;margin-bottom:14px;border-color:color-mix(in srgb,var(--warn,#C07A0A) 45%,var(--border))">
+     <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+       <div style="${lbl}">This month first</div>
+       <span style="font-size:.6rem;font-weight:700;letter-spacing:.06em;padding:2px 7px;border-radius:99px;background:color-mix(in srgb,var(--warn,#C07A0A) 16%,transparent);color:var(--warn,#C07A0A)">OFF</span>
+       <span style="font-size:.78rem;color:var(--text2)">minimums first, then the strategy — this month's own charges can go unfunded, so balances grow</span>
+       <button onclick="PAY.toggleFundCurrent()" title="Fund this month's charges before any old balance"
+         style="margin-left:auto;font-size:.66rem;padding:3px 9px;border:1px solid color-mix(in srgb,var(--warn,#C07A0A) 45%,var(--border));border-radius:6px;background:var(--surface);color:var(--warn,#C07A0A);font-weight:700;cursor:pointer">turn on</button>
+     </div>
+   </div>`;
 
   const allocator = `
    ${spendFirst}
@@ -11287,9 +11315,21 @@ function renderPayments() {
           style="width:82px;font-size:.76rem;padding:4px 7px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right">
       </div>
     </div>
+    ${/* Order follows the decision, not the history.
+          1. assessPanel  — what the month cost and what is needed
+          2. cashLine     — one line: cash, the dip, the floor
+          3. runway       — the ledger BEHIND safe-to-deploy, so the number in
+                            the allocator is inspectable before it is acted on.
+                            This panel was built on every render and then left
+                            out of both layouts, so it has been invisible.
+          4. allocator    — the decision itself
+          5. queue        — the per-card result
+          6. trajectory   — six-month history. It answers "is this working",
+                            which is a question for after the payment is made,
+                            not a step in making it. Bottom of the page. */''}
     ${_mode === 'assess'
-      ? `${assessPanel}${cashLine}${trajectory}${allocator}${queue}`
-      : `${monitorPanel}${cashLine}${queue}`}`;
+      ? `${assessPanel}${cashLine}${runway}${allocator}${queue}${trajectory}`
+      : `${monitorPanel}${cashLine}${runway}${queue}`}`;
 }
 
 // ────────────────────────────────────────────────────────────
