@@ -3782,6 +3782,27 @@ function mtxWrite(p) {
     // no pending row (auto-post off, or already actioned) — fall through to a plain debit
   }
 
+  // ── A card that owes nothing ─────────────────────────────────────
+  // Lowes and Home Depot are at zero and still get a Monthly row every cycle.
+  // Ticking that row paid is the right way to clear it off the month, and
+  // writing a $0 transaction would be wrong — but so was reporting it as the
+  // red "Enter what you actually paid on this card". Nothing left the bank
+  // because nothing was owed; that is a finished action, not a missing one.
+  //
+  // Deliberately narrow: BOTH the live balance and the statement must be zero.
+  // A card that genuinely owes money and was ticked with the amount blank is
+  // still an unanswered question, and still asks.
+  if (kind === 'card' && !(amt > 0)) {
+    const _ca   = mtxCardAcctFor(p);
+    const _bal  = _ca ? Math.abs(txnCurrentBalance(_ca)) : 0;
+    const _stmt = (p.outstandingBalance != null && p.outstandingBalance !== '')
+                    ? Math.abs(+p.outstandingBalance) : 0;
+    if (_bal <= 0.005 && _stmt <= 0.005) {
+      p.amountPaid = 0;                 // say so in the row, rather than leaving it blank
+      return { ok: true, nothingDue: true };
+    }
+  }
+
   if (!(amt > 0)) return { ok: false,
     reason: kind === 'card' ? 'Enter what you actually paid on this card' : 'Enter the amount paid first' };
 
@@ -3888,6 +3909,8 @@ function togglePaid(pid, checked) {
     const r = mtxWrite(p);
     if (!r.ok) {
       toast(r.reason + ' — marked paid, no transaction written', 'err');
+    } else if (r.nothingDue) {
+      toast(`${p.name || 'Payment'} — nothing owed, cleared off the month ✓`, 'ok');
     } else if (r.approved) {
       toast(`${p.name || 'Payment'} — approved the pending transaction ✓`, 'ok');
     } else {
