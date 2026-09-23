@@ -1714,6 +1714,8 @@ function _applyData(raw) {
   });
   // Normalise the obligation model first — generation reads the fields it seeds
   oblMigrate();
+  // Recurring-expense rows generated before Pay From existed carry a blank one.
+  if (expSyncCycleRows() > 0) dirty();
   // Auto-generate obligation transactions (idempotent — deduped by obligationId::oblMonth::occurrence)
   oblAutoGenerateTxns();
   // Recompute txn actuals so Budget Grid shows correct values immediately on load
@@ -3748,6 +3750,13 @@ function mtxAmount(p, strict) {
   const v = isFinite(typed) ? typed : (strict ? NaN : +p.amountDue);
   return isFinite(v) ? Math.round(v * 100) / 100 : 0;
 }
+// A Recurring Expense row points at a schedule, not a template — its Pay From
+// and Expense Type live there.
+function mtxExpSchedFor(p) {
+  return (p && p.expenseScheduleId)
+    ? ((D.budget && D.budget.expenseSchedules || []).find(s => s.id === p.expenseScheduleId) || null)
+    : null;
+}
 // The row the obligation engine already posted for this month, if it is still waiting.
 function mtxPendingOblTxn(p) {
   if (!p.obligationId) return null;
@@ -3824,14 +3833,17 @@ function mtxWrite(p) {
     return { ok: true };
   }
 
-  // bill — a plain debit from the account it is paid from
-  const acctId = p.paidFromId;
+  // bill — a plain debit from the account it is paid from.
+  // A Recurring Expense row has no template: its account and budget category
+  // live on the schedule, which is why this row used to post uncategorised.
+  const sch    = mtxExpSchedFor(p);
+  const acctId = p.paidFromId || (sch && sch.paymentAccountId) || null;
   if (!acctId) return { ok: false, reason: 'Set a Paid From account first' };
   const tpl  = mtxTemplateFor(p);
   const txn  = {
     id: uid(), accountId: acctId, date: p.paidDate || centralToday(),
     payee: p.name || 'Payment', debit: amt, credit: 0,
-    categoryId: (tpl && tpl.expenseTypeId) || null,
+    categoryId: (tpl && tpl.expenseTypeId) || (sch && sch.expenseTypeId) || null,
     notes: p.notes || '', cleared: false
   };
   // A template may carry a split (Coserv is one bill, gas and electricity).
@@ -4097,7 +4109,9 @@ function generateCycle() {
       statementDate: null, dueDate: due1st,
       amountDue: total, outstandingBalance: null,
       amountPaid: null, isPaid: false, paidDate: null,
-      paidFrom: null, isAutomatic: false,
+      paidFromId: sc.paymentAccountId || null,
+      paidFrom: sc.paymentAccountId ? (acctLabel(sc.paymentAccountId, null) || null) : null,
+      isAutomatic: false,
       notes: `${count} occurrence${count !== 1 ? 's' : ''} @ ${fmtCurrency(sc.amountPerOccurrence)}`
     });
     added++;
@@ -4711,6 +4725,20 @@ function renderRecurringExpenses(c) {
               onchange="BA._updateExpField('${sc.id}','amountPerOccurrence',parseFloat(this.value)||0)">
           </div>
           <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font-size:.68rem;color:var(--text3);font-weight:600">Pay from</span>
+            <select class="isc-inp finput" style="width:150px"
+              onchange="BA._updateExpField('${sc.id}','paymentAccountId',this.value)">
+              ${acctOptions(sc.paymentAccountId || '', null, { types:['Bank','Savings','Cash','Credit Card'], flat:true, blank:'— Select —' })}
+            </select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font-size:.68rem;color:var(--text3);font-weight:600">Expense Type</span>
+            <select class="isc-inp finput" style="width:190px"
+              onchange="BA._updateExpField('${sc.id}','expenseTypeId',this.value||null)">
+              ${txnCatOptions(sc.expenseTypeId || null)}
+            </select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px">
             <span style="font-size:.68rem;color:var(--text3);font-weight:600">Color</span>
             <input type="color" value="${color}" style="width:36px;height:28px;border:1px solid var(--border);border-radius:4px;padding:1px;cursor:pointer"
               onchange="BA._updateExpField('${sc.id}','color',this.value)">
@@ -4729,7 +4757,9 @@ function renderRecurringExpenses(c) {
     <div style="max-width:800px">
       <p style="color:var(--text3);font-size:.83rem;margin-bottom:14px">
         Define expenses that recur on specific days of the week (e.g. music lessons every Monday &amp; Saturday at $30).
-        They'll appear as tiles in the Monthly tab summary.
+        They'll appear as tiles in the Monthly tab summary. <b>Pay from</b> and <b>Expense Type</b> are what let the
+        Monthly row write itself into Transactions when you tick it paid: without them it was the one row that
+        posted with no account and no budget category.
       </p>
       <div id="exp-schedule-list">${rows}</div>
       <div style="margin-top:12px">
@@ -8356,6 +8386,27 @@ function countDayOccurrences(year, month, dayOfWeek) {
     if (new Date(year, month - 1, d).getDay() === dayOfWeek) n++;
   return n;
 }
+// ── A recurring expense's settings reach its Monthly rows ──────────────────
+// generateCycle() copies the schedule's Pay From onto each row it creates. Set
+// the field later and every row already generated would still be blank, so the
+// unpaid ones are kept in step here. Paid rows are history and are never
+// touched: the account a payment actually came from is a fact, not a setting.
+function expSyncCycleRows() {
+  let n = 0;
+  (D.budget?.expenseSchedules || []).forEach(sc => {
+    const id = sc.paymentAccountId || null;
+    const nm = id ? (acctLabel(id, null) || null) : null;
+    Object.keys(D.cycles || {}).forEach(ym => {
+      ((D.cycles[ym] || {}).payments || []).forEach(p => {
+        if (p.expenseScheduleId !== sc.id || p.isPaid) return;
+        if ((p.paidFromId || null) !== id) { p.paidFromId = id; n++; }
+        if ((p.paidFrom   || null) !== nm) { p.paidFrom   = nm; n++; }
+      });
+    });
+  });
+  return n;
+}
+
 function getExpenseScheduleTotals(month) {
   const [y, m] = month.split('-').map(Number);
   return (D.budget.expenseSchedules || [])
@@ -16614,7 +16665,8 @@ const BA = {
     const idx = (D.budget.expenseSchedules||[]).length;
     D.budget.expenseSchedules.push({
       id: 'esc_'+uid(), name: '', days: [], amountPerOccurrence: 0,
-      color: COLORS[idx % COLORS.length], enabled: true
+      color: COLORS[idx % COLORS.length], enabled: true,
+      paymentAccountId: '', expenseTypeId: null
     });
     dirty();
     renderSetupContent();
@@ -16623,6 +16675,7 @@ const BA = {
     const idx = (D.budget.expenseSchedules||[]).findIndex(s => s.id===scId);
     if (idx < 0) return;
     D.budget.expenseSchedules[idx][field] = value;
+    if (field === 'paymentAccountId') expSyncCycleRows();
     dirty();
     if (field === 'enabled') renderMonthly();
   },
