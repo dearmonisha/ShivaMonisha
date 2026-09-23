@@ -671,6 +671,13 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 .ann-label{text-align:left;white-space:nowrap;padding:7px 10px;min-width:175px;position:sticky;left:0;z-index:3;background:var(--surface)}
 .ann-num{text-align:right;padding:5px 7px;font-family:'Aptos','Calibri',Consolas,monospace;font-size:.78rem;white-space:nowrap}
 .ann-zero{color:var(--text3)}
+/* Month-on-month caret. Sits tight against the figure and is deliberately
+   smaller than it: the number is the fact, this is only a pointer. */
+/* Fixed width and always emitted, even when empty. A caret that only appears
+   on some cells would push those figures left and break the right-alignment
+   that makes a column of numbers readable in the first place. */
+.ann-mom{display:inline-block;width:9px;text-align:left;font-size:.58rem;margin-left:3px;
+  vertical-align:1px;cursor:help;font-family:system-ui,sans-serif}
 .ann-head{background:var(--ann-dark);color:#fff;padding:6px 8px;text-align:center;font-weight:700;border-right:1px solid rgba(255,255,255,.1)}
 .ann-head.ann-label{text-align:left;z-index:4;position:sticky;left:0}
 .ann-month-head{font-size:.82rem;letter-spacing:.04em;text-transform:uppercase}
@@ -12583,6 +12590,49 @@ function renderActualsGrid() {
   };
   // Same amount-hyperlink concept as the Budget tab: a non-zero per-category/month
   // actual is clickable and opens the transaction drilldown popup for that cell.
+  // ── Month-on-month movement ──────────────────────────────────
+  // The grid answers "what did this cost". The question underneath it is "what
+  // changed", and a year of figures does not answer that by itself. A caret on
+  // any cell that moved materially against the month to its left turns the wall
+  // into a short list of places to look.
+  //
+  // Deliberately quiet. A move has to clear BOTH $25 and 10% to be marked, so
+  // no caret means "nothing here worth your attention" rather than "unchanged".
+  // Marking every wobble would put a glyph on nearly every cell and the eye
+  // stops seeing any of them, which is the opposite of the point.
+  //
+  // January compares against December of the PREVIOUS year, so the first column
+  // carries the same information as the other eleven instead of being blank.
+  // Direction is read against intent, not sign: on spending, up is the warning;
+  // on income it is the good news, which is why the caller says which it is.
+  // The month in progress is the one exception. Its running total against a
+  // WHOLE previous month reads as a fall in almost every category until the
+  // last few days, which is the most misleading thing the cue could say about
+  // the month you can still act on. So the current column is measured against
+  // the previous month prorated to today — the same pace convention the
+  // Payments tab uses — and the tooltip says that is what it did.
+  const MOM_MIN_ABS = 25, MOM_MIN_PCT = 0.10;
+  const MOM_SLOT = '<span class="ann-mom"></span>';
+  const _momElapsed = Math.min(1,
+    new Date().getDate() / new Date(curY, curM + 1, 0).getDate());
+  const momCue = (cur, prev, upIsGood, pace) => {
+    const ref  = pace ? prev * _momElapsed : prev;
+    const d    = cur - ref;
+    if (Math.abs(d) < MOM_MIN_ABS) return MOM_SLOT;
+    const base = Math.abs(ref);
+    if (base > 0.005 && Math.abs(d) / base < MOM_MIN_PCT) return MOM_SLOT;
+    const up   = d > 0;
+    const good = upIsGood ? up : !up;
+    const pct  = base > 0.005 ? Math.round(Math.abs(d) / base * 100) + '%' : 'new';
+    const from = base > 0.005 ? fmtC(ref) : 'nothing';
+    const t = pace
+      ? `${up ? 'Up' : 'Down'} ${fmtC(Math.abs(d))} (${pct}) on last month's pace — ${
+          Math.round(_momElapsed * 100)}% through the month, ${from} by this point last month`
+      : `${up ? 'Up' : 'Down'} ${fmtC(Math.abs(d))} (${pct}) — was ${from} the month before`;
+    return `<span class="ann-mom" style="color:${good ? 'var(--ok)' : 'var(--warn,#C07A0A)'}"
+      title="${esc(t)}">${up ? '▲' : '▼'}</span>`;
+  };
+
   const fActLink = (catId, month, v) => {
     if (Math.abs(v) < 0.005) return z();
     const s = fmtC(Math.abs(v)).replace('$','');
@@ -12611,11 +12661,13 @@ function renderActualsGrid() {
 
   // Income row
   let incActTotal = 0;
-  const incomeCells = MONTHS.map((_,i) => {
-    const v = getIncome(ym(i));
+  const incVals  = MONTHS.map((_,i) => getIncome(ym(i)));
+  const incPrev0 = getIncome(`${year - 1}-12`);
+  const incomeCells = incVals.map((v,i) => {
     incActTotal += v;
     const f = isFuture(i);
-    return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f&&v===0?z():fAct(v)}</td>`;
+    const cue = f ? MOM_SLOT : momCue(v, i === 0 ? incPrev0 : incVals[i-1], true, isToday(i));
+    return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f&&v===0?z():fAct(v)}${cue}</td>`;
   }).join('');
 
   // Tracking-only cats — same treatment as reimbursable: actuals still shown per-row,
@@ -12630,20 +12682,25 @@ function renderActualsGrid() {
   for (const group of groups) {
     const gcats = cats.filter(c => c.groupId===group.id);
     const gActM = new Array(12).fill(0);
-    let gActTot = 0, catRowsHtml = '';
+    let gActTot = 0, catRowsHtml = '', gPrev0 = 0;
 
     for (const cat of gcats) {
       const isReimb = !!cat.reimbursable;
       const isTrack = !isReimb && _trackCatIds.has(cat.id);
       let cAct = 0;
-      const cells = MONTHS.map((_,i) => {
-        const act = getActual(cat.id, ym(i));
+      // Read the row once, then render it: the caret needs the cell to its left,
+      // and fetching each month twice would double the work on a grid this size.
+      const cVals  = MONTHS.map((_,i) => getActual(cat.id, ym(i)));
+      const cPrev0 = getActual(cat.id, `${year - 1}-12`);
+      if (!isReimb && !isTrack) gPrev0 += cPrev0;
+      const cells = cVals.map((act,i) => {
         cAct += act;
         if (isReimb)      mReimbTotals[i] += act;
         else if (isTrack) mTrackTotals[i] += act;
         else              gActM[i] += act;
         const f = isFuture(i);
-        return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f ? fAct(act) : fActLink(cat.id, ym(i), act)}</td>`;
+        const cue = f ? MOM_SLOT : momCue(act, i === 0 ? cPrev0 : cVals[i-1], false, isToday(i));
+        return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f ? fAct(act) : fActLink(cat.id, ym(i), act)}${cue}</td>`;
       }).join('');
       if (isReimb)      grandReimbTotal += cAct;
       else if (isTrack) grandTrackTotal += cAct;
@@ -12664,7 +12721,8 @@ function renderActualsGrid() {
     const isCollapsed = !!_actualsCollapsed[group.id];
     const grpCells = MONTHS.map((_,i) => {
       const f = isFuture(i);
-      return `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(gActM[i])}</td>`;
+      const cue = f ? MOM_SLOT : momCue(gActM[i], i === 0 ? gPrev0 : gActM[i-1], false, isToday(i));
+      return `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(gActM[i])}${cue}</td>`;
     }).join('');
 
     expenseRows += `
@@ -12845,6 +12903,14 @@ function renderActualsGrid() {
         <tbody><tr class="ann-section-divider"><td colspan="${TOTAL_COLS}" class="ann-section-label">Expense Breakdown</td></tr></tbody>
         ${expenseRows}
       </table>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:8px;padding:0 2px;font-size:.71rem;color:var(--text3)">
+      <span><span class="ann-mom" style="color:var(--warn,#C07A0A);margin-left:0">▲</span><span
+        class="ann-mom" style="color:var(--ok);margin-left:2px">▼</span>&nbsp; against the month before</span>
+      <span>Marked only when the change clears <b>$25 and 10%</b>, so no mark means nothing worth a look.</span>
+      <span>January is measured against December ${year - 1}. The month in progress is measured against
+        last month's <b>pace</b>, not its total. Hover a caret for the amount.</span>
+      <span>On the income row the colours reverse: up is the good news.</span>
     </div>`;
 }
 
