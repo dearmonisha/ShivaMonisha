@@ -676,8 +676,14 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 /* Fixed width and always emitted, even when empty. A caret that only appears
    on some cells would push those figures left and break the right-alignment
    that makes a column of numbers readable in the first place. */
-.ann-mom{display:inline-block;width:9px;text-align:left;font-size:.58rem;margin-left:3px;
-  vertical-align:1px;cursor:help;font-family:system-ui,sans-serif}
+.ann-mom{display:inline-block;width:10px;text-align:left;font-size:.68rem;font-weight:700;margin-left:3px;
+  vertical-align:0;cursor:help;font-family:system-ui,sans-serif}
+/* The move you want to find gets a second channel: the cell itself carries a
+   faint red wash. It tracks the RED CARET, not the arrow direction — on
+   spending that is a rise, on the income row it is a fall. Colour is never the
+   only signal: the glyph shape says the same thing, which is what keeps this
+   readable for anyone who cannot separate red from green. */
+.ann-worse{background:color-mix(in srgb,var(--danger) 15%,transparent)}
 .ann-head{background:var(--ann-dark);color:#fff;padding:6px 8px;text-align:center;font-weight:700;border-right:1px solid rgba(255,255,255,.1)}
 .ann-head.ann-label{text-align:left;z-index:4;position:sticky;left:0}
 .ann-month-head{font-size:.82rem;letter-spacing:.04em;text-transform:uppercase}
@@ -12615,12 +12621,15 @@ function renderActualsGrid() {
   const MOM_SLOT = '<span class="ann-mom"></span>';
   const _momElapsed = Math.min(1,
     new Date().getDate() / new Date(curY, curM + 1, 0).getDate());
+  // Returns { html, cls } rather than a string: the caret goes inside the cell,
+  // the wash goes on the cell, and only the caller knows which <td> that is.
+  const MOM_NONE = { html: MOM_SLOT, cls: '' };
   const momCue = (cur, prev, upIsGood, pace) => {
     const ref  = pace ? prev * _momElapsed : prev;
     const d    = cur - ref;
-    if (Math.abs(d) < MOM_MIN_ABS) return MOM_SLOT;
+    if (Math.abs(d) < MOM_MIN_ABS) return MOM_NONE;
     const base = Math.abs(ref);
-    if (base > 0.005 && Math.abs(d) / base < MOM_MIN_PCT) return MOM_SLOT;
+    if (base > 0.005 && Math.abs(d) / base < MOM_MIN_PCT) return MOM_NONE;
     const up   = d > 0;
     const good = upIsGood ? up : !up;
     const pct  = base > 0.005 ? Math.round(Math.abs(d) / base * 100) + '%' : 'new';
@@ -12629,8 +12638,11 @@ function renderActualsGrid() {
       ? `${up ? 'Up' : 'Down'} ${fmtC(Math.abs(d))} (${pct}) on last month's pace — ${
           Math.round(_momElapsed * 100)}% through the month, ${from} by this point last month`
       : `${up ? 'Up' : 'Down'} ${fmtC(Math.abs(d))} (${pct}) — was ${from} the month before`;
-    return `<span class="ann-mom" style="color:${good ? 'var(--ok)' : 'var(--warn,#C07A0A)'}"
-      title="${esc(t)}">${up ? '▲' : '▼'}</span>`;
+    return {
+      html: `<span class="ann-mom" style="color:${good ? 'var(--ok)' : 'var(--danger)'}"
+        title="${esc(t)}">${up ? '▲' : '▼'}</span>`,
+      cls: good ? '' : ' ann-worse'
+    };
   };
 
   const fActLink = (catId, month, v) => {
@@ -12666,8 +12678,8 @@ function renderActualsGrid() {
   const incomeCells = incVals.map((v,i) => {
     incActTotal += v;
     const f = isFuture(i);
-    const cue = f ? MOM_SLOT : momCue(v, i === 0 ? incPrev0 : incVals[i-1], true, isToday(i));
-    return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f&&v===0?z():fAct(v)}${cue}</td>`;
+    const cue = f ? MOM_NONE : momCue(v, i === 0 ? incPrev0 : incVals[i-1], true, isToday(i));
+    return `<td class="ann-num ann-act-col${f?' ann-future':''}${cue.cls}">${f&&v===0?z():fAct(v)}${cue.html}</td>`;
   }).join('');
 
   // Tracking-only cats — same treatment as reimbursable: actuals still shown per-row,
@@ -12699,8 +12711,8 @@ function renderActualsGrid() {
         else if (isTrack) mTrackTotals[i] += act;
         else              gActM[i] += act;
         const f = isFuture(i);
-        const cue = f ? MOM_SLOT : momCue(act, i === 0 ? cPrev0 : cVals[i-1], false, isToday(i));
-        return `<td class="ann-num ann-act-col${f?' ann-future':''}">${f ? fAct(act) : fActLink(cat.id, ym(i), act)}${cue}</td>`;
+        const cue = f ? MOM_NONE : momCue(act, i === 0 ? cPrev0 : cVals[i-1], false, isToday(i));
+        return `<td class="ann-num ann-act-col${f?' ann-future':''}${cue.cls}">${f ? fAct(act) : fActLink(cat.id, ym(i), act)}${cue.html}</td>`;
       }).join('');
       if (isReimb)      grandReimbTotal += cAct;
       else if (isTrack) grandTrackTotal += cAct;
@@ -12721,8 +12733,8 @@ function renderActualsGrid() {
     const isCollapsed = !!_actualsCollapsed[group.id];
     const grpCells = MONTHS.map((_,i) => {
       const f = isFuture(i);
-      const cue = f ? MOM_SLOT : momCue(gActM[i], i === 0 ? gPrev0 : gActM[i-1], false, isToday(i));
-      return `<td class="ann-num ann-act-col${f?' ann-future':''}">${fAct(gActM[i])}${cue}</td>`;
+      const cue = f ? MOM_NONE : momCue(gActM[i], i === 0 ? gPrev0 : gActM[i-1], false, isToday(i));
+      return `<td class="ann-num ann-act-col${f?' ann-future':''}${cue.cls}">${fAct(gActM[i])}${cue.html}</td>`;
     }).join('');
 
     expenseRows += `
@@ -12905,8 +12917,10 @@ function renderActualsGrid() {
       </table>
     </div>
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:8px;padding:0 2px;font-size:.71rem;color:var(--text3)">
-      <span><span class="ann-mom" style="color:var(--warn,#C07A0A);margin-left:0">▲</span><span
-        class="ann-mom" style="color:var(--ok);margin-left:2px">▼</span>&nbsp; against the month before</span>
+      <span><span class="ann-worse" style="padding:1px 4px;border-radius:3px"><span class="ann-mom"
+        style="color:var(--danger);margin-left:0;width:auto">▲</span> spending up</span>
+        <span class="ann-mom" style="color:var(--ok);margin-left:8px;width:auto">▼</span> spending down,
+        against the month before. Red and the tint always mean the worse direction.</span>
       <span>Marked only when the change clears <b>$25 and 10%</b>, so no mark means nothing worth a look.</span>
       <span>January is measured against December ${year - 1}. The month in progress is measured against
         last month's <b>pace</b>, not its total. Hover a caret for the amount.</span>
