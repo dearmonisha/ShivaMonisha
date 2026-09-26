@@ -10354,8 +10354,26 @@ function payUtilTarget() {
 // So: no forecast income. A statement that has been issued is money owed now.
 // The runway still models the outflow separately for the cash-dip warning; this
 // function answers a different question — what must the allocator fund today.
-function payPifEarlyNeed(x) {
+// Rule 2, Shiva 2026-09-26: "Dont pay cards that carry 0% interest early."
+// A pay-in-full statement costs nothing until its due date. The runway already
+// carries that statement as a dated outflow (pifRows in payOutflowEvents), so
+// if the projected low point still clears the cash floor the money is genuinely
+// free today and belongs on the expensive cards instead. Costco, 2026-09-26:
+// $2,321 held back at 0.00% while Best Buy Shiva ran at 30.00% and Discover at
+// 26.49% — about $50 a month.
+// Fails closed, three ways: no runway to read, a due date past the horizon so
+// nothing modelled it, or a trough that breaches the floor. Any of those and
+// the statement is funded today exactly as before.
+function payPifCanWait(x, R) {
+  if (!x || x.role !== 'pay-in-full' || x.stmtBal == null || !x.dueDate) return false;
+  if (!R || R.trough == null || !R.to) return false;
+  if (x.dueDate > R.to) return false;
+  return R.trough >= (R.floor || 0) - 0.005;
+}
+
+function payPifEarlyNeed(x, R) {
   if (!x || x.role !== 'pay-in-full' || x.stmtBal == null || !x.dueDate) return 0;
+  if (payPifCanWait(x, R)) return 0;
   // No fallback to the running balance: with no statement nothing has been
   // billed, and sweeping spare cash into an unbilled 0% balance is exactly the
   // 2026-08-21 mistake ($2,284 into Costco at 0.00% while Macys sat at 31.90%).
@@ -10389,8 +10407,11 @@ function payAllocate(pot, strategy, states, runway) {
   // stops the old double-count: paying the $48 minimum AND the $4,777 statement
   // would have over-funded Costco by the minimum.
   const requiredNow = x => {
+    // A statement that can wait takes its own minimum with it: same card, same
+    // due date, and the whole lot is paid then out of projected cash.
+    if (payPifCanWait(x, R)) return 0;
     const base = Math.max(0, x.minUnfunded || 0);
-    const stmt = payPifEarlyNeed(x);
+    const stmt = payPifEarlyNeed(x, R);
     return Math.max(base, stmt);
   };
 
@@ -10404,6 +10425,15 @@ function payAllocate(pot, strategy, states, runway) {
      if (x.role === 'pay-in-full' && x.stmtBal != null) parts.pifEarly += p;
      else parts.minimums += p;
    });
+  // Scheduled, not skipped: 0% statements waiting for their due date, so the
+  // page can say when each one goes out instead of silently dropping it.
+  parts.deferred = m.filter(x => payPifCanWait(x, R))
+    .map(x => ({ name: x.name, dueDate: x.dueDate, apr: x.apr,
+                 amount: Math.max(0, x.stmtBal - (x.paid || 0) - x.pay) }))
+    .filter(x => x.amount > 0.005)
+    .sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
+  parts.deferredTotal = parts.deferred.reduce((s2, x) => s2 + x.amount, 0);
+
   // Recorded for the UI: a pay-in-full card shows no separate minimum because
   // its statement payment already covers it on the same day.
   parts.minSkipped = m.filter(x => x.minUnfunded > 0.005 &&
@@ -10438,7 +10468,9 @@ function payAllocate(pot, strategy, states, runway) {
   // Ordered by rate so that when the pot cannot cover every card, the money
   // holds the line on the expensive ones first. Pay-in-full cards are already
   // settled at tier 0; a card with no charges this month asks for nothing.
-  const growthOf = x => payGrowthNeed(x, ym, x.pay);
+  // A deferred 0% statement already repays this month's charges on its due
+  // date. Letting tier 2 fund them today would breach rule 2 by another door.
+  const growthOf = x => payPifCanWait(x, R) ? 0 : payGrowthNeed(x, ym, x.pay);
   if (P0.fundCurrentSpend) {
     m.filter(x => growthOf(x) > 0.005)
      .sort((a, b) => b.apr - a.apr)
@@ -10454,7 +10486,7 @@ function payAllocate(pot, strategy, states, runway) {
     .map(x => ({ name: x.name, short: growthOf(x), apr: x.apr, charged: x.chargesMTD }))
     .sort((a, b) => b.short - a.short);
   parts.growthShort = parts.growthShortfalls.reduce((s2, x) => s2 + x.short, 0);
-  parts.growthTarget = m.reduce((s2, x) => s2 + payGrowthNeed(x, ym, 0), 0);
+  parts.growthTarget = m.reduce((s2, x) => s2 + (payPifCanWait(x, R) ? 0 : payGrowthNeed(x, ym, 0)), 0);
 
   // ── Tier 3's pot is bounded by the BUDGET, not just by cash ──────────────
   // Shiva's rule: what he saved against plan is what is genuinely free to throw
@@ -10477,9 +10509,24 @@ function payAllocate(pot, strategy, states, runway) {
   // full $300 while Apple sat below its minimum; the answer was that the pot was
   // $198.18 short of everything due, and the panel had no way of saying so —
   // it reported what was FUNDED and let that read as what was REQUIRED.
-  parts.shortfalls = m.filter(x => requiredNow(x) - x.pay > 0.005)
-    .map(x => ({ name: x.name, short: requiredNow(x) - x.pay, dueDate: x.dueDate,
-                 kind: (x.role === 'pay-in-full' && x.stmtBal != null) ? 'statement' : 'minimum' }))
+  // The two requirements are netted differently and must not be mixed.
+  // payPifEarlyNeed() ALREADY subtracts x.pay; minUnfunded does not, because it
+  // is derived from transactions when the state is built. Subtracting x.pay
+  // from both double-counted the payment on a pay-in-full card and drove a real
+  // shortfall negative, so it dropped out of the filter entirely.
+  //
+  // 2026-09-26: Costco was funded 2,321.08 of a 4,090.31 statement and its
+  // 1,769.23 gap vanished; the panel reported Macys' 184.19 as the whole story,
+  // 1,953.42 short of the truth. The one being hidden is the one that costs
+  // money — miss a pay-in-full statement and the grace period is forfeited on
+  // the entire balance, here 4,090.31 reverting to 24.74%.
+  parts.shortfalls = m.map(x => {
+    const isPif = x.role === 'pay-in-full' && x.stmtBal != null;
+    return { name: x.name, dueDate: x.dueDate,
+             kind:  isPif ? 'statement' : 'minimum',
+             short: isPif ? payPifEarlyNeed(x, R)
+                          : Math.max(0, (x.minUnfunded || 0) - x.pay) };
+  }).filter(x => x.short > 0.005)
     .sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
   parts.shortTotal = parts.shortfalls.reduce((s2, x) => s2 + x.short, 0);
 
@@ -10957,7 +11004,10 @@ function renderPayments() {
        <b style="color:var(--danger)">${payFmt2(PA.shortTotal)} short of everything due.</b>
        ${PA.shortfalls.map(x => `${esc(x.name)} is ${payFmt2(x.short)} under its ${x.kind} (due ${fmtDate(x.dueDate)})`).join('; ')}.
        Allocation runs in due-date order, so the shortfall lands on whatever is due last —
-       there is not enough cash today to cover it all.
+       there is not enough cash today to cover it all.${
+       PA.shortfalls.some(x => x.kind === 'statement')
+         ? ` <b style="color:var(--danger)">A pay-in-full statement left short forfeits the grace period on the whole balance</b>, so fund those from the next credit before anything else.`
+         : ''}
      </div>` : '';
   const inertNote = (A.deployed > 0.5 && (PA.discretionary || 0) < 1 && bits.length) ? `
      <div style="font-size:.68rem;color:var(--text2);line-height:1.6;background:var(--surface2);border-radius:6px;padding:8px 11px;margin-bottom:10px">
@@ -11275,11 +11325,13 @@ function renderPayments() {
   const _rec  = payMonthRecord(_am);
   const _prev = (() => { const [y,m]=_am.split('-').map(Number); return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,'0')}`; })();
   const _prevRec = payMonthRecord(_prev);
-  const _mustPay = st.filter(x => x.minUnfunded > 0.005 || payPifEarlyNeed(x) > 0.005)
+  const _mustPay = st.filter(x => (x.minUnfunded > 0.005 || payPifEarlyNeed(x, R) > 0.005)
+                                  && !payPifCanWait(x, R))
     .sort((a,b)=>(a.dueDate||'9999').localeCompare(b.dueDate||'9999'));
   // Per card, the larger of the two obligations — a card is not owed its minimum
   // AND its statement, it is owed whichever is bigger.
-  const _mustPayOf  = x => Math.max(x.minUnfunded || 0, payPifEarlyNeed(x));
+  const _mustPayOf  = x => payPifCanWait(x, R) ? 0
+                         : Math.max(x.minUnfunded || 0, payPifEarlyNeed(x, R));
   const _mustPayTot = _mustPay.reduce((s2,x)=>s2 + _mustPayOf(x), 0);
   // Row 3 is what row 2 does NOT already cover. Apple's $429 minimum funds
   // Apple's $113 of new charges on the way past; counting both would ask for
@@ -11403,7 +11455,7 @@ function renderPayments() {
   // Citi can never excuse underpaying Discover.
   const _nnPlan = payAllocate(Math.floor(R.safe), UI.payStrategy, st, R);
   const _nnP    = _nnPlan.parts || {};
-  const _pifNm  = st.filter(x => payPifEarlyNeed(x) > 0.005).map(x => x.name);
+  const _pifNm  = st.filter(x => payPifEarlyNeed(x, R) > 0.005).map(x => x.name);
   const _nnBits = [
     _nnP.minimums      > 0.5 ? `minimums ${payFmt(_nnP.minimums)}` : '',
     _nnP.pifEarly      > 0.5 ? `${_pifNm.slice(0,2).join(' + ') || 'statement'} ${payFmt(_nnP.pifEarly)}` : '',
@@ -11445,6 +11497,14 @@ function renderPayments() {
      : _nnRow('This month', `
        <div style="font-size:1.3rem;font-weight:700;color:var(--ok);line-height:1.2">Fully settled</div>
        <div style="font-size:.77rem;color:var(--text2);margin-top:3px">everything charged this month has been paid back to its own card</div>`)}
+
+     ${(_nnP.deferred || []).length ? _nnRow('Waiting', `
+       <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">${payFmt(_nnP.deferredTotal)}
+         <span style="font-size:.8rem;font-weight:500;color:var(--text3)">at 0%, pay on the due date</span></div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:4px">${
+         _nnP.deferred.slice(0,4).map(x => `<b style="color:var(--text)">${esc(x.name)} ${payFmt(x.amount)}</b>
+           <span style="color:var(--text3)">${fmtDate(x.dueDate)}</span>`).join(' · ')}${
+         _nnP.deferred.length > 4 ? ` · +${_nnP.deferred.length - 4} more` : ''}</div>`) : ''}
 
      <div style="border-top:1px solid var(--border);padding:11px 17px;font-size:.79rem;
        background:${_nnClear ? 'color-mix(in srgb,var(--ok) 8%,transparent)' : 'var(--danger-bg)'};
