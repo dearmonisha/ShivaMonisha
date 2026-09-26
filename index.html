@@ -1304,6 +1304,7 @@ let UI = {
   mobBudgetFilter: 'all',      // Mobile Budget tab: all | over | watch | track | reimb
   mobTxnClr:       'all',      // Mobile All tab: all | uncleared | cleared
   payMode:        null,        // Payments tab: null = follow the date, else 'monitor' | 'assess'
+  payShowWork:    false,       // Payments tab: the aggregates + runway + history, collapsed by default
   payAssessMonth: null,        // Payments tab: YYYY-MM being reviewed (null = the natural one)
   annualYear:  new Date().getFullYear(), // currently viewed year in Budget Grid
   actualsYear: new Date().getFullYear(), // currently viewed year in Actuals Grid
@@ -11382,6 +11383,90 @@ function renderPayments() {
           why:   `The two rows above add up to ${payFmt(_mustPayTot + _holdFlat)}. Cash above the ${payFmt(R.floor)} floor is ${payFmt(R.safe)}.` })}
    </div>`;
 
+  // ══ NOW / NEXT ════════════════════════════════════════════════
+  // The five aggregate rows above are all true and together they answered the
+  // wrong question. "Due now $4,847" was Mattress Firm on the 6th, Discover on
+  // the 15th, Costco on the 19th and Best Buy Shiva on the 20th, with $12,607
+  // of pay landing before any of them; set against cash-in-hand it printed
+  // "$3,949 short" on a month where balances were falling.
+  //   Shiva, 2026-09-26: "I find it very difficult to make sense of whether I
+  //   can make payment or not. Too much info and complex page."
+  //
+  // So the top is two moments and a verdict. What can leave today, what the
+  // next paycheque unlocks, and whether anything is actually at risk. The
+  // aggregates are not deleted — they are behind Show the working, one click
+  // away, for the day the number looks wrong and you want the arithmetic.
+  //
+  // The second row is the part that matters to Shiva and the reason this is not
+  // a minimums-only plan: money he budgeted and then spent on a card has to go
+  // back onto THAT card. payGrowthNeed floors at zero per card, so overpaying
+  // Citi can never excuse underpaying Discover.
+  const _nnPlan = payAllocate(Math.floor(R.safe), UI.payStrategy, st, R);
+  const _nnP    = _nnPlan.parts || {};
+  const _pifNm  = st.filter(x => payPifEarlyNeed(x) > 0.005).map(x => x.name);
+  const _nnBits = [
+    _nnP.minimums      > 0.5 ? `minimums ${payFmt(_nnP.minimums)}` : '',
+    _nnP.pifEarly      > 0.5 ? `${_pifNm.slice(0,2).join(' + ') || 'statement'} ${payFmt(_nnP.pifEarly)}` : '',
+    _nnP.promo         > 0.5 ? `0% instalments ${payFmt(_nnP.promo)}` : '',
+    _nnP.growth        > 0.5 ? `this month's own charges ${payFmt(_nnP.growth)}` : '',
+    _nnP.discretionary > 0.5 ? `old balances ${payFmt(_nnP.discretionary)}` : ''
+  ].filter(Boolean).join(' · ');
+  const _nnCarry    = (_nnP.growthShortfalls || []).slice().sort((x,y) => y.apr - x.apr);
+  const _nnCarryTot = _nnP.growthShort || 0;
+  const _nnNext     = R.nextIncome || null;
+  const _nnClear    = R.trough >= R.floor - 0.005;
+  const _nnRow = (tag, body) => `
+    <div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;padding:13px 17px;border-top:1px solid var(--border)">
+      <div style="font-size:.6rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--text3);width:92px;flex:none;padding-top:5px">${tag}</div>
+      <div style="flex:1;min-width:240px">${body}</div>
+    </div>`;
+
+  const nowNext = `
+   <div style="${card};padding:0;margin-bottom:14px;overflow:hidden">
+     ${_nnRow('Today', `
+       <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">${
+         R.safe > 0.5 ? `Send ${payFmt(R.safe)}` : 'Send nothing yet'}</div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">${
+         R.safe > 0.5 ? (_nnBits || 'free to place below')
+                      : `Cash above the ${payFmt2(R.floor)} floor is spoken for until the next credit.`}</div>`)}
+
+     ${_nnCarryTot > 0.5 && _nnNext ? _nnRow(fmtDate(_nnNext.date), `
+       <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">Then ${payFmt(_nnCarryTot)}
+         <span style="font-size:.8rem;font-weight:500;color:var(--ok)">after ${payFmt(_nnNext.amount)} ${esc(_nnNext.label||'pay')}</span></div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">
+         this month's own charges, back onto the cards that took them</div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:4px">${
+         _nnCarry.slice(0,4).map(x => `<b style="color:var(--text)">${esc(x.name)} ${payFmt(x.short)}</b>
+           <span style="color:var(--text3)">at ${x.apr.toFixed(2)}%</span>`).join(' · ')}${
+         _nnCarry.length > 4 ? ` · +${_nnCarry.length - 4} more` : ''}</div>`)
+     : _nnCarryTot > 0.5 ? _nnRow('Still to settle', `
+       <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">${payFmt(_nnCarryTot)}</div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">this month's own charges, not yet back on the cards</div>`)
+     : _nnRow('This month', `
+       <div style="font-size:1.3rem;font-weight:700;color:var(--ok);line-height:1.2">Fully settled</div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">everything charged this month has been paid back to its own card</div>`)}
+
+     <div style="border-top:1px solid var(--border);padding:11px 17px;font-size:.79rem;
+       background:${_nnClear ? 'color-mix(in srgb,var(--ok) 8%,transparent)' : 'var(--danger-bg)'};
+       color:${_nnClear ? 'var(--text2)' : 'var(--danger)'}">
+       ${_nnClear
+         ? `<b style="color:var(--ok)">✓ Nothing at risk.</b> Low point ${payFmt2(R.trough)} on ${fmtDate(R.troughDate)}, floor ${payFmt2(R.floor)}.`
+         : `<b>⚠ ${payFmt(R.floor - R.trough)} short on ${fmtDate(R.troughDate)}.</b> ${
+             (R.troughDriver||[]).slice(0,3).map(e=>esc(e.name||e.label)).join(' · ')}`}
+       ${Math.abs(MS.carried) > 0.5 ? `<span style="color:var(--text3)"> · </span>Balances ${
+         MS.carried > 0.5 ? `<span style="color:var(--danger)">up ${payFmt(MS.carried)}</span>`
+                          : `<span style="color:var(--ok)">down ${payFmt(-MS.carried)}</span>`} this month.` : ''}
+     </div>
+   </div>`;
+
+  // Everything that made the page hard to read, one click away rather than gone.
+  const workToggle = `
+   <div style="display:flex;justify-content:flex-end;margin-bottom:${UI.payShowWork ? '10px' : '14px'}">
+     <button onclick="PAY.toggleWork()" style="font-size:.72rem;padding:5px 12px;border:1px solid var(--border);
+       border-radius:7px;background:var(--surface);color:var(--text2);cursor:pointer">${
+       UI.payShowWork ? '− Hide the working' : '+ Show the working'}</button>
+   </div>`;
+
   const modeToggle = `
    <div style="display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden">
      ${['monitor','assess'].map(mm => `<button onclick="PAY.setMode('${mm}')"
@@ -11414,9 +11499,10 @@ function renderPayments() {
           6. trajectory   — six-month history. It answers "is this working",
                             which is a question for after the payment is made,
                             not a step in making it. Bottom of the page. */''}
+    ${nowNext}
     ${_mode === 'assess'
-      ? `${assessPanel}${cashLine}${runway}${allocator}${queue}${trajectory}`
-      : `${monitorPanel}${cashLine}${runway}${queue}`}`;
+      ? `${allocator}${queue}${workToggle}${UI.payShowWork ? `${assessPanel}${cashLine}${runway}${trajectory}` : ''}`
+      : `${monitorPanel}${queue}${workToggle}${UI.payShowWork ? `${cashLine}${runway}${trajectory}` : ''}`}`;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -11462,6 +11548,7 @@ function payPrompt(title, msg, defVal) {
 
 const PAY = {
   setStrategy(s) { UI.payStrategy = s; payDefaults().strategy = s; dirty(); renderPayments(); },
+  toggleWork()   { UI.payShowWork = !UI.payShowWork; renderPayments(); },
   toggleFundCurrent() {
     const P = payDefaults();
     P.fundCurrentSpend = !P.fundCurrentSpend;
