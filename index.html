@@ -10384,7 +10384,8 @@ function payAllocate(pot, strategy, states, runway) {
   const m = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
   let left = Math.max(0, +pot || 0);
   const R = runway || null;
-  const parts = { minimums: 0, promo: 0, pifEarly: 0, growth: 0, discretionary: 0, minSkipped: [] };
+  const parts = { minimums: 0, promo: 0, pifEarly: 0, growth: 0, discretionary: 0,
+                  minSkipped: [], growthFunded: [] };
   const P0 = payDefaults();
   const ym = centralToday().slice(0, 7);
 
@@ -10568,6 +10569,14 @@ function payAllocate(pot, strategy, states, runway) {
   } else {
     spend(byApr(), null, true);            // pure avalanche — never touches 0% cards
   }
+
+  // Per card, how much of this month's own charges the finished plan repays —
+  // from whichever pass the money came out of.
+  parts.growthFunded = m.map(x => ({ name: x.name, apr: x.apr,
+      amount: Math.min(payPifCanWait(x, R) ? 0 : payGrowthNeed(x, ym, 0), x.pay) }))
+    .filter(x => x.amount > 0.005)
+    .sort((a, b) => b.apr - a.apr);
+  parts.growthCovered = parts.growthFunded.reduce((s2, x) => s2 + x.amount, 0);
 
   const saved = m.reduce((s, x) => s + x.pay * x.apr / 1200, 0);
   // `left` has to describe the whole pot again, or the caller under-reports what
@@ -11465,6 +11474,12 @@ function renderPayments() {
   ].filter(Boolean).join(' · ');
   const _nnCarry    = (_nnP.growthShortfalls || []).slice().sort((x,y) => y.apr - x.apr);
   const _nnCarryTot = _nnP.growthShort || 0;
+  // What this month put on the cards and has NOT been repaid, before today's
+  // plan is counted. growthTarget is measured against money actually paid;
+  // growthShort is measured after the allocator's intentions. The row above
+  // used the second and read as though the payment had already gone out.
+  const _nnOwed     = _nnP.growthTarget || 0;
+  const _nnFunded   = (_nnP.growthFunded || []);
   const _nnNext     = R.nextIncome || null;
   const _nnClear    = R.trough >= R.floor - 0.005;
   const _nnRow = (tag, body) => `
@@ -11482,7 +11497,16 @@ function renderPayments() {
          R.safe > 0.5 ? (_nnBits || 'free to place below')
                       : `Cash above the ${payFmt2(R.floor)} floor is spoken for until the next credit.`}</div>`)}
 
-     ${_nnCarryTot > 0.5 && _nnNext ? _nnRow(fmtDate(_nnNext.date), `
+     ${_nnOwed > 0.5 && _nnCarryTot <= 0.5 ? _nnRow('This month', `
+       <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">Send ${payFmt(_nnOwed)} back
+         <span style="font-size:.8rem;font-weight:500;color:var(--text3)">not paid yet</span></div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">
+         charged on the cards this month, all of it inside today's ${payFmt(R.safe)}</div>
+       <div style="font-size:.77rem;color:var(--text2);margin-top:4px">${
+         _nnFunded.slice(0,5).map(x => `<b style="color:var(--text)">${esc(x.name)} ${payFmt(x.amount)}</b>
+           <span style="color:var(--text3)">at ${x.apr.toFixed(2)}%</span>`).join(' · ')}${
+         _nnFunded.length > 5 ? ` · +${_nnFunded.length - 5} more` : ''}</div>`)
+     : _nnCarryTot > 0.5 && _nnNext ? _nnRow(fmtDate(_nnNext.date), `
        <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">Then ${payFmt(_nnCarryTot)}
          <span style="font-size:.8rem;font-weight:500;color:var(--ok)">after ${payFmt(_nnNext.amount)} ${esc(_nnNext.label||'pay')}</span></div>
        <div style="font-size:.77rem;color:var(--text2);margin-top:3px">
