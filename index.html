@@ -1935,12 +1935,33 @@ function oblCycleDueDates(o, type, cycleYM) {
 // Which occurrences are finished with. Approved means it happened; rejected
 // means you decided it will not. Pending is NOT done — it is still the next
 // thing you have to deal with.
+// ── The identity of a charge, and why rejection is keyed differently ───────
+// obligationId::oblMonth::occ is what the generator dedups on. That is right
+// for an APPROVED row: the money moved, and a regenerated twin would be a
+// double count whatever date it carries.
+//
+// It is wrong for a REJECTED one. Shiva moved Landshark Ford from the 1st to
+// the 28th of the previous month and rejected the two stale 1st-of-month rows;
+// the 28th charges then never appeared, because ::2026-08::0 and ::2026-09::0
+// were already spoken for. Rejecting says "this charge, on this date, will not
+// happen" — it cannot also mean "and nothing else this month either", or no
+// schedule change is ever visible after a rejection.
+//
+// So a rejected row carries its own date in the key. A re-scheduled charge in
+// the same month is a new question and gets asked; the identical date stays
+// suppressed. A PENDING row keeps the plain key: the fix-up pass rewrites its
+// date to match the schedule, so it is never stale in the first place.
+function oblOccKey(t) {
+  const base = t.obligationId + '::' + t.oblMonth + '::' + (t.oblOcc || 0);
+  return t.status === 'rejected' ? base + '::' + (t.date || '') : base;
+}
 function oblActionedOccurrences(oblId) {
   const done = new Set();
   (D.transactions || []).forEach(t => {
     if (t.obligationId !== oblId) return;
     if (t.status !== 'approved' && t.status !== 'rejected') return;
-    done.add((t.oblMonth || (t.date||'').slice(0,7)) + '::' + (t.oblOcc || 0));
+    const base = (t.oblMonth || (t.date||'').slice(0,7)) + '::' + (t.oblOcc || 0);
+    done.add(t.status === 'rejected' ? base + '::' + (t.date || '') : base);
   });
   return done;
 }
@@ -1970,7 +1991,8 @@ function oblNextChargeDate(o, type, opts) {
       if (dues[occ] < today) continue;
       // `done` is keyed by cycle month, so an anchored charge must be looked up
       // by the month that pays for it, not the month it lands in.
-      if (done && done.has(oblCycleYM(o, ym) + '::' + occ)) continue;
+      const k = oblCycleYM(o, ym) + '::' + occ;
+      if (done && (done.has(k) || done.has(k + '::' + dues[occ]))) continue;
       return dues[occ];
     }
     m++; if (m > 12) { m = 1; y++; }
@@ -2097,6 +2119,8 @@ function oblPriceBadge(o) {
 // The one place in the app where the same number could live twice and disagree.
 // Six bills existed as BOTH a Monthly template and an obligation, and T-Mobile
 // had already drifted (326.46 against 327.00).
+// How far back a re-scheduled charge is still worth asking about, in days.
+const OBL_REOFFER_DAYS = 45;
 function oblNormName(s) { return (s||'').trim().toLowerCase().replace(/[^a-z0-9]/g, ''); }
 function oblDuplicateWarnings() {
   const warn = {};   // obligationId -> [message]
@@ -17617,7 +17641,12 @@ function oblAutoGenerateTxns() {
   const _occKey = {};
   (D.transactions || []).forEach(t => {
     if (!t.obligationId || !t.oblMonth) return;
-    const k = t.obligationId + '::' + t.oblMonth + '::' + (t.oblOcc || 0);
+    // Grouped by DATE as well as occurrence. Two rows for the same charge on
+    // the same day are the contradiction this pass exists to resolve; two rows
+    // on different days are two different charges — a rejected 1st and a
+    // re-scheduled 28th, say — and deleting one of those is what hid Landshark
+    // Ford's new date.
+    const k = t.obligationId + '::' + t.oblMonth + '::' + (t.oblOcc || 0) + '::' + (t.date || '');
     (_occKey[k] = _occKey[k] || []).push(t);
   });
   const _dupIds = new Set(), _dupNames = [];
@@ -17669,11 +17698,21 @@ function oblAutoGenerateTxns() {
   });
   if (fixedCount > 0) dirty();
 
-  // Dedup set: "obligationId::YYYY-MM::occurrence"
+  // Dedup set: "obligationId::YYYY-MM::occurrence", plus the date for a
+  // rejected row — see oblOccKey.
   const existing = new Set();
+  // Months that hold a rejected row, by plain key. A moved schedule re-asks
+  // these (that is the point of the dated key), but only while the charge is
+  // still current: Club 4 Mona's April row was hand-dated to the 8th before it
+  // was rejected, and re-opening a five-month-old decision is noise, not a
+  // pending charge. 45 days covers a cycle plus the time it takes to notice.
+  const _rejMonth = new Set();
   (D.transactions || []).forEach(t => {
-    if (t.obligationId && t.oblMonth) existing.add(t.obligationId + '::' + t.oblMonth + '::' + (t.oblOcc || 0));
+    if (!t.obligationId || !t.oblMonth) return;
+    existing.add(oblOccKey(t));
+    if (t.status === 'rejected') _rejMonth.add(t.obligationId + '::' + t.oblMonth + '::' + (t.oblOcc || 0));
   });
+  const _reofferFloor = oblISO(new Date(Date.now() - OBL_REOFFER_DAYS * 86400000));
 
   const today = new Date();
   const currentYM = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0');
@@ -17707,7 +17746,10 @@ function oblAutoGenerateTxns() {
       const dues = oblCycleDueDates(obj, type, ym);
       dues.forEach((dueISO, occ) => {
         const key = obj.id + '::' + ym + '::' + occ;
-        if (existing.has(key)) return;
+        // Plain key: an approved row, or a pending one already on the books.
+        // Date-qualified key: this exact date was rejected, so do not re-ask.
+        if (existing.has(key) || existing.has(key + '::' + dueISO)) return;
+        if (_rejMonth.has(key) && dueISO < _reofferFloor) return;
         const amt   = oblExpectedAmount(obj, type);
         const lines = oblSplitLinesFor(obj, amt);
         D.transactions.push({
