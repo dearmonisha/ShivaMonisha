@@ -2326,7 +2326,32 @@ function oblTickMonthlyRow(obj, t) {
   row.isPaid     = true;
   row.paidDate   = t.date;
   row.amountPaid = (+t.debit||0) || (+t.credit||0);
+  // Which transaction ticked it. Without this the tick cannot be taken back,
+  // and a row ticked by hand (mtxWrite, which keeps its own txnId/txnAuto) is
+  // indistinguishable from one ticked by an approval.
+  row.oblTxnId   = t.id;
   if (!row.paidFrom && obj.paymentMethod) row.paidFrom = obj.paymentMethod;
+}
+// ── The inverse. Approving ticked the Monthly row; un-approving must untick ─
+// Shiva, 2026-09-29: "Ford Lightning payment due 10/2 is showing as pending
+// approval as well as showing as paid in the Monthly tab."
+// oblApproveTxn ticks the row, and all three ways back — reject, restore to
+// pending, and the Transactions-tab re-push — only moved the transaction.
+// The Monthly row stayed paid, on a date nobody had paid anything: the row
+// carried paidDate 2026-10-02, which was the charge's own due date.
+function oblUntickMonthlyRow(t) {
+  if (!t || !t.obligationId) return false;
+  const ym   = t.oblMonth || (t.date||'').slice(0,7);
+  const rows = (D.cycles && D.cycles[ym] && D.cycles[ym].payments) || [];
+  // Only a row this transaction ticked. Older rows predate oblTxnId, so they
+  // are matched on the date the tick wrote — and never when the row holds a
+  // manual link of its own (txnId/txnAuto), which mtxRemove owns.
+  const row = rows.find(p => p.isPaid && p.obligationId === t.obligationId && !p.txnId &&
+    (p.oblTxnId ? p.oblTxnId === t.id : p.paidDate === t.date));
+  if (!row) return false;
+  row.isPaid = false; row.paidDate = null; row.amountPaid = null;
+  delete row.oblTxnId;
+  return true;
 }
 
 // ── One-time data migration ───────────────────────────────────
@@ -16360,13 +16385,13 @@ const BA = {
   oblReviewReject(txnId) {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
-    oblUncountSplit(t); t.status = 'rejected';
+    oblUncountSplit(t); oblUntickMonthlyRow(t); t.status = 'rejected';
     recomputeTxnActuals(); dirty(); renderObligations();
   },
   oblReviewRestore(txnId) {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
-    oblUncountSplit(t); t.status = 'pending';
+    oblUncountSplit(t); oblUntickMonthlyRow(t); t.status = 'pending';
     recomputeTxnActuals(); dirty(); renderObligations();
   },
   oblReviewDismiss(txnId) {
@@ -17618,6 +17643,37 @@ function oblAutoGenerateTxns() {
     try {
       toast(`Removed ${_removedPending.length} pending charge${_removedPending.length !== 1 ? 's' : ''} for cancelled/paused/ended obligations: ${_removedPending.slice(0, 3).join(', ')}${_removedPending.length > 3 ? '…' : ''}`, 'ok');
     } catch (e) { /* toast container not mounted yet during early load — non-fatal */ }
+  }
+
+  // ── A Monthly row cannot be paid by a charge that is still pending ────────
+  // The tick had no inverse until 2026-09-29, so any row un-approved before
+  // then is still sitting there marked paid. Repaired here rather than left for
+  // him to find: the row is only touched when it carries no manual link of its
+  // own, its obligation's transaction for that month is NOT approved, and the
+  // paid date it holds is exactly that transaction's date — which is the
+  // fingerprint of the tick, not of a payment.
+  const _stuck = [];
+  Object.keys(D.cycles || {}).forEach(ym => {
+    ((D.cycles[ym] || {}).payments || []).forEach(p => {
+      if (!p.isPaid || !p.obligationId || p.txnId) return;
+      const t = (D.transactions || []).find(x => x.obligationId === p.obligationId &&
+        (x.oblMonth || (x.date||'').slice(0,7)) === ym &&
+        (p.oblTxnId ? x.id === p.oblTxnId : x.date === p.paidDate));
+      if (!t || t.status === 'approved') return;
+      // Another row for the same occurrence WAS approved — then this tick is a
+      // record of that payment and stays.
+      if ((D.transactions || []).some(x => x.obligationId === p.obligationId &&
+          (x.oblMonth || (x.date||'').slice(0,7)) === ym && x.status === 'approved')) return;
+      p.isPaid = false; p.paidDate = null; p.amountPaid = null; delete p.oblTxnId;
+      _stuck.push((p.name || 'payment') + ' ' + (p.dueDate || ym));
+      fixedCount++;
+    });
+  });
+  if (_stuck.length) {
+    console.info('[obligations] un-ticked Monthly rows whose charge is not approved:', _stuck.join(', '));
+    try {
+      toast(`${_stuck.length} Monthly row${_stuck.length !== 1 ? 's' : ''} marked paid without an approved charge — set back to unpaid: ${_stuck.slice(0,3).join(', ')}${_stuck.length > 3 ? '…' : ''}`, 'ok');
+    } catch (e) { /* toast container not mounted yet during early load */ }
   }
 
   // Back-fill oblMonth / oblOcc on older rows so the occurrence-aware dedup key
@@ -23739,6 +23795,7 @@ Object.assign(BA, {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
     oblUncountSplit(t);
+    oblUntickMonthlyRow(t);
     t.status = 'rejected';
     recomputeTxnActuals();
     dirty();
@@ -23750,6 +23807,7 @@ Object.assign(BA, {
     const t = (D.transactions||[]).find(x => x.id === txnId);
     if (!t) return;
     oblUncountSplit(t);
+    oblUntickMonthlyRow(t);
     t.status = 'pending';
     recomputeTxnActuals();
     dirty();
