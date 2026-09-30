@@ -1732,6 +1732,8 @@ function _applyData(raw) {
   if (expSyncCycleRows() > 0) dirty();
   // Auto-generate obligation transactions (idempotent — deduped by obligationId::oblMonth::occurrence)
   oblAutoGenerateTxns();
+  // Standing transfers due today or already past, queued the same way
+  payTransferGenerate();
   // Recompute txn actuals so Budget Grid shows correct values immediately on load
   if (typeof recomputeTxnActuals === "function") recomputeTxnActuals();
 }
@@ -2277,6 +2279,14 @@ function oblOverdueCount(type) {
 // the linked Monthly row and records the real amount against the obligation.
 function oblApproveTxn(t, dateISO, amount, opts) {
   if (!t) return false;
+  // A standing transfer is not an obligation — no category, no Monthly row, and
+  // a second leg to write. Everything else about approving it is the same, so
+  // it comes through the same door.
+  if (t.rtId && !t.obligationId) {
+    const okT = payApproveTransferTxn(t, dateISO, amount);
+    if (okT && opts && opts.cleared) t.cleared = true;
+    return okT;
+  }
   const o   = oblFind(t.obligationId);
   const amt = Math.round((+amount||0)*100)/100;
   if (!(amt > 0)) return false;
@@ -10050,7 +10060,12 @@ function payTransferOccurrences(rt, from, to) {
 function payTransferRecorded(rt, iso, amt) {
   return (D.transactions || []).some(t => {
     if (t.accountId !== rt.fromAccountId) return false;
-    if (t.status === 'rejected') return false;
+    // Neither a rejected row nor one still waiting for approval is money that
+    // has moved. A pending row does not touch any balance (txnCounts excludes
+    // it), so if the runway dropped the event as well the outflow would vanish
+    // from both sides. The pending-debit block in payOutflowEvents dedupes the
+    // two against each other, so the money is counted once.
+    if (t.status === 'rejected' || t.status === 'pending') return false;
     if (t.rtId === rt.id && t.rtDate === iso) return true;
     if (!t.isTransfer) return false;
     if (rt.toAccountId && t.transferToAcctId && t.transferToAcctId !== rt.toAccountId) return false;
@@ -10078,6 +10093,101 @@ function payTransferEvents(from, to, bankId) {
   return out;
 }
 
+// ── Standing transfers reach the approval queue like everything else ───────
+// Shiva, 2026-09-30: "why does Standing Transfer not appear as transaction to
+// approve in the Approve section of the Accounts? I need to come to Standing
+// Transfer tab to click Record for it to get posted."
+// It was the one scheduled thing with no generator: the runway forecast it and
+// the Setup tab had a Record button, but nothing ever queued a row. So a due
+// transfer was invisible everywhere he actually works.
+//
+// One row per occurrence, the DEBIT leg only, in the account the money leaves.
+// Queuing both legs would put the same decision in two accounts' queues; the
+// credit side is written when it is approved, the same pair the Record button
+// has always written.
+const RT_LOOKBACK_DAYS = 90;
+function payTransferGenerate() {
+  const P = payDefaults();
+  const list = P.recurringTransfers || [];
+  const today = centralToday();
+  const from0 = payAddDays(today, -RT_LOOKBACK_DAYS);
+  let added = 0, removed = 0;
+
+  // Stale rows first: paused, deleted, re-scheduled or re-priced. Only pending
+  // ones — anything approved is a recorded movement of money.
+  D.transactions = (D.transactions || []).filter(t => {
+    if (t.status !== 'pending' || !t.rtId) return true;
+    const rt = list.find(x => x.id === t.rtId);
+    if (!rt || rt.enabled === false) { removed++; return false; }
+    if (!payTransferOccurrences(rt, from0, today).includes(t.rtDate)) { removed++; return false; }
+    return true;
+  });
+  // Amount edited after the row was queued
+  (D.transactions || []).forEach(t => {
+    if (t.status !== 'pending' || !t.rtId) return;
+    const rt = list.find(x => x.id === t.rtId);
+    const amt = Math.round((+((rt||{}).amount) || 0) * 100) / 100;
+    if (amt > 0 && Math.abs((+t.debit||0) - amt) > 0.005) { t.debit = amt; added++; }
+  });
+
+  list.forEach(rt => {
+    if (rt.enabled === false) return;
+    const amt  = Math.round((+rt.amount || 0) * 100) / 100;
+    const from = (D.txnAccounts || []).find(a => a.id === rt.fromAccountId && a.status !== 'closed');
+    const to   = (D.txnAccounts || []).find(a => a.id === rt.toAccountId   && a.status !== 'closed');
+    if (!from || !to || amt <= 0) return;
+    // Only what is already due. A transfer dated next week is a forecast and
+    // belongs in the runway, not in a queue of decisions to make today.
+    payTransferOccurrences(rt, from0, today).forEach(iso => {
+      // Any row at all for this occurrence — approved, pending or rejected —
+      // means the question has been asked.
+      if ((D.transactions || []).some(t => t.rtId === rt.id && t.rtDate === iso)) return;
+      // …or recorded by hand, or imported from the bank.
+      if (payTransferRecorded(rt, iso, amt)) return;
+      D.transactions.push({
+        id: uid(), accountId: from.id, date: iso,
+        payee: `Transfer to ${to.name}`, debit: amt, credit: 0, categoryId: null,
+        notes: `Recurring transfer — ${rt.name || (from.name + ' \u2192 ' + to.name)}`,
+        cleared: false, isTransfer: true, transferToAcctId: to.id,
+        rtId: rt.id, rtDate: iso, oblType: 'transfer', status: 'pending'
+      });
+      added++;
+    });
+  });
+  if (added || removed) dirty();
+  return { added, removed };
+}
+
+// Approving one. The queue holds the debit leg; this writes the credit side and
+// links them, so an approval and the Record button land on the same two rows.
+function payApproveTransferTxn(t, dateISO, amount) {
+  const amt = Math.round((+amount || 0) * 100) / 100;
+  if (!t || !(amt > 0)) return false;
+  const rt   = (payDefaults().recurringTransfers || []).find(x => x.id === t.rtId);
+  const from = (D.txnAccounts || []).find(a => a.id === t.accountId);
+  const to   = (D.txnAccounts || []).find(a => a.id === (t.transferToAcctId || (rt && rt.toAccountId)));
+  if (!from || !to) return false;
+  t.date = dateISO || t.date;
+  t.debit = amt; t.credit = 0; t.categoryId = null;
+  t.status = 'approved';
+  if (!t.transferId) t.transferId = uid();
+  const pair = t.transferPairId ? (D.transactions || []).find(x => x.id === t.transferPairId) : null;
+  if (pair) {
+    pair.date = t.date; pair.credit = amt; pair.debit = 0; pair.status = 'approved';
+  } else {
+    const creditId = uid();
+    t.transferPairId = creditId;
+    D.transactions.push({
+      id: creditId, accountId: to.id, date: t.date,
+      payee: `Transfer from ${from.name}`, debit: 0, credit: amt, categoryId: null,
+      notes: t.notes || '', cleared: false, isTransfer: true,
+      transferId: t.transferId, transferPairId: t.id, transferFromAcctId: from.id,
+      rtId: t.rtId, rtDate: t.rtDate
+    });
+  }
+  return true;
+}
+
 // Writes the real pair, so the bank falls AND the destination rises. No
 // categoryId — this is not spending and must not land in any category total.
 function payRecordTransfer(rtId, iso) {
@@ -10085,6 +10195,12 @@ function payRecordTransfer(rtId, iso) {
   const rt = (P.recurringTransfers || []).find(x => x.id === rtId);
   if (!rt) return null;
   const amt  = Math.round((+rt.amount || 0) * 100) / 100;
+  // The queue may already hold this occurrence. Approve that row instead of
+  // writing a second pair for the same money.
+  const queued = (D.transactions || []).find(x => x.rtId === rtId && x.rtDate === (iso || centralToday())
+                                                 && x.status === 'pending');
+  if (queued && payApproveTransferTxn(queued, iso || queued.date, amt))
+    return { debitId: queued.id, creditId: queued.transferPairId, amount: amt, date: queued.date };
   const from = (D.txnAccounts || []).find(a => a.id === rt.fromAccountId);
   const to   = (D.txnAccounts || []).find(a => a.id === rt.toAccountId);
   if (!from || !to || amt <= 0) return null;
@@ -18211,7 +18327,8 @@ function txnSizeLayout() {
 }
 
 function renderTransactions() {
-  oblAutoGenerateTxns(); // idempotent — fill any newly-due obligations
+  oblAutoGenerateTxns();  // idempotent — fill any newly-due obligations
+  payTransferGenerate();  // …and any standing transfer that has come due
   renderTxnLeftNav();
   renderTxnRight();
   renderTxnKpis();
@@ -19311,7 +19428,7 @@ function renderTxnRight() {
   // ── Pending Approval section ──────────────────────────────────
   let pendingHTML = '';
   if (pendingTxns.length > 0) {
-    const oblTypeLabel = { subscription: '📦', emi: '🏦', split: '✂️' };
+    const oblTypeLabel = { subscription: '📦', emi: '🏦', split: '✂️', transfer: '🔀' };
     const pendingRows = pendingTxns
       .sort((a,b) => (a.date||'').localeCompare(b.date||''))
       .map(t => {
@@ -19341,7 +19458,7 @@ function renderTxnRight() {
           <span class="txn-pending-chev${isCollapsed?' col':''}">▾</span>
           ⏳ Pending Approval
           <span class="badge">${pendingTxns.length}</span>
-          <span style="font-weight:400;font-size:.72rem;color:var(--text3);margin-left:4px">— obligations awaiting your review</span>
+          <span style="font-weight:400;font-size:.72rem;color:var(--text3);margin-left:4px">— charges and transfers awaiting your review</span>
           <button class="btn btn-sm btn-ghost btn-xs" style="margin-left:auto" onclick="event.stopPropagation();BA.oblOpenReview()" title="Review every pending obligation across all accounts in one place">Review all →</button>
         </div>
         ${isCollapsed ? '' : `<div class="txn-pending-scroll">${pendingRows}</div>`}
