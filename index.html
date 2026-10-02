@@ -10573,6 +10573,75 @@ function payPifEarlyNeed(x, R) {
   return Math.max(0, x.stmtBal - (x.paid || 0) - (x.pay || 0));
 }
 
+// ── THE PAY LIST ───────────────────────────────────────────────────────────
+// Shiva, 2026-10-02: "the payments tab is very challenging to comprehend -> I
+// need some dumbing down significantly. Can you just forget how Payment tab is
+// and help me design a new payment review page that helps me make my card
+// payments?"
+//
+// So the page is now a list of payments to make, in the order they matter, one
+// button per row, and every figure that explains them behind one toggle. His
+// four rules decide the order and nothing else is on screen:
+//   1. use cash wisely      → the band at the top is what is safe to send
+//   2. never miss a minimum → DUE NOW, by due date
+//   3. put back what you spent on the cards this month
+//   4. costly cards first   → EXTRA, by rate
+//   5. (and) 0% statements wait for their due date → WAIT, with no button
+//
+// One row per card. One amount per row — what the plan says to send — and one
+// short line saying why, built from the pieces that make it up.
+function payListRows(A, R, focusYM) {
+  const today = centralToday();
+  const rows = (A.all || []).map(x => {
+    const canWait   = payPifCanWait(x, R);
+    const owedStmt  = (x.stmtBal != null) ? Math.max(0, x.stmtBal - (x.paid || 0)) : 0;
+    const stmtNeed  = payPifEarlyNeed(x, R);
+    const minNeed   = Math.max(0, x.minUnfunded || 0);
+    const mustNow   = canWait ? 0 : Math.max(stmtNeed, minNeed);
+    const growth    = canWait ? 0 : payGrowthNeed(x, focusYM, 0);
+    const pay       = x.pay || 0;
+    const why = [];
+    // A waiting card is not a minimum to pay today — it is a whole statement
+    // with a date on it, and saying "minimum $41" there would invite exactly
+    // the early payment rule 2 exists to prevent.
+    if (canWait && owedStmt > 0.005)
+      why.push(`0% — the whole ${payFmt(owedStmt)} statement, on ${fmtDate(x.dueDate)}`);
+    else if (stmtNeed > 0.005 && stmtNeed >= minNeed) why.push(`statement ${payFmt(stmtNeed)}`);
+    else if (minNeed > 0.005)                         why.push(`minimum ${payFmt(minNeed)}`);
+    if (!canWait && growth > 0.005) why.push(`${payFmt(growth)} you charged ${focusYM === today.slice(0,7) ? 'this month' : 'in ' + bFmtMonth(focusYM)}`);
+    const extra = Math.max(0, pay - mustNow - growth);
+    if (extra > 0.5) why.push(`${payFmt(extra)} extra at ${x.apr.toFixed(2)}%`);
+
+    let group;
+    if (canWait && owedStmt > 0.005)      group = 'wait';
+    else if (mustNow > 0.005)             group = 'due';
+    else if (growth > 0.005)              group = 'back';
+    else if (pay > 0.005)                 group = 'extra';
+    else                                  group = 'none';
+
+    return {
+      x, group, pay, mustNow, growth, owedStmt, canWait,
+      short: Math.max(0, mustNow - pay),
+      why: why.join(' + '),
+      minMet: x.stmtBal != null && x.paid >= minNeed + 0.005 && minNeed <= 0.005 && x.paid > 0.005
+    };
+  });
+  const byDue  = (a, b) => (a.x.dueDate || '9999').localeCompare(b.x.dueDate || '9999');
+  const byRate = (a, b) => b.x.apr - a.x.apr;
+  return {
+    due:   rows.filter(r => r.group === 'due').sort(byDue),
+    back:  rows.filter(r => r.group === 'back').sort(byRate),
+    extra: rows.filter(r => r.group === 'extra').sort(byRate),
+    wait:  rows.filter(r => r.group === 'wait').sort(byDue),
+    // Two different reasons for a card to need nothing, and they are not the
+    // same news: one is a balance already served this cycle, the other is a
+    // card with nothing on it.
+    none:  rows.filter(r => r.group === 'none' && r.x.balance > 0.005),
+    empty: rows.filter(r => r.group === 'none' && r.x.balance <= 0.005),
+    total: rows.reduce((s2, r) => s2 + r.pay, 0)
+  };
+}
+
 function payAllocate(pot, strategy, states, runway, ymArg) {
   const ym = ymArg || centralToday().slice(0, 7);
   const m = (states || payCardStates(ym)).map(s => ({ ...s, pay: 0 }));
@@ -11685,6 +11754,83 @@ function renderPayments() {
       <div style="flex:1;min-width:240px">${body}</div>
     </div>`;
 
+
+  // ── The pay list: the whole page, above the toggle ────────────────────────
+  const _L = payListRows(A, R, _focusYM);
+  const _dueColorFor = d => {
+    if (!d) return 'var(--text3)';
+    const n = payDiffDays(R.today, d);
+    return n < 0 ? 'var(--danger)' : n <= 5 ? 'var(--warn)' : 'var(--text2)';
+  };
+  const _when = d => {
+    if (!d) return '';
+    const n = payDiffDays(R.today, d);
+    return n < 0 ? Math.abs(n) + 'd overdue' : n === 0 ? 'today' : n === 1 ? 'tomorrow' : 'in ' + n + ' days';
+  };
+  // One row. Card, why, due date, the amount to send, and the button. Nothing
+  // else: no utilisation bar, no interest-per-$100, no strategy.
+  const _payRow = (r, opts) => {
+    const x = r.x, o = opts || {};
+    return `
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border)">
+      <div style="flex:1;min-width:190px">
+        <div style="font-size:.92rem;font-weight:600;color:var(--text)">${esc(x.name)}
+          ${r.short > 0.005 ? `<span style="font-size:.62rem;font-weight:700;color:var(--danger);background:var(--danger-bg);padding:1px 6px;border-radius:99px;margin-left:6px">${payFmt(r.short)} short</span>` : ''}</div>
+        <div style="font-size:.73rem;color:var(--text3);margin-top:2px">${r.why || o.note || ''}</div>
+      </div>
+      <div style="width:120px;text-align:right;font-size:.75rem;color:${_dueColorFor(x.dueDate)}">
+        ${x.dueDate ? fmtDate(x.dueDate) : '—'}
+        <div style="font-size:.63rem;color:var(--text3)">${_when(x.dueDate)}</div>
+      </div>
+      ${o.noButton ? `<div style="width:188px;text-align:right;font-size:.9rem;font-weight:700;color:var(--text2);font-variant-numeric:tabular-nums">${payFmt2(r.owedStmt)}</div>`
+      : `<div style="display:flex;align-items:center;gap:7px">
+        <input type="text" id="payq-${x.id}" value="${r.pay > 0.005 ? payFmt2(r.pay) : ''}" placeholder="0.00"
+          style="width:104px;font-size:.95rem;font-weight:600;padding:7px 9px;border:1px solid ${r.pay > 0.005 ? 'var(--primary)' : 'var(--border)'};border-radius:7px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
+        <button onclick="PAY.payOne('${x.acct.id}','${x.id}')"
+          style="font-size:.78rem;font-weight:600;padding:7px 15px;border:1px solid var(--primary);border-radius:7px;background:var(--primary);color:#fff;cursor:pointer">Pay</button>
+      </div>`}
+    </div>`;
+  };
+  const _sect = (tag, note, list, opts) => !list.length ? '' : `
+    <div style="${card};overflow:hidden;margin-bottom:12px">
+      <div style="padding:10px 16px;background:var(--surface2);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <span style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text)">${tag}</span>
+        <span style="font-size:.72rem;color:var(--text3)">${note}</span>
+        <span style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--text2);font-variant-numeric:tabular-nums">${
+          payFmt(list.reduce((s2, r) => s2 + ((opts && opts.noButton) ? r.owedStmt : r.pay), 0))}</span>
+      </div>
+      ${list.map(r => _payRow(r, opts)).join('')}
+    </div>`;
+
+  const _sendTotal = _L.due.concat(_L.back, _L.extra).reduce((s2, r) => s2 + r.pay, 0);
+  const _overFloor = R.trough >= R.floor - 0.005;
+  const payBand = `
+   <div style="${card};padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+     <div>
+       <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)">Send today</div>
+       <div style="font-size:1.75rem;font-weight:700;color:var(--text);line-height:1.15;font-variant-numeric:tabular-nums">${payFmt2(_sendTotal)}</div>
+       <div style="font-size:.73rem;color:var(--text3);margin-top:2px">${_L.due.length + _L.back.length + _L.extra.length} card${(_L.due.length + _L.back.length + _L.extra.length) === 1 ? '' : 's'} · leaves ${payFmt2(R.cash - _sendTotal)} in the bank</div>
+     </div>
+     <div style="margin-left:auto;text-align:right;font-size:.75rem;color:var(--text2);line-height:1.8">
+       <div><b style="color:var(--text)">${payFmt2(R.cash)}</b> in the bank now</div>
+       <div style="color:${_overFloor ? 'var(--text3)' : 'var(--danger)'}">lowest point ${payFmt2(R.trough)} on ${fmtDate(R.troughDate)} · floor ${payFmt2(R.floor)}</div>
+       <div style="font-weight:600;color:${_overFloor ? 'var(--ok)' : 'var(--danger)'}">${_overFloor
+         ? `✓ safe to send up to ${payFmt2(R.safe)}` : `⚠ ${payFmt(R.floor - R.trough)} short on ${fmtDate(R.troughDate)}`}</div>
+     </div>
+   </div>`;
+
+  const payList = `
+    ${payBand}
+    ${_sect('Pay now', 'minimums and statements that are due', _L.due)}
+    ${_sect('Put it back', `what the cards were charged ${_pastMonth ? 'in ' + bFmtMonth(_focusYM) : 'this month'}`, _L.back)}
+    ${_sect('Extra', 'spare cash, dearest card first', _L.extra)}
+    ${_sect('Wait', 'nothing is owed until the due date, and they cost 0%', _L.wait, { noButton: true })}
+    ${_L.none.length ? `<div style="font-size:.72rem;color:var(--text3);padding:2px 4px 6px">Already covered this cycle: ${
+      _L.none.map(r => esc(r.x.name) + (r.x.paid > 0.005 ? ' (' + payFmt(r.x.paid) + ' paid)' : '')).join(' · ')}.</div>` : ''}
+    ${_L.empty.length ? `<div style="font-size:.72rem;color:var(--text3);padding:0 4px 12px">No balance: ${_L.empty.map(r => esc(r.x.name)).join(' · ')}.</div>` : ''}
+    ${(_L.due.length + _L.back.length + _L.extra.length + _L.wait.length) === 0
+      ? `<div style="${card};padding:22px;text-align:center;font-size:.95rem;color:var(--ok);font-weight:600">Nothing to pay right now.</div>` : ''}`;
+
   const nowNext = `
    <div style="${card};padding:0;margin-bottom:14px;overflow:hidden">
      ${_nnRow('Today', `
@@ -11745,7 +11891,7 @@ function renderPayments() {
    <div style="display:flex;justify-content:flex-end;margin-bottom:${UI.payShowWork ? '10px' : '14px'}">
      <button onclick="PAY.toggleWork()" style="font-size:.72rem;padding:5px 12px;border:1px solid var(--border);
        border-radius:7px;background:var(--surface);color:var(--text2);cursor:pointer">${
-       UI.payShowWork ? '− Hide the working' : '+ Show the working'}</button>
+       UI.payShowWork ? '− Hide how these were worked out' : '+ Show how these were worked out'}</button>
    </div>`;
 
   const modeToggle = `
@@ -11791,10 +11937,11 @@ function renderPayments() {
           6. trajectory   — six-month history. It answers "is this working",
                             which is a question for after the payment is made,
                             not a step in making it. Bottom of the page. */''}
-    ${nowNext}
-    ${_mode === 'assess'
-      ? `${allocator}${queue}${workToggle}${UI.payShowWork ? `${assessPanel}${cashLine}${runway}${trajectory}` : ''}`
-      : `${monitorPanel}${queue}${workToggle}${UI.payShowWork ? `${cashLine}${runway}${trajectory}` : ''}`}`;
+    ${payList}
+    ${workToggle}
+    ${UI.payShowWork
+      ? `${nowNext}${_mode === 'assess' ? `${assessPanel}${allocator}` : monitorPanel}${cashLine}${runway}${queue}${trajectory}`
+      : ''}`;
 }
 
 // ────────────────────────────────────────────────────────────
