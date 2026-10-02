@@ -10724,6 +10724,22 @@ function payUnpaidSpendParts(x) {
            reimb: r(reimb), interest: r(interest), paid: r(paid) };
 }
 
+// Does the issuer take this one by itself? The Monthly tab's Auto flag, which
+// lives on the payment template and is copied onto each cycle row.
+// Shiva, 2026-10-02: "Mattress Firm is in autopay and I dont have to make a
+// payment manually." The money still leaves the bank on the due date, so it
+// still has to be reserved — it just must never be presented as something for
+// him to do.
+function payCardIsAuto(x) {
+  if (!x) return false;
+  if (x.tpl && x.tpl.isAutomatic) return true;
+  const ym = (x.dueDate || '').slice(0, 7);
+  const rows = (D.cycles && D.cycles[ym] && D.cycles[ym].payments) || [];
+  const nm = (x.name || '').trim().toLowerCase();
+  return rows.some(p => p.isAutomatic && p.category === 'Credit Cards' &&
+                        (p.ccCardId === x.id || (p.name || '').trim().toLowerCase() === nm));
+}
+
 function payPlan(R, states) {
   const today = R.today, floor = R.floor || 0;
   const curYM = today.slice(0, 7), prevYM = shiftYM(curYM, -1);
@@ -10734,7 +10750,11 @@ function payPlan(R, states) {
   const wins = [{ start: today, label: 'Now', income: 0, rows: [] }];
   incs.forEach(e => {
     const last = wins[wins.length - 1];
-    if (last.start === e.date) { last.income += e.amount; last.labels = (last.labels || [last.label]).concat(e.label); return; }
+    // Same-day paycheques share a window; a paycheque never joins window 0,
+    // whose whole meaning is "what is in the bank right now".
+    if (wins.length > 1 && last.start === e.date) {
+      last.income += e.amount; last.labels = (last.labels || [last.label]).concat(e.label); return;
+    }
     wins.push({ start: e.date, label: e.label || 'pay', income: e.amount, rows: [] });
   });
   while (wins.length > 4) wins.pop();          // four is as far ahead as anyone plans
@@ -10755,14 +10775,20 @@ function payPlan(R, states) {
   // does not take the same bite out of today's room as one dated today, and
   // guessing either way was how the old page got the figures wrong.
   const sched = [];
-  const capAt = d => {
+  // `landed` says whether money dated exactly d counts as already in the
+  // account: false for today (the paycheque has not arrived), true for a
+  // paycheque window, which is the moment it has.
+  const capAt = (d, landed) => {
+    let at = R.cash;
+    evs.forEach(e => { if (e.date < d || (landed && e.date === d)) at += e.amt; });
+    sched.forEach(q => { if (q.date <= d) at -= q.amt; });
     const all = evs.concat(sched.map(q => ({ date: q.date, amt: -q.amt })))
                    .sort((a, b) => a.date.localeCompare(b.date));
-    let bal = R.cash, at = R.cash, m = Infinity;
-    all.forEach(e => { bal += e.amt; if (e.date >= d) m = Math.min(m, bal); else at = bal; });
+    let bal = R.cash, m = Infinity;
+    all.forEach(e => { bal += e.amt; if (e.date >= d) m = Math.min(m, bal); });
     return Math.max(0, payDown(Math.min(at, m === Infinity ? at : m) - floor));
   };
-  const capOf = i => capAt(wins[i].start);
+  const capOf = i => capAt(wins[i].start, i > 0);
   const spend = (i, amt) => { sched.push({ date: wins[i].start, amt }); };
 
   // ── what has to be paid, and by when ────────────────────────────────────
@@ -10770,11 +10796,13 @@ function payPlan(R, states) {
   st.forEach(x => {
     const owedStmt = (x.stmtBal != null) ? Math.max(0, x.stmtBal - (x.paid || 0)) : 0;
     const minNeed  = Math.max(0, x.minUnfunded || 0);
+    const auto = payCardIsAuto(x);
     if (x.role === 'pay-in-full' && owedStmt > 0.005 && x.dueDate) {
-      items.push({ x, kind: 'statement', amount: owedStmt, due: x.dueDate,
-                   why: `the whole ${payFmt(owedStmt)} statement${x.apr <= 0.005 ? ' (0%)' : ''}` });
+      items.push({ x, kind: 'statement', amount: owedStmt, due: x.dueDate, auto,
+                   why: (auto ? 'on autopay — ' : '') + `the whole ${payFmt(owedStmt)} statement${x.apr <= 0.005 ? ' (0%)' : ''}` });
     } else if (minNeed > 0.005 && x.dueDate) {
-      items.push({ x, kind: 'minimum', amount: minNeed, due: x.dueDate, why: 'the minimum' });
+      items.push({ x, kind: 'minimum', amount: minNeed, due: x.dueDate, auto,
+                   why: auto ? 'on autopay — the issuer takes the minimum' : 'the minimum' });
     }
     const bp = payUnpaidSpendParts(x);
     if (bp.amount > 0.005) {
@@ -10825,13 +10853,15 @@ function payPlan(R, states) {
 
   // 3. anything still spare today goes at the dearest interest-bearing balance
   const extras = [];
+  const snap = payBudgetSnapshot(curYM);
+  let extraRoom = Math.max(0, payDown(snap.headroom || 0));
   st.slice().sort((a, b) => b.apr - a.apr).forEach(x => {
-    if (capOf(0) < 1) return;
+    if (capOf(0) < 1 || extraRoom < 1) return;
     if (x.apr <= 0.005 || x.role === 'minimum-only' || x.role === 'pay-in-full') return;
     const room = Math.max(0, x.balance - x.pay);
-    const amt  = Math.min(room, capOf(0));
+    const amt  = Math.min(room, capOf(0), extraRoom);
     if (amt < 1) return;
-    spend(0, amt); x.pay += amt;
+    spend(0, amt); x.pay += amt; extraRoom -= amt;
     const row = { x, kind: 'extra', amount: amt, due: null, win: 0,
                   why: `spare cash at ${x.apr.toFixed(2)}%` };
     wins[0].rows.push(row); extras.push(row);
@@ -10846,6 +10876,7 @@ function payPlan(R, states) {
       || b.x.apr - a.x.apr);
     w.total = w.rows.reduce((s2, r) => s2 + r.amount, 0);
     w.cap   = capOf(i);                       // what is still spare in that window
+    w.landed = i === 0 ? R.cash : 0;
   });
   const touched = new Set(wins.flatMap(w => w.rows.map(r => r.x.id)));
   const waiting = st.map(x => ({ name: x.name, apr: x.apr, amount: payReimbOnCard(x) }))
@@ -10859,7 +10890,9 @@ function payPlan(R, states) {
     famOwed: (() => { try { return payEarmarks().totalReceivable || 0; } catch (e) { return 0; } })(),
     covered: st.filter(x => !touched.has(x.id) && x.balance > 0.005),
     empty:   st.filter(x => !touched.has(x.id) && x.balance <= 0.005),
-    now:     wins[0].total,
+    budget: snap,
+    now:     wins[0].rows.filter(r => !r.auto).reduce((s2, r) => s2 + r.amount, 0),
+    autoNow: wins[0].rows.filter(r =>  r.auto).reduce((s2, r) => s2 + r.amount, 0),
     shortTotal: wins.flatMap(w => w.rows).reduce((s2, r) => s2 + (r.short || 0), 0)
   };
 }
@@ -11990,6 +12023,18 @@ function renderPayments() {
   };
   const _winRow = (r, wi) => {
     const x = r.x, box = `payq-${x.id}-${wi}`;
+    if (r.auto) return `
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border)">
+      <div style="flex:1;min-width:190px">
+        <div style="font-size:.92rem;font-weight:600;color:var(--text2)">${esc(x.name)}
+          <span style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--info);background:color-mix(in srgb,var(--info) 12%,transparent);padding:1px 6px;border-radius:99px;margin-left:6px">auto</span></div>
+        <div style="font-size:.73rem;color:var(--text3);margin-top:2px">${r.why}</div>
+      </div>
+      <div style="width:104px;text-align:right;font-size:.75rem;color:${_dueColorFor(r.due)}">
+        ${r.due ? `due ${fmtDate(r.due)}` : ''}</div>
+      <div style="width:188px;text-align:right;font-size:.9rem;font-weight:600;color:var(--text2);font-variant-numeric:tabular-nums">
+        ${payFmt2(r.amount)}<div style="font-size:.63rem;font-weight:400;color:var(--text3)">nothing to do</div></div>
+    </div>`;
     return `
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border)">
       <div style="flex:1;min-width:190px">
@@ -12010,14 +12055,17 @@ function renderPayments() {
   const _winCard = (w, wi) => {
     const head = wi === 0
       ? `<span style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text)">Pay now</span>
-         <span style="font-size:.73rem;color:var(--text3)">out of the ${payFmt2(R.cash)} in the bank</span>`
-      : `<span style="font-size:.78rem;font-weight:700;color:var(--text)">${fmtDate(w.start)}</span>
-         <span style="font-size:.73rem;color:var(--text3)">after ${payFmt(w.income)} ${esc((w.labels || [w.label]).join(' + '))} lands</span>`;
+         <span style="font-size:.73rem;color:var(--text3)">out of the ${payFmt2(R.cash)} in the bank${
+           w.income > 0.005 ? ` and ${payFmt(w.income)} landing today` : ''}</span>`
+      : `<span style="font-size:.78rem;font-weight:700;color:var(--text)">${w.start === R.today ? 'Later today' : fmtDate(w.start)}</span>
+         <span style="font-size:.73rem;color:var(--text3)">${w.start === R.today ? 'once' : 'after'} ${payFmt(w.income)} ${esc((w.labels || [w.label]).join(' + '))} ${w.start === R.today ? 'has landed' : 'lands'}</span>`;
     return `
     <div style="${card};overflow:hidden;margin-bottom:12px;${wi === 0 ? '' : 'opacity:.92'}">
       <div style="padding:11px 16px;background:var(--surface2);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
         ${head}
-        <span style="margin-left:auto;font-size:.95rem;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums">${payFmt2(w.total)}</span>
+        <span style="margin-left:auto;font-size:.95rem;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums">${payFmt2(w.total)}${
+          w.rows.some(r => r.auto) && w.rows.every(r => r.auto)
+            ? `<span style="font-size:.63rem;font-weight:600;color:var(--text3)"> · all automatic</span>` : ''}</span>
       </div>
       ${w.rows.length ? w.rows.map(r => _winRow(r, wi)).join('')
         : `<div style="padding:13px 16px;font-size:.78rem;color:var(--text3)">Nothing has to go out of this one.${
@@ -12031,7 +12079,8 @@ function renderPayments() {
      <div>
        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)">Send today</div>
        <div style="font-size:1.75rem;font-weight:700;color:var(--text);line-height:1.15;font-variant-numeric:tabular-nums">${payFmt2(_P.now)}</div>
-       <div style="font-size:.73rem;color:var(--text3);margin-top:2px">leaves ${payFmt2(R.cash - _P.now)} in the bank · the rest comes out of your next paycheques</div>
+       <div style="font-size:.73rem;color:var(--text3);margin-top:2px">leaves ${payFmt2(R.cash - _P.now)} in the bank · the rest comes out of your next paycheques${
+         _P.autoNow > 0.005 ? ` · ${payFmt2(_P.autoNow)} more goes by autopay` : ''}</div>
      </div>
      <div style="margin-left:auto;text-align:right;font-size:.75rem;color:var(--text2);line-height:1.8">
        <div><b style="color:var(--text)">${payFmt2(R.cash)}</b> in the bank now</div>
