@@ -9424,12 +9424,22 @@ function payMode() {
 }
 // The month the assessment is ABOUT. On the 1st or 2nd you are reviewing the
 // month that just ended, not the one that has barely started.
+// Which month the review opens on. The old rule was "the previous month for
+// the first two days of a new one", which dropped September on 3 October with
+// its payments unmade — and with no visible way back to it.
+// Now: the previous month stays on screen until it is closed, or until the 10th
+// of the new month, whichever comes first. The month stepper in the header
+// overrides it either way.
+const PAY_ASSESS_GRACE_DAY = 10;
 function payAssessMonth() {
-  const t = centralToday();
+  const t  = centralToday();
   const dd = +t.slice(8, 10);
-  if (dd > 2) return t.slice(0, 7);
+  const cur = t.slice(0, 7);
   const [y, m] = t.split('-').map(Number);
-  return m === 1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`;
+  const prev = m === 1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`;
+  if (dd <= 2) return prev;
+  if (dd <= PAY_ASSESS_GRACE_DAY && !payMonthRecord(prev)) return prev;
+  return cur;
 }
 // Last day of a YYYY-MM.
 function payMonthEnd(ym) {
@@ -9743,6 +9753,20 @@ function payPaymentsInMonth(acctId, ym) {
     return s + (+t.credit || 0);
   }, 0);
 }
+// What has been put back against a month's charges, counting payments made
+// after the month ended. Shiva, 2026-10-01: "I did not complete all the action
+// needed for Sep month." September's spending is repaid with October's money,
+// so a strict in-month figure would show the carry as permanently unpaid.
+// payPaymentsInMonth stays strictly in-month: payMonthSummary uses it to state
+// what the balances DID in that month, which is history and must not move.
+function payPaymentsSince(acctId, ym) {
+  const from = ym + '-01';
+  return (D.transactions || []).reduce((s, t) => {
+    if (t.accountId !== acctId || !t.isTransfer || !txnCounts(t)) return s;
+    if ((t.date || '') < from) return s;
+    return s + (+t.credit || 0);
+  }, 0);
+}
 // Planned vs actual for the month, and — the part that matters — how that
 // compares to where the month SHOULD be by today.
 //
@@ -9834,7 +9858,11 @@ function payGrowthNeed(x, ym, alreadyAllocated) {
   return Math.max(0, charged - paid - (alreadyAllocated || 0));
 }
 
-function payCardStates() {
+// `ym` is the month whose charges and repayments are being measured. It is
+// today's month everywhere except the month-end review, which can be looking at
+// a month that is already over — and before this took an argument, stepping
+// back a month changed the heading and nothing else.
+function payCardStates(ym) {
   payDefaults();
   const today = centralToday();
   return (D.ccTracker?.cards || [])
@@ -9891,12 +9919,12 @@ function payCardStates() {
                         minFloor: minRef.value })
         : null;
 
-      const _ym = today.slice(0, 7);
+      const _ym = ym || today.slice(0, 7);
       return {
         id: c.id, name: c.name, card: c, acct, tpl, projected,
         balance, stmtDate, dueDate, stmtBal, minDue, paid,
         chargesMTD: payChargesInMonth(acct.id, _ym),
-        paidMTD:    payPaymentsInMonth(acct.id, _ym),
+        paidMTD:    payPaymentsSince(acct.id, _ym),
         minUnfunded: minUnf,
         apr, goToApr, limit, planned,
         util: limit ? balance / limit : 0,
@@ -10545,14 +10573,14 @@ function payPifEarlyNeed(x, R) {
   return Math.max(0, x.stmtBal - (x.paid || 0) - (x.pay || 0));
 }
 
-function payAllocate(pot, strategy, states, runway) {
-  const m = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
+function payAllocate(pot, strategy, states, runway, ymArg) {
+  const ym = ymArg || centralToday().slice(0, 7);
+  const m = (states || payCardStates(ym)).map(s => ({ ...s, pay: 0 }));
   let left = Math.max(0, +pot || 0);
   const R = runway || null;
   const parts = { minimums: 0, promo: 0, pifEarly: 0, growth: 0, discretionary: 0,
-                  minSkipped: [], growthFunded: [] };
+                  minSkipped: [], growthFunded: [], ym };
   const P0 = payDefaults();
-  const ym = centralToday().slice(0, 7);
 
   // A pay-in-full card's minimum is subsumed by its own statement payment: both
   // fall on the same due date and the statement is the larger of the two. Where
@@ -10953,14 +10981,25 @@ function renderPayments() {
   if (UI.payStrategy == null) UI.payStrategy = P.strategy || 'avalanche';
 
   const R  = payRunway();
-  const st = payCardStates();
-  const _payBanks = payBankAccounts();   // for the per-card "pay from" selector
   // Needed this early because the pay queue reads it: during the month there is
   // no allocator on screen, so a pre-filled suggestion in the Pay boxes would be
   // a number with nothing explaining it.
   const _mode = payMode();
+  // ── Which month is being worked on ────────────────────────────────────────
+  // Cash, statements and due dates are always as of today — you cannot pay
+  // September's bill in September any more. What charges have to go back onto
+  // the cards IS a question about a month, and on 1 October the answer was
+  // October's $432 while September's unfinished work was nowhere on screen.
+  const _am    = UI.payAssessMonth || payAssessMonth();
+  const _curYM = R.today.slice(0, 7);
+  const _focusYM = _mode === 'assess' ? _am : _curYM;
+  const _pastMonth = _focusYM !== _curYM;
+  // Whether that month has been closed, for the header chip and the panel below.
+  const _rec = payMonthRecord(_am);
+  const st = payCardStates(_focusYM);
+  const _payBanks = payBankAccounts();   // for the per-card "pay from" selector
   if (UI.payAmount == null) UI.payAmount = Math.floor(R.safe);
-  const A  = payAllocate(UI.payAmount, UI.payStrategy, st, R);
+  const A  = payAllocate(UI.payAmount, UI.payStrategy, st, R, _focusYM);
   // Minimums the allocator skipped because the card's own statement payment,
   // already scheduled on the same due date, covers them. Not at risk, so they
   // must not be presented as cash that has to leave today.
@@ -11489,14 +11528,11 @@ function renderPayments() {
    </div>`;
 
   // ══ ASSESSMENT ═══════════════════════════════════════════════════════
-  const _am    = UI.payAssessMonth || payAssessMonth();
   // Row 1 looks at the month under review. Rows 2, 3 and 4 are about cash and
   // cards as they stand today — you cannot pay August's minimum in arrears, and
   // what is excess is excess now. Stepping back a month must not make those
   // three read as though they were historical.
-  const _curYM = R.today.slice(0, 7);
   const MS    = payMonthSummary(_am);
-  const _rec  = payMonthRecord(_am);
   const _prev = (() => { const [y,m]=_am.split('-').map(Number); return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,'0')}`; })();
   const _prevRec = payMonthRecord(_prev);
   const _mustPay = st.filter(x => (x.minUnfunded > 0.005 || payPifEarlyNeed(x, R) > 0.005)
@@ -11554,11 +11590,7 @@ function renderPayments() {
    <div style="${card};padding:15px 17px;margin-bottom:14px">
      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
        <div style="font-size:1rem;font-weight:700;color:var(--text)">Month-end review</div>
-       <span style="display:inline-flex;align-items:center;gap:4px">
-         <button onclick="PAY.stepAssessMonth(-1)" style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">‹</button>
-         <b style="font-size:.82rem;color:var(--text)">${bFmtMonth(_am)}</b>
-         <button onclick="PAY.stepAssessMonth(1)" style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">›</button>
-       </span>
+       <b style="font-size:.82rem;color:var(--text)">${bFmtMonth(_am)}</b>
        ${_rec ? `<span style="font-size:.68rem;color:var(--ok);font-weight:600">✓ closed ${fmtDate(_rec.closedAt)}</span>` : ''}
        ${_prevRec ? `<span style="font-size:.68rem;color:var(--text3)">${bFmtMonth(_prev)}: carried ${payFmt(_prevRec.carried)}, deployed ${payFmt(_prevRec.deployed||0)}</span>` : ''}
        ${_curYM !== _am ? `<span style="font-size:.68rem;color:var(--text3)">bottom three are as of today</span>` : ''}
@@ -11627,14 +11659,14 @@ function renderPayments() {
   // a minimums-only plan: money he budgeted and then spent on a card has to go
   // back onto THAT card. payGrowthNeed floors at zero per card, so overpaying
   // Citi can never excuse underpaying Discover.
-  const _nnPlan = payAllocate(Math.floor(R.safe), UI.payStrategy, st, R);
+  const _nnPlan = payAllocate(Math.floor(R.safe), UI.payStrategy, st, R, _focusYM);
   const _nnP    = _nnPlan.parts || {};
   const _pifNm  = st.filter(x => payPifEarlyNeed(x, R) > 0.005).map(x => x.name);
   const _nnBits = [
     _nnP.minimums      > 0.5 ? `minimums ${payFmt(_nnP.minimums)}` : '',
     _nnP.pifEarly      > 0.5 ? `${_pifNm.slice(0,2).join(' + ') || 'statement'} ${payFmt(_nnP.pifEarly)}` : '',
     _nnP.promo         > 0.5 ? `0% instalments ${payFmt(_nnP.promo)}` : '',
-    _nnP.growth        > 0.5 ? `this month's own charges ${payFmt(_nnP.growth)}` : '',
+    _nnP.growth        > 0.5 ? `${_pastMonth ? bFmtMonth(_focusYM) + '\u2019s' : "this month's"} own charges ${payFmt(_nnP.growth)}` : '',
     _nnP.discretionary > 0.5 ? `old balances ${payFmt(_nnP.discretionary)}` : ''
   ].filter(Boolean).join(' · ');
   const _nnCarry    = (_nnP.growthShortfalls || []).slice().sort((x,y) => y.apr - x.apr);
@@ -11662,11 +11694,11 @@ function renderPayments() {
          R.safe > 0.5 ? (_nnBits || 'free to place below')
                       : `Cash above the ${payFmt2(R.floor)} floor is spoken for until the next credit.`}</div>`)}
 
-     ${_nnOwed > 0.5 && _nnCarryTot <= 0.5 ? _nnRow('This month', `
+     ${_nnOwed > 0.5 && _nnCarryTot <= 0.5 ? _nnRow(_pastMonth ? bFmtMonth(_focusYM) : 'This month', `
        <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">Send ${payFmt(_nnOwed)} back
          <span style="font-size:.8rem;font-weight:500;color:var(--text3)">not paid yet</span></div>
        <div style="font-size:.77rem;color:var(--text2);margin-top:3px">
-         charged on the cards this month, all of it inside today's ${payFmt(R.safe)}</div>
+         charged on the cards ${_pastMonth ? 'in ' + bFmtMonth(_focusYM) : 'this month'}, all of it inside today's ${payFmt(R.safe)}</div>
        <div style="font-size:.77rem;color:var(--text2);margin-top:4px">${
          _nnFunded.slice(0,5).map(x => `<b style="color:var(--text)">${esc(x.name)} ${payFmt(x.amount)}</b>
            <span style="color:var(--text3)">at ${x.apr.toFixed(2)}%</span>`).join(' · ')}${
@@ -11675,17 +11707,17 @@ function renderPayments() {
        <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">Then ${payFmt(_nnCarryTot)}
          <span style="font-size:.8rem;font-weight:500;color:var(--ok)">after ${payFmt(_nnNext.amount)} ${esc(_nnNext.label||'pay')}</span></div>
        <div style="font-size:.77rem;color:var(--text2);margin-top:3px">
-         this month's own charges, back onto the cards that took them</div>
+         ${_pastMonth ? bFmtMonth(_focusYM) + '\u2019s' : "this month's"} own charges, back onto the cards that took them</div>
        <div style="font-size:.77rem;color:var(--text2);margin-top:4px">${
          _nnCarry.slice(0,4).map(x => `<b style="color:var(--text)">${esc(x.name)} ${payFmt(x.short)}</b>
            <span style="color:var(--text3)">at ${x.apr.toFixed(2)}%</span>`).join(' · ')}${
          _nnCarry.length > 4 ? ` · +${_nnCarry.length - 4} more` : ''}</div>`)
-     : _nnCarryTot > 0.5 ? _nnRow('Still to settle', `
+     : _nnCarryTot > 0.5 ? _nnRow(_pastMonth ? bFmtMonth(_focusYM) : 'Still to settle', `
        <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">${payFmt(_nnCarryTot)}</div>
-       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">this month's own charges, not yet back on the cards</div>`)
-     : _nnRow('This month', `
+       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">${_pastMonth ? bFmtMonth(_focusYM) + '\u2019s' : "this month's"} own charges, not yet back on the cards</div>`)
+     : _nnRow(_pastMonth ? bFmtMonth(_focusYM) : 'This month', `
        <div style="font-size:1.3rem;font-weight:700;color:var(--ok);line-height:1.2">Fully settled</div>
-       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">everything charged this month has been paid back to its own card</div>`)}
+       <div style="font-size:.77rem;color:var(--text2);margin-top:3px">everything charged ${_pastMonth ? 'in ' + bFmtMonth(_focusYM) : 'this month'} has been paid back to its own card</div>`)}
 
      ${(_nnP.deferred || []).length ? _nnRow('Waiting', `
        <div style="font-size:1.3rem;font-weight:700;color:var(--text);line-height:1.2">${payFmt(_nnP.deferredTotal)}
@@ -11729,6 +11761,17 @@ function renderPayments() {
         <div style="font-size:1.05rem;font-weight:700;color:var(--text)">Payments</div>
         <div style="font-size:.72rem;color:var(--text3)">${_mode==='assess'?'Month-end review':'Watching for what is due'} · ${fmtDate(R.today)}${UI.payMode?' · pinned':''}</div>
       </div>
+      ${_mode === 'assess' ? `
+      <div style="display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
+        <button onclick="PAY.stepAssessMonth(-1)" title="Previous month"
+          style="font-size:.78rem;padding:2px 9px;border:none;border-radius:5px;background:transparent;color:var(--text2);cursor:pointer">‹</button>
+        <b style="font-size:.8rem;color:var(--text);min-width:92px;text-align:center">${bFmtMonth(_focusYM)}</b>
+        <button onclick="PAY.stepAssessMonth(1)" title="Next month"
+          style="font-size:.78rem;padding:2px 9px;border:none;border-radius:5px;background:transparent;color:${_focusYM >= _curYM ? 'var(--text3)' : 'var(--text2)'};cursor:pointer">›</button>
+        ${_pastMonth ? (_rec
+          ? `<span style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ok);padding-right:4px">closed</span>`
+          : `<span style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--warn);padding-right:4px">not closed</span>`) : ''}
+      </div>` : ''}
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         ${modeToggle}
         <span style="font-size:.7rem;color:var(--text3)">Cash floor</span>
