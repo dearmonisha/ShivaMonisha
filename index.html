@@ -10573,72 +10573,154 @@ function payPifEarlyNeed(x, R) {
   return Math.max(0, x.stmtBal - (x.paid || 0) - (x.pay || 0));
 }
 
-// ── THE PAY LIST ───────────────────────────────────────────────────────────
-// Shiva, 2026-10-02: "the payments tab is very challenging to comprehend -> I
-// need some dumbing down significantly. Can you just forget how Payment tab is
-// and help me design a new payment review page that helps me make my card
-// payments?"
+// ── WHAT TO PAY, AND OUT OF WHICH PAYCHEQUE ────────────────────────────────
+// Shiva, 2026-10-02: "why do I pay min amount due in Chase now when it is due
+// only 26 days later. Cant I not pay from the upcoming salaries? I should be
+// focusing on putting money back from last month spending on the cards + any
+// immediate Min Amount Due."
 //
-// So the page is now a list of payments to make, in the order they matter, one
-// button per row, and every figure that explains them behind one toggle. His
-// four rules decide the order and nothing else is on screen:
-//   1. use cash wisely      → the band at the top is what is safe to send
-//   2. never miss a minimum → DUE NOW, by due date
-//   3. put back what you spent on the cards this month
-//   4. costly cards first   → EXTRA, by rate
-//   5. (and) 0% statements wait for their due date → WAIT, with no button
+// So the page is not a pot of cash divided into categories any more. It is a
+// calendar: today, then each paycheque between now and the horizon. Every
+// payment is scheduled into the LAST paycheque that still lands before its due
+// date — his own just-in-time rule — and today's cash is kept for the two
+// things that genuinely need it now: what falls due before the next paycheque,
+// and putting back what the cards were charged.
 //
-// One row per card. One amount per row — what the plan says to send — and one
-// short line saying why, built from the pieces that make it up.
-function payListRows(A, R, focusYM) {
-  const today = centralToday();
-  const rows = (A.all || []).map(x => {
-    const canWait   = payPifCanWait(x, R);
-    const owedStmt  = (x.stmtBal != null) ? Math.max(0, x.stmtBal - (x.paid || 0)) : 0;
-    const stmtNeed  = payPifEarlyNeed(x, R);
-    const minNeed   = Math.max(0, x.minUnfunded || 0);
-    const mustNow   = canWait ? 0 : Math.max(stmtNeed, minNeed);
-    const growth    = canWait ? 0 : payGrowthNeed(x, focusYM, 0);
-    const pay       = x.pay || 0;
-    const why = [];
-    // A waiting card is not a minimum to pay today — it is a whole statement
-    // with a date on it, and saying "minimum $41" there would invite exactly
-    // the early payment rule 2 exists to prevent.
-    if (canWait && owedStmt > 0.005)
-      why.push(`0% — the whole ${payFmt(owedStmt)} statement, on ${fmtDate(x.dueDate)}`);
-    else if (stmtNeed > 0.005 && stmtNeed >= minNeed) why.push(`statement ${payFmt(stmtNeed)}`);
-    else if (minNeed > 0.005)                         why.push(`minimum ${payFmt(minNeed)}`);
-    if (!canWait && growth > 0.005) why.push(`${payFmt(growth)} you charged ${focusYM === today.slice(0,7) ? 'this month' : 'in ' + bFmtMonth(focusYM)}`);
-    const extra = Math.max(0, pay - mustNow - growth);
-    if (extra > 0.5) why.push(`${payFmt(extra)} extra at ${x.apr.toFixed(2)}%`);
+// A 0% statement needs no special case any more: scheduled as late as it can
+// safely go, it naturally lands on the paycheque before its due date.
+const PAY_LEAD_DAYS = 3;          // send it this many days before it is due
 
-    let group;
-    if (canWait && owedStmt > 0.005)      group = 'wait';
-    else if (mustNow > 0.005)             group = 'due';
-    else if (growth > 0.005)              group = 'back';
-    else if (pay > 0.005)                 group = 'extra';
-    else                                  group = 'none';
+// What the cards were charged and has not been paid back — a running figure
+// over the last two calendar months, not a month-end ritual. Payments are
+// counted from the start of that window, so money sent today reduces it
+// whichever month the spending happened in.
+function payUnpaidSpend(x) {
+  if (!x || x.role === 'pay-in-full') return 0;
+  const ym   = centralToday().slice(0, 7);
+  const prev = shiftYM(ym, -1);
+  const charged = payChargesInMonth(x.acct.id, prev) + payChargesInMonth(x.acct.id, ym);
+  const paid    = payPaymentsSince(x.acct.id, prev);
+  return Math.max(0, Math.round((charged - paid) * 100) / 100);
+}
 
-    return {
-      x, group, pay, mustNow, growth, owedStmt, canWait,
-      short: Math.max(0, mustNow - pay),
-      why: why.join(' + '),
-      minMet: x.stmtBal != null && x.paid >= minNeed + 0.005 && minNeed <= 0.005 && x.paid > 0.005
-    };
+function payPlan(R, states) {
+  const today = R.today, floor = R.floor || 0;
+  const st = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
+
+  // ── the paycheques, as windows ──────────────────────────────────────────
+  const incs = (R.income || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const wins = [{ start: today, label: 'Now', income: 0, rows: [] }];
+  incs.forEach(e => {
+    const last = wins[wins.length - 1];
+    if (last.start === e.date) { last.income += e.amount; last.labels = (last.labels || [last.label]).concat(e.label); return; }
+    wins.push({ start: e.date, label: e.label || 'pay', income: e.amount, rows: [] });
   });
-  const byDue  = (a, b) => (a.x.dueDate || '9999').localeCompare(b.x.dueDate || '9999');
-  const byRate = (a, b) => b.x.apr - a.x.apr;
+  while (wins.length > 4) wins.pop();          // four is as far ahead as anyone plans
+
+  // ── cash available, with the card payments taken OUT of the forecast ─────
+  // The runway counts minimums and statements as committed outflows, which is
+  // right for a warning and wrong here: this function decides those payments,
+  // so counting them twice would halve what it thinks it has.
+  const evs = [];
+  incs.forEach(e => evs.push({ date: e.date, amt: +e.amount || 0 }));
+  (R.outs || []).forEach(o => {
+    if (o.kind === 'cc-min' || o.kind === 'cc-full') return;
+    evs.push({ date: o.riskDate || o.date, amt: -(+o.amount || 0) });
+  });
+  evs.sort((a, b) => a.date.localeCompare(b.date));
+  // Everything scheduled so far, as dated outflows of its own. Capacity is
+  // recomputed against them rather than decremented: a payment dated the 16th
+  // does not take the same bite out of today's room as one dated today, and
+  // guessing either way was how the old page got the figures wrong.
+  const sched = [];
+  const capAt = d => {
+    const all = evs.concat(sched.map(q => ({ date: q.date, amt: -q.amt })))
+                   .sort((a, b) => a.date.localeCompare(b.date));
+    let bal = R.cash, at = R.cash, m = Infinity;
+    all.forEach(e => { bal += e.amt; if (e.date >= d) m = Math.min(m, bal); else at = bal; });
+    return Math.max(0, payDown(Math.min(at, m === Infinity ? at : m) - floor));
+  };
+  const capOf = i => capAt(wins[i].start);
+  const spend = (i, amt) => { sched.push({ date: wins[i].start, amt }); };
+
+  // ── what has to be paid, and by when ────────────────────────────────────
+  const items = [];
+  st.forEach(x => {
+    const owedStmt = (x.stmtBal != null) ? Math.max(0, x.stmtBal - (x.paid || 0)) : 0;
+    const minNeed  = Math.max(0, x.minUnfunded || 0);
+    if (x.role === 'pay-in-full' && owedStmt > 0.005 && x.dueDate) {
+      items.push({ x, kind: 'statement', amount: owedStmt, due: x.dueDate,
+                   why: `the whole ${payFmt(owedStmt)} statement${x.apr <= 0.005 ? ' (0%)' : ''}` });
+    } else if (minNeed > 0.005 && x.dueDate) {
+      items.push({ x, kind: 'minimum', amount: minNeed, due: x.dueDate, why: 'the minimum' });
+    }
+    const back = payUnpaidSpend(x);
+    if (back > 0.005) items.push({ x, kind: 'back', amount: back, due: null,
+                                   why: `${payFmt(back)} you charged and have not put back` });
+  });
+
+  // 1. dated items: as late as is safe, never later than the due date
+  items.filter(i => i.due).sort((a, b) => a.due.localeCompare(b.due)).forEach(it => {
+    const latest = payAddDays(it.due, -PAY_LEAD_DAYS);
+    let last = 0;
+    wins.forEach((w, k) => { if (w.start <= latest) last = k; });
+    let put = -1;
+    for (let k = last; k >= 0; k--) if (capOf(k) >= it.amount - 0.005) { put = k; break; }
+    if (put < 0) {                      // nothing can cover it in full
+      let best = 0; for (let k = 0; k <= last; k++) if (capOf(k) > capOf(best)) best = k;
+      it.short = Math.max(0, it.amount - capOf(best));
+      it.amount = Math.min(it.amount, capOf(best));
+      put = best;
+    }
+    if (it.amount > 0.005) { spend(put, it.amount); wins[put].rows.push(it); it.x.pay += it.amount; }
+    else { it.win = put; wins[put].rows.push(it); }
+    it.win = put;
+  });
+
+  // 2. putting the month's spending back: the first paycheque that can carry it,
+  //    dearest card first so a tight month protects the expensive balances.
+  items.filter(i => !i.due).sort((a, b) => b.x.apr - a.x.apr).forEach(it => {
+    for (let k = 0; k < wins.length; k++) {
+      const can = Math.min(it.amount, capOf(k));
+      if (can < 1) continue;
+      spend(k, can); it.x.pay += can;
+      wins[k].rows.push({ ...it, amount: can, win: k, short: it.amount - can > 0.005 ? it.amount - can : 0 });
+      it.amount -= can;
+      if (it.amount < 0.005) break;
+    }
+  });
+
+  // 3. anything still spare today goes at the dearest interest-bearing balance
+  const extras = [];
+  st.slice().sort((a, b) => b.apr - a.apr).forEach(x => {
+    if (capOf(0) < 1) return;
+    if (x.apr <= 0.005 || x.role === 'minimum-only' || x.role === 'pay-in-full') return;
+    const room = Math.max(0, x.balance - x.pay);
+    const amt  = Math.min(room, capOf(0));
+    if (amt < 1) return;
+    spend(0, amt); x.pay += amt;
+    const row = { x, kind: 'extra', amount: amt, due: null, win: 0,
+                  why: `spare cash at ${x.apr.toFixed(2)}%` };
+    wins[0].rows.push(row); extras.push(row);
+  });
+
+  wins.forEach((w, i) => {
+    // Order inside a window is his order of priority, not the alphabet:
+    // what is due by date, then putting the spending back, then spare cash.
+    const rank = r => r.due ? 0 : r.kind === 'back' ? 1 : 2;
+    w.rows.sort((a, b) => rank(a) - rank(b)
+      || (a.due || '9999').localeCompare(b.due || '9999')
+      || b.x.apr - a.x.apr);
+    w.total = w.rows.reduce((s2, r) => s2 + r.amount, 0);
+    w.cap   = capOf(i);                       // what is still spare in that window
+  });
+  const touched = new Set(wins.flatMap(w => w.rows.map(r => r.x.id)));
   return {
-    due:   rows.filter(r => r.group === 'due').sort(byDue),
-    back:  rows.filter(r => r.group === 'back').sort(byRate),
-    extra: rows.filter(r => r.group === 'extra').sort(byRate),
-    wait:  rows.filter(r => r.group === 'wait').sort(byDue),
-    // Two different reasons for a card to need nothing, and they are not the
-    // same news: one is a balance already served this cycle, the other is a
-    // card with nothing on it.
-    none:  rows.filter(r => r.group === 'none' && r.x.balance > 0.005),
-    empty: rows.filter(r => r.group === 'none' && r.x.balance <= 0.005),
-    total: rows.reduce((s2, r) => s2 + r.pay, 0)
+    wins, st, items,
+    covered: st.filter(x => !touched.has(x.id) && x.balance > 0.005),
+    empty:   st.filter(x => !touched.has(x.id) && x.balance <= 0.005),
+    now:     wins[0].total,
+    shortTotal: wins.flatMap(w => w.rows).reduce((s2, r) => s2 + (r.short || 0), 0)
   };
 }
 
@@ -11659,7 +11741,11 @@ function renderPayments() {
    <div style="${card};padding:15px 17px;margin-bottom:14px">
      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
        <div style="font-size:1rem;font-weight:700;color:var(--text)">Month-end review</div>
-       <b style="font-size:.82rem;color:var(--text)">${bFmtMonth(_am)}</b>
+       <span style="display:inline-flex;align-items:center;gap:4px">
+         <button onclick="PAY.stepAssessMonth(-1)" style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">‹</button>
+         <b style="font-size:.82rem;color:var(--text)">${bFmtMonth(_am)}</b>
+         <button onclick="PAY.stepAssessMonth(1)" style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text2);cursor:pointer">›</button>
+       </span>
        ${_rec ? `<span style="font-size:.68rem;color:var(--ok);font-weight:600">✓ closed ${fmtDate(_rec.closedAt)}</span>` : ''}
        ${_prevRec ? `<span style="font-size:.68rem;color:var(--text3)">${bFmtMonth(_prev)}: carried ${payFmt(_prevRec.carried)}, deployed ${payFmt(_prevRec.deployed||0)}</span>` : ''}
        ${_curYM !== _am ? `<span style="font-size:.68rem;color:var(--text3)">bottom three are as of today</span>` : ''}
@@ -11755,81 +11841,70 @@ function renderPayments() {
     </div>`;
 
 
-  // ── The pay list: the whole page, above the toggle ────────────────────────
-  const _L = payListRows(A, R, _focusYM);
+  // ── The plan: what to send out of which paycheque ─────────────────────────
+  const _P = payPlan(R, st);
   const _dueColorFor = d => {
     if (!d) return 'var(--text3)';
     const n = payDiffDays(R.today, d);
     return n < 0 ? 'var(--danger)' : n <= 5 ? 'var(--warn)' : 'var(--text2)';
   };
-  const _when = d => {
-    if (!d) return '';
-    const n = payDiffDays(R.today, d);
-    return n < 0 ? Math.abs(n) + 'd overdue' : n === 0 ? 'today' : n === 1 ? 'tomorrow' : 'in ' + n + ' days';
-  };
-  // One row. Card, why, due date, the amount to send, and the button. Nothing
-  // else: no utilisation bar, no interest-per-$100, no strategy.
-  const _payRow = (r, opts) => {
-    const x = r.x, o = opts || {};
+  const _winRow = (r, wi) => {
+    const x = r.x, box = `payq-${x.id}-${wi}`;
     return `
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border)">
       <div style="flex:1;min-width:190px">
         <div style="font-size:.92rem;font-weight:600;color:var(--text)">${esc(x.name)}
           ${r.short > 0.005 ? `<span style="font-size:.62rem;font-weight:700;color:var(--danger);background:var(--danger-bg);padding:1px 6px;border-radius:99px;margin-left:6px">${payFmt(r.short)} short</span>` : ''}</div>
-        <div style="font-size:.73rem;color:var(--text3);margin-top:2px">${r.why || o.note || ''}</div>
+        <div style="font-size:.73rem;color:var(--text3);margin-top:2px">${r.why}</div>
       </div>
-      <div style="width:120px;text-align:right;font-size:.75rem;color:${_dueColorFor(x.dueDate)}">
-        ${x.dueDate ? fmtDate(x.dueDate) : '—'}
-        <div style="font-size:.63rem;color:var(--text3)">${_when(x.dueDate)}</div>
+      <div style="width:104px;text-align:right;font-size:.75rem;color:${_dueColorFor(r.due)}">
+        ${r.due ? `due ${fmtDate(r.due)}` : ''}</div>
+      <div style="display:flex;align-items:center;gap:7px">
+        <input type="text" id="${box}" value="${payFmt2(r.amount)}"
+          style="width:104px;font-size:.95rem;font-weight:600;padding:7px 9px;border:1px solid var(--primary);border-radius:7px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
+        <button onclick="PAY.payOne('${x.acct.id}','${x.id}','${box}')"
+          style="font-size:.78rem;font-weight:600;padding:7px 15px;border:1px solid var(--primary);border-radius:7px;background:${wi === 0 ? 'var(--primary)' : 'var(--surface)'};color:${wi === 0 ? '#fff' : 'var(--primary)'};cursor:pointer">Pay</button>
       </div>
-      ${o.noButton ? `<div style="width:188px;text-align:right;font-size:.9rem;font-weight:700;color:var(--text2);font-variant-numeric:tabular-nums">${payFmt2(r.owedStmt)}</div>`
-      : `<div style="display:flex;align-items:center;gap:7px">
-        <input type="text" id="payq-${x.id}" value="${r.pay > 0.005 ? payFmt2(r.pay) : ''}" placeholder="0.00"
-          style="width:104px;font-size:.95rem;font-weight:600;padding:7px 9px;border:1px solid ${r.pay > 0.005 ? 'var(--primary)' : 'var(--border)'};border-radius:7px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
-        <button onclick="PAY.payOne('${x.acct.id}','${x.id}')"
-          style="font-size:.78rem;font-weight:600;padding:7px 15px;border:1px solid var(--primary);border-radius:7px;background:var(--primary);color:#fff;cursor:pointer">Pay</button>
-      </div>`}
     </div>`;
   };
-  const _sect = (tag, note, list, opts) => !list.length ? '' : `
-    <div style="${card};overflow:hidden;margin-bottom:12px">
-      <div style="padding:10px 16px;background:var(--surface2);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-        <span style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text)">${tag}</span>
-        <span style="font-size:.72rem;color:var(--text3)">${note}</span>
-        <span style="margin-left:auto;font-size:.8rem;font-weight:700;color:var(--text2);font-variant-numeric:tabular-nums">${
-          payFmt(list.reduce((s2, r) => s2 + ((opts && opts.noButton) ? r.owedStmt : r.pay), 0))}</span>
+  const _winCard = (w, wi) => {
+    const head = wi === 0
+      ? `<span style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text)">Pay now</span>
+         <span style="font-size:.73rem;color:var(--text3)">out of the ${payFmt2(R.cash)} in the bank</span>`
+      : `<span style="font-size:.78rem;font-weight:700;color:var(--text)">${fmtDate(w.start)}</span>
+         <span style="font-size:.73rem;color:var(--text3)">after ${payFmt(w.income)} ${esc((w.labels || [w.label]).join(' + '))} lands</span>`;
+    return `
+    <div style="${card};overflow:hidden;margin-bottom:12px;${wi === 0 ? '' : 'opacity:.92'}">
+      <div style="padding:11px 16px;background:var(--surface2);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        ${head}
+        <span style="margin-left:auto;font-size:.95rem;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums">${payFmt2(w.total)}</span>
       </div>
-      ${list.map(r => _payRow(r, opts)).join('')}
+      ${w.rows.length ? w.rows.map(r => _winRow(r, wi)).join('')
+        : `<div style="padding:13px 16px;font-size:.78rem;color:var(--text3)">Nothing has to go out of this one.${
+             w.cap > 1 ? ` ${payFmt(w.cap)} spare.` : ''}</div>`}
     </div>`;
+  };
 
-  const _sendTotal = _L.due.concat(_L.back, _L.extra).reduce((s2, r) => s2 + r.pay, 0);
-  const _overFloor = R.trough >= R.floor - 0.005;
-  const payBand = `
+  const _wins = _P.wins.filter((w, i) => i === 0 || w.rows.length);
+  const payList = `
    <div style="${card};padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
      <div>
        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)">Send today</div>
-       <div style="font-size:1.75rem;font-weight:700;color:var(--text);line-height:1.15;font-variant-numeric:tabular-nums">${payFmt2(_sendTotal)}</div>
-       <div style="font-size:.73rem;color:var(--text3);margin-top:2px">${_L.due.length + _L.back.length + _L.extra.length} card${(_L.due.length + _L.back.length + _L.extra.length) === 1 ? '' : 's'} · leaves ${payFmt2(R.cash - _sendTotal)} in the bank</div>
+       <div style="font-size:1.75rem;font-weight:700;color:var(--text);line-height:1.15;font-variant-numeric:tabular-nums">${payFmt2(_P.now)}</div>
+       <div style="font-size:.73rem;color:var(--text3);margin-top:2px">leaves ${payFmt2(R.cash - _P.now)} in the bank · the rest comes out of your next paycheques</div>
      </div>
      <div style="margin-left:auto;text-align:right;font-size:.75rem;color:var(--text2);line-height:1.8">
        <div><b style="color:var(--text)">${payFmt2(R.cash)}</b> in the bank now</div>
-       <div style="color:${_overFloor ? 'var(--text3)' : 'var(--danger)'}">lowest point ${payFmt2(R.trough)} on ${fmtDate(R.troughDate)} · floor ${payFmt2(R.floor)}</div>
-       <div style="font-weight:600;color:${_overFloor ? 'var(--ok)' : 'var(--danger)'}">${_overFloor
-         ? `✓ safe to send up to ${payFmt2(R.safe)}` : `⚠ ${payFmt(R.floor - R.trough)} short on ${fmtDate(R.troughDate)}`}</div>
+       <div style="color:var(--text3)">floor ${payFmt2(R.floor)} · next pay ${R.nextIncome ? payFmt(R.nextIncome.amount) + ' on ' + fmtDate(R.nextIncome.date) : '—'}</div>
+       ${_P.shortTotal > 0.005
+         ? `<div style="font-weight:600;color:var(--danger)">⚠ ${payFmt(_P.shortTotal)} cannot be covered in time</div>`
+         : `<div style="font-weight:600;color:var(--ok)">✓ everything due is covered, on time</div>`}
      </div>
-   </div>`;
-
-  const payList = `
-    ${payBand}
-    ${_sect('Pay now', 'minimums and statements that are due', _L.due)}
-    ${_sect('Put it back', `what the cards were charged ${_pastMonth ? 'in ' + bFmtMonth(_focusYM) : 'this month'}`, _L.back)}
-    ${_sect('Extra', 'spare cash, dearest card first', _L.extra)}
-    ${_sect('Wait', 'nothing is owed until the due date, and they cost 0%', _L.wait, { noButton: true })}
-    ${_L.none.length ? `<div style="font-size:.72rem;color:var(--text3);padding:2px 4px 6px">Already covered this cycle: ${
-      _L.none.map(r => esc(r.x.name) + (r.x.paid > 0.005 ? ' (' + payFmt(r.x.paid) + ' paid)' : '')).join(' · ')}.</div>` : ''}
-    ${_L.empty.length ? `<div style="font-size:.72rem;color:var(--text3);padding:0 4px 12px">No balance: ${_L.empty.map(r => esc(r.x.name)).join(' · ')}.</div>` : ''}
-    ${(_L.due.length + _L.back.length + _L.extra.length + _L.wait.length) === 0
-      ? `<div style="${card};padding:22px;text-align:center;font-size:.95rem;color:var(--ok);font-weight:600">Nothing to pay right now.</div>` : ''}`;
+   </div>
+   ${_wins.map((w, i) => _winCard(w, _P.wins.indexOf(w))).join('')}
+   ${_P.covered.length ? `<div style="font-size:.72rem;color:var(--text3);padding:2px 4px 6px">Nothing to send: ${
+     _P.covered.map(x => esc(x.name) + (x.paid > 0.005 ? ' (' + payFmt(x.paid) + ' paid this cycle)' : '')).join(' · ')}.</div>` : ''}
+   ${_P.empty.length ? `<div style="font-size:.72rem;color:var(--text3);padding:0 4px 12px">No balance: ${_P.empty.map(x => esc(x.name)).join(' · ')}.</div>` : ''}`;
 
   const nowNext = `
    <div style="${card};padding:0;margin-bottom:14px;overflow:hidden">
@@ -11905,21 +11980,9 @@ function renderPayments() {
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
       <div>
         <div style="font-size:1.05rem;font-weight:700;color:var(--text)">Payments</div>
-        <div style="font-size:.72rem;color:var(--text3)">${_mode==='assess'?'Month-end review':'Watching for what is due'} · ${fmtDate(R.today)}${UI.payMode?' · pinned':''}</div>
+        <div style="font-size:.72rem;color:var(--text3)">${fmtDate(R.today)}</div>
       </div>
-      ${_mode === 'assess' ? `
-      <div style="display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
-        <button onclick="PAY.stepAssessMonth(-1)" title="Previous month"
-          style="font-size:.78rem;padding:2px 9px;border:none;border-radius:5px;background:transparent;color:var(--text2);cursor:pointer">‹</button>
-        <b style="font-size:.8rem;color:var(--text);min-width:92px;text-align:center">${bFmtMonth(_focusYM)}</b>
-        <button onclick="PAY.stepAssessMonth(1)" title="Next month"
-          style="font-size:.78rem;padding:2px 9px;border:none;border-radius:5px;background:transparent;color:${_focusYM >= _curYM ? 'var(--text3)' : 'var(--text2)'};cursor:pointer">›</button>
-        ${_pastMonth ? (_rec
-          ? `<span style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ok);padding-right:4px">closed</span>`
-          : `<span style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--warn);padding-right:4px">not closed</span>`) : ''}
-      </div>` : ''}
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        ${modeToggle}
         <span style="font-size:.7rem;color:var(--text3)">Cash floor</span>
         <input type="text" value="${payFmt2(R.floor)}" onchange="PAY.setFloor(this.value)"
           style="width:82px;font-size:.76rem;padding:4px 7px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);text-align:right">
@@ -11940,7 +12003,8 @@ function renderPayments() {
     ${payList}
     ${workToggle}
     ${UI.payShowWork
-      ? `${nowNext}${_mode === 'assess' ? `${assessPanel}${allocator}` : monitorPanel}${cashLine}${runway}${queue}${trajectory}`
+      ? `<div style="display:flex;justify-content:flex-end;margin-bottom:10px">${modeToggle}</div>
+         ${nowNext}${_mode === 'assess' ? `${assessPanel}${allocator}` : monitorPanel}${cashLine}${runway}${queue}${trajectory}`
       : ''}`;
 }
 
@@ -12136,8 +12200,10 @@ const PAY = {
     toast(`${payFmt2(r.amount)} to ${to.name} recorded`, 'ok');
   },
 
-  async payOne(acctId, cardId) {
-    const el = id('payq-' + cardId);
+  async payOne(acctId, cardId, boxId) {
+    // The same card can appear under two paycheques — its minimum under one and
+    // what it was charged under another — so the box is named, not derived.
+    const el = id(boxId || ('payq-' + cardId));
     const amt = el ? (parseFloat(el.value.replace(/[^0-9.]/g,'')) || 0) : 0;
     if (amt <= 0) { toast('Enter an amount for that card first', 'err'); return; }
     const s = payCardStates().find(x => x.id === cardId);
