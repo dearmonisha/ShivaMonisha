@@ -9731,6 +9731,11 @@ function payReimbCatIds() {
   _payReimbVer = _txnDataVersion;
   return _payReimbIds;
 }
+function payReimbCatNames() {
+  const ids = payReimbCatIds();
+  return [...ids].map(id => ((D.budget?.categories || []).find(c => c.id === id) || {}).name)
+                 .filter(Boolean).join(', ') || 'none set';
+}
 function payReimbPortion(t) {
   const ids = payReimbCatIds();
   if (!ids.size) return 0;
@@ -10594,17 +10599,58 @@ const PAY_LEAD_DAYS = 3;          // send it this many days before it is due
 // over the last two calendar months, not a month-end ritual. Payments are
 // counted from the start of that window, so money sent today reduces it
 // whichever month the spending happened in.
-function payUnpaidSpend(x) {
-  if (!x || x.role === 'pay-in-full') return 0;
+function payUnpaidSpend(x) { return payUnpaidSpendParts(x).amount; }
+
+// Reimbursable spending charged to a card over the same two-month window — for
+// EVERY card, including the ones paid in full, which payUnpaidSpendParts skips.
+// It is left out of what he has to put back, because the money comes back with
+// a lag. Left out is not the same as gone: it sits on the card earning interest
+// until the family settles, and nothing on the page used to say so.
+function payReimbOnCard(x) {
+  if (!x || !x.acct) return 0;
+  const ym = centralToday().slice(0, 7), prev = shiftYM(ym, -1);
+  let sum = 0;
+  (D.transactions || []).forEach(t => {
+    if (t.accountId !== x.acct.id || t.isTransfer || !txnCounts(t)) return;
+    const m = (t.date || '').slice(0, 7);
+    if (m !== ym && m !== prev) return;
+    sum += payReimbPortion(t);
+  });
+  return Math.round(sum * 100) / 100;
+}
+
+// The same figure with its working shown, so a row can say what is in it and
+// what was left out. Shiva, 2026-10-02: "are you including the reimbursable
+// expenses? Those are not something I get money from my family immediately."
+// They are excluded — payChargesInMonth nets payReimbPortion off every charge —
+// but the page never said so, which is the same as not being believed.
+function payUnpaidSpendParts(x) {
+  const zero = { amount: 0, charged: 0, reimb: 0, interest: 0, paid: 0 };
+  if (!x || x.role === 'pay-in-full') return zero;
   const ym   = centralToday().slice(0, 7);
   const prev = shiftYM(ym, -1);
+  const inWindow = t => t.accountId === x.acct.id && !t.isTransfer && txnCounts(t) &&
+                        ((t.date || '').slice(0, 7) === ym || (t.date || '').slice(0, 7) === prev);
+  let reimb = 0, interest = 0;
+  const intId = (x.card && x.card.interestCategoryId) || null;
+  (D.transactions || []).forEach(t => {
+    if (!inWindow(t)) return;
+    reimb += payReimbPortion(t);
+    if (intId) {
+      if (t.splits && t.splits.length) t.splits.forEach(l => { if (l.categoryId === intId) interest += (+l.amount || 0); });
+      else if (t.categoryId === intId)  interest += (+t.debit || 0) - (+t.credit || 0);
+    }
+  });
   const charged = payChargesInMonth(x.acct.id, prev) + payChargesInMonth(x.acct.id, ym);
   const paid    = payPaymentsSince(x.acct.id, prev);
-  return Math.max(0, Math.round((charged - paid) * 100) / 100);
+  const r = n => Math.round(n * 100) / 100;
+  return { amount: Math.max(0, r(charged - paid)), charged: r(charged),
+           reimb: r(reimb), interest: r(interest), paid: r(paid) };
 }
 
 function payPlan(R, states) {
   const today = R.today, floor = R.floor || 0;
+  const curYM = today.slice(0, 7), prevYM = shiftYM(curYM, -1);
   const st = (states || payCardStates()).map(s => ({ ...s, pay: 0 }));
 
   // ── the paycheques, as windows ──────────────────────────────────────────
@@ -10654,9 +10700,20 @@ function payPlan(R, states) {
     } else if (minNeed > 0.005 && x.dueDate) {
       items.push({ x, kind: 'minimum', amount: minNeed, due: x.dueDate, why: 'the minimum' });
     }
-    const back = payUnpaidSpend(x);
-    if (back > 0.005) items.push({ x, kind: 'back', amount: back, due: null,
-                                   why: `${payFmt(back)} you charged and have not put back` });
+    const bp = payUnpaidSpendParts(x);
+    if (bp.amount > 0.005) {
+      // One clause on screen — the exclusion, because that is the one he has to
+      // trust — and the whole arithmetic in the tooltip.
+      items.push({ x, kind: 'back', amount: bp.amount, due: null, parts: bp,
+        why: `${payFmt(bp.amount)} you charged and have not put back`
+             + (bp.reimb > 0.5 ? ` · ${payFmt(bp.reimb)} reimbursable left out` : ''),
+        detail: `Charged over ${bFmtMonth(prevYM)} and ${bFmtMonth(curYM)}: ${payFmt2(bp.charged + bp.reimb)}`
+              + (bp.reimb > 0.005 ? `\nLess reimbursable (${payReimbCatNames()}): −${payFmt2(bp.reimb)}` : '')
+              + `\nYours to put back: ${payFmt2(bp.charged)}`
+              + (bp.interest > 0.005 ? `\n  of which interest charged to the card: ${payFmt2(bp.interest)}` : '')
+              + `\nAlready paid since ${bFmtMonth(prevYM)}: −${payFmt2(bp.paid)}`
+              + `\nStill to put back: ${payFmt2(bp.amount)}` });
+    }
   });
 
   // 1. dated items: as late as is safe, never later than the due date
@@ -10715,8 +10772,15 @@ function payPlan(R, states) {
     w.cap   = capOf(i);                       // what is still spare in that window
   });
   const touched = new Set(wins.flatMap(w => w.rows.map(r => r.x.id)));
+  const waiting = st.map(x => ({ name: x.name, apr: x.apr, amount: payReimbOnCard(x) }))
+                    .filter(r => r.amount > 0.5)
+                    .sort((a, b) => b.amount - a.amount);
   return {
     wins, st, items,
+    waiting,
+    waitingTotal: waiting.reduce((s2, r) => s2 + r.amount, 0),
+    waitingCost:  waiting.reduce((s2, r) => s2 + r.amount * r.apr / 1200, 0),
+    famOwed: (() => { try { return payEarmarks().totalReceivable || 0; } catch (e) { return 0; } })(),
     covered: st.filter(x => !touched.has(x.id) && x.balance > 0.005),
     empty:   st.filter(x => !touched.has(x.id) && x.balance <= 0.005),
     now:     wins[0].total,
@@ -11855,7 +11919,7 @@ function renderPayments() {
       <div style="flex:1;min-width:190px">
         <div style="font-size:.92rem;font-weight:600;color:var(--text)">${esc(x.name)}
           ${r.short > 0.005 ? `<span style="font-size:.62rem;font-weight:700;color:var(--danger);background:var(--danger-bg);padding:1px 6px;border-radius:99px;margin-left:6px">${payFmt(r.short)} short</span>` : ''}</div>
-        <div style="font-size:.73rem;color:var(--text3);margin-top:2px">${r.why}</div>
+        <div title="${esc(r.detail || '')}" style="font-size:.73rem;color:var(--text3);margin-top:2px;${r.detail ? 'cursor:help' : ''}">${r.why}</div>
       </div>
       <div style="width:104px;text-align:right;font-size:.75rem;color:${_dueColorFor(r.due)}">
         ${r.due ? `due ${fmtDate(r.due)}` : ''}</div>
@@ -11902,6 +11966,21 @@ function renderPayments() {
      </div>
    </div>
    ${_wins.map((w, i) => _winCard(w, _P.wins.indexOf(w))).join('')}
+   ${_P.waiting.length ? `
+   <div style="${card};overflow:hidden;margin-bottom:12px;border-style:dashed">
+     <div style="padding:11px 16px;background:var(--surface2);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+       <span style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text2)">Waiting on the family</span>
+       <span style="font-size:.73rem;color:var(--text3)">charged for them, not yours to put back</span>
+       <span style="margin-left:auto;font-size:.95rem;font-weight:700;color:var(--text2);font-variant-numeric:tabular-nums">${payFmt2(_P.waitingTotal)}</span>
+     </div>
+     <div style="padding:12px 16px;font-size:.78rem;color:var(--text2);line-height:1.8">
+       ${_P.waiting.map(r => `<b style="color:var(--text)">${esc(r.name)} ${payFmt2(r.amount)}</b>${
+         r.apr > 0.005 ? `<span style="color:var(--text3)"> at ${r.apr.toFixed(2)}%</span>` : ''}`).join(' · ')}
+       <div style="font-size:.73rem;color:var(--text3);margin-top:4px">
+         Left out of every payment above. It stays on the card${_P.waitingCost > 0.005 ? `, costing about ${payFmt2(_P.waitingCost)}/mo` : ''} until the money comes in.${
+         _P.famOwed > 0.5 ? ` The Family tab has ${payFmt2(_P.famOwed)} owed to you.` : ''}</div>
+     </div>
+   </div>` : ''}
    ${_P.covered.length ? `<div style="font-size:.72rem;color:var(--text3);padding:2px 4px 6px">Nothing to send: ${
      _P.covered.map(x => esc(x.name) + (x.paid > 0.005 ? ' (' + payFmt(x.paid) + ' paid this cycle)' : '')).join(' · ')}.</div>` : ''}
    ${_P.empty.length ? `<div style="font-size:.72rem;color:var(--text3);padding:0 4px 12px">No balance: ${_P.empty.map(x => esc(x.name)).join(' · ')}.</div>` : ''}`;
