@@ -1142,6 +1142,7 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
       <!-- Action buttons -->
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
         <button class="btn btn-sm" onclick="BA.copyBudgetFromPrior()">📋 Copy Prior Month</button>
+        <button class="btn btn-sm" onclick="BA.potSweepNow()" title="Write the month-end pot transfers for the Planned Expense categories">🪣 Month-end sweep</button>
         <button class="btn btn-sm" onclick="BA.importBudgetData()" style="display:none">⬆ Import Budget</button>
         <span style="width:1px;height:18px;background:var(--border);display:inline-block;margin:0 2px;"></span>
         <button class="btn btn-sm btn-ghost btn-xs" onclick="BA.expandAllBudgetGroups()">⊞ Expand All</button>
@@ -8277,6 +8278,81 @@ function budgetGetEffectivePlan(catId, month, _depth) {
   if (surplus <= 0) return base; // nothing to carry forward — stop recursion
   return base + surplus;
 }
+// ── MONTH-END POT SWEEP ────────────────────────────────────────────────────
+// Shiva, 2026-10-02: "Help automate the trf entries I make end of each month
+// for the planned expense category. If remaining is positive I transfer to
+// savings pot and if its negative I get it out of savings pots… Why do this
+// manually each month."
+//
+// It writes exactly what he has been writing by hand, which is two transfer
+// PAIRS dated the last day of the month (2026-08-31 is the model):
+//   Draw Down  — pot → bank, split by the categories that OVERSPENT
+//   Set Aside  — bank → pot, split by the categories that UNDERSPENT
+// Only the leg the money leaves carries the splits; that is how a pot move
+// names its categories, and recomputeTxnActuals reads exactly those.
+//
+// Nothing happens without him pressing the button, and re-running replaces the
+// month's rows rather than adding a second set.
+function potSweepTag(ym) { return bFmtMonth(ym).split(' ')[0].slice(0, 3) + ' Savings Pots'; }
+function potSweepRows(ym) {
+  const tag = potSweepTag(ym);
+  return (D.transactions || []).filter(t =>
+    t.potSweep === ym || (t.isTransfer && (t.notes || '').indexOf(tag) === 0));
+}
+// What the sweep would be, measured as if this month's sweep had never been
+// written — so pressing it twice is safe and the figures match the grid.
+function potSweepPreview(ym) {
+  const gid  = (D.savingsPots || {}).trackedGroupId;
+  const cats = (D.budget?.categories || []).filter(c => c.groupId === gid);
+  const mine = potSweepRows(ym);
+  const all  = D.transactions;
+  if (mine.length) { D.transactions = all.filter(t => mine.indexOf(t) < 0); recomputeTxnActuals(); }
+  const rows = cats.map(c => {
+    const budget = budgetGetAdjustedPlan(c.id, ym);
+    const spent  = budgetGetCatActuals(c.id, ym);
+    return { categoryId: c.id, name: c.name, budget, spent,
+             remain: Math.round((budget - spent) * 100) / 100 };
+  });
+  if (mine.length) { D.transactions = all; recomputeTxnActuals(); }
+  const aside = rows.filter(r => r.remain >  0.005).map(r => ({ categoryId: r.categoryId, name: r.name, amount:  r.remain }));
+  const draw  = rows.filter(r => r.remain < -0.005).map(r => ({ categoryId: r.categoryId, name: r.name, amount: -r.remain }));
+  const sum = a => Math.round(a.reduce((s2, x) => s2 + x.amount, 0) * 100) / 100;
+  return { ym, rows, aside, draw, asideTotal: sum(aside), drawTotal: sum(draw),
+           date: payMonthEnd(ym), existing: mine.length,
+           bank: payBankAccounts()[0] || null,
+           pot:  (D.txnAccounts || []).find(a => a.id === (D.savingsPots || {}).growthAccountId) || null };
+}
+function potSweepApply(ym) {
+  const P = potSweepPreview(ym);
+  if (!P.bank || !P.pot) return { ok: false, reason: 'No bank account or no savings pot is set up' };
+  if (!P.aside.length && !P.draw.length) return { ok: false, reason: 'Nothing to sweep — every planned category is exactly on budget' };
+  const old = potSweepRows(ym);
+  if (old.length) D.transactions = (D.transactions || []).filter(t => old.indexOf(t) < 0);
+
+  const note = suffix => `${potSweepTag(ym)} ${suffix}`;
+  const pair = (fromAcct, toAcct, amount, splits, suffix) => {
+    const tid = uid(), aId = uid(), bId = uid();
+    D.transactions.push({
+      id: aId, accountId: fromAcct.id, date: P.date,
+      payee: `Transfer to ${toAcct.name}`, debit: amount, credit: 0, categoryId: null,
+      splits: splits.map(x => ({ categoryId: x.categoryId, amount: x.amount, notes: '' })),
+      notes: note(suffix), cleared: false, isTransfer: true,
+      transferId: tid, transferPairId: bId, transferToAcctId: toAcct.id, potSweep: ym
+    });
+    D.transactions.push({
+      id: bId, accountId: toAcct.id, date: P.date,
+      payee: `Transfer from ${fromAcct.name}`, debit: 0, credit: amount, categoryId: null,
+      notes: note(suffix), cleared: false, isTransfer: true,
+      transferId: tid, transferPairId: aId, transferFromAcctId: fromAcct.id, potSweep: ym
+    });
+  };
+  if (P.draw.length)  pair(P.pot,  P.bank, P.drawTotal,  P.draw,  'Draw Down');
+  if (P.aside.length) pair(P.bank, P.pot,  P.asideTotal, P.aside, 'Set Aside');
+  recomputeTxnActuals();
+  dirty();
+  return { ok: true, replaced: old.length / 2, ...P };
+}
+
 // ── Pot account identity ──────────────────────────────────────────────────
 // A pot is a LOGICAL bucket, not an account. When the account holding a pot
 // changes (e.g. moving to a better-rate savings account), every past flow still
@@ -16697,6 +16773,50 @@ const BA = {
 
   mobilePrevMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(), -1); mobRender('keep'); },
   mobileNextMonth() { UI.budgetMonth = bShiftMonth(UI.budgetMonth || ymNow(),  1); mobRender('keep'); },
+  // ── Month-end pot sweep ──────────────────────────────────────────────────
+  // Shows what it is about to write, then writes it. Both pairs are dated the
+  // last day of the month he is looking at, which is where he has always dated
+  // them by hand.
+  async potSweepNow() {
+    const ym = UI.budgetMonth;
+    const P  = potSweepPreview(ym);
+    if (!P.pot || !P.bank) { toast('Set up a savings pot and a bank account first', 'err'); return; }
+    if (!P.aside.length && !P.draw.length) {
+      toast(`${bFmtMonth(ym)} — every planned category is already square, nothing to sweep`, 'ok'); return;
+    }
+    const list = (rows, colour) => rows.map(r =>
+      `<div style="display:flex;justify-content:space-between;gap:16px;padding:2px 0">
+         <span>${esc(r.name)}</span><b style="font-variant-numeric:tabular-nums;color:${colour}">${fmtCurrency(r.amount)}</b></div>`).join('');
+    const block = (title, sub, rows, total, colour) => !rows.length ? '' : `
+      <div style="margin-top:12px">
+        <div style="font-size:.78rem;font-weight:700;color:var(--text)">${title}</div>
+        <div style="font-size:.7rem;color:var(--text3);margin-bottom:4px">${sub}</div>
+        ${list(rows, colour)}
+        <div style="display:flex;justify-content:space-between;gap:16px;border-top:1px solid var(--border);margin-top:4px;padding-top:4px">
+          <b>Total</b><b style="font-variant-numeric:tabular-nums">${fmtCurrency(total)}</b></div>
+      </div>`;
+    const net = P.drawTotal - P.asideTotal;
+    const html = `
+      <div style="line-height:1.6;font-size:.82rem">
+        <div style="color:var(--text2)">Two transfer pairs dated <b>${fmtDate(P.date)}</b>, between
+          <b>${esc(P.bank.name)}</b> and <b>${esc(P.pot.name)}</b>.</div>
+        ${block('Draw down — out of the pot', 'categories that went over their budget', P.draw, P.drawTotal, 'var(--danger)')}
+        ${block('Set aside — into the pot', 'what was left unspent', P.aside, P.asideTotal, 'var(--ok)')}
+        <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:16px">
+          <span>${esc(P.bank.name)} ends up</span>
+          <b style="font-variant-numeric:tabular-nums;color:${net < 0 ? 'var(--danger)' : 'var(--ok)'}">${net >= 0 ? '+' : '−'}${fmtCurrency(Math.abs(net))}</b>
+        </div>
+        ${P.existing ? `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:var(--warn-bg);color:var(--warn);font-weight:600">
+          ${bFmtMonth(ym)} already has a sweep on file. Recording this replaces it.</div>` : ''}
+      </div>`;
+    const go = await payConfirm(`Month-end sweep — ${bFmtMonth(ym)}`, html, P.existing ? 'Replace it' : 'Record it');
+    if (!go) return;
+    const r = potSweepApply(ym);
+    if (!r.ok) { toast(r.reason, 'err'); return; }
+    renderBudget();
+    toast(`${bFmtMonth(ym)} swept — ${P.draw.length ? fmtCurrency(P.drawTotal) + ' drawn, ' : ''}${fmtCurrency(P.asideTotal)} set aside ✓`, 'ok');
+  },
+
   budgetPrevMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth,-1);    renderBudget(); },
   budgetNextMonth()    { UI.budgetMonth    = bShiftMonth(UI.budgetMonth, 1);    renderBudget(); },
   annualPrevYear()  { UI.annualYear--; renderAnnual(); },
