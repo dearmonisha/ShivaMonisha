@@ -676,6 +676,12 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 /* Fixed width and always emitted, even when empty. A caret that only appears
    on some cells would push those figures left and break the right-alignment
    that makes a column of numbers readable in the first place. */
+/* Payments: the plan on the left, the register it has to survive on the right.
+   One column under 1100px, where a five-column table would be unreadable. */
+.pay-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+.pay-split > div:last-child{position:sticky;top:8px}
+@media (max-width:1100px){.pay-split{grid-template-columns:minmax(0,1fr)}
+  .pay-split > div:last-child{position:static}}
 .ann-mom{display:inline-block;width:10px;text-align:left;font-size:.68rem;font-weight:700;margin-left:3px;
   vertical-align:0;cursor:help;font-family:system-ui,sans-serif}
 /* The move you want to find gets a second channel: the cell itself carries a
@@ -8278,6 +8284,43 @@ function budgetGetEffectivePlan(catId, month, _depth) {
   if (surplus <= 0) return base; // nothing to carry forward — stop recursion
   return base + surplus;
 }
+// ── THE NEXT 45 DAYS, AS A REGISTER ────────────────────────────────────────
+// Shiva, 2026-10-03: "on the right half show me the Cash Runway next 45 days as
+// a table with Date, Description, Debit, Credit, Balance columns. I am used to
+// seeing a grid like that for accounts. In the grid in the right, distinctly
+// show what you are recommending to pay in the left pane."
+//
+// Same events the plan is built from, in the order they hit the bank, with the
+// plan's own payments written in among them — so the question "will this work"
+// is answered by reading down the balance column rather than by trusting a
+// summary figure.
+//
+// Dates are the day the money can actually MOVE, which for a bill that debits
+// ahead of its due date is PAY_EARLY_DEBIT_DAYS earlier; the due date is named
+// in the description where the two differ. That is the same ordering the
+// runway and the plan use, so the balance here is the balance they tested.
+function payLedgerRows(R, P) {
+  const rows = [];
+  (R.income || []).forEach(e => rows.push({
+    date: e.riskDate || e.date, due: e.date, desc: e.label || 'Pay', credit: +e.amount || 0, kind: 'income' }));
+  (R.outs || []).forEach(o => {
+    // Card minimums and statements are the plan's job; adding the forecast too
+    // would count the same payment twice.
+    if (o.kind === 'cc-min' || o.kind === 'cc-full') return;
+    rows.push({ date: o.riskDate || o.date, due: o.date, desc: o.label || 'Payment',
+                debit: +o.amount || 0, kind: o.kind === 'transfer' ? 'transfer' : 'bill' });
+  });
+  (P.wins || []).forEach((w, i) => w.rows.forEach(r => rows.push({
+    date: w.start, due: r.due, desc: r.x.name, debit: +r.amount || 0,
+    kind: 'plan', auto: !!r.auto, win: i, why: r.kind })));
+  rows.sort((a, b) => a.date.localeCompare(b.date)
+    || (a.kind === 'income' ? 0 : 1) - (b.kind === 'income' ? 0 : 1)
+    || (a.desc || '').localeCompare(b.desc || ''));
+  let bal = R.cash;
+  rows.forEach(r => { bal += (r.credit || 0) - (r.debit || 0); r.balance = Math.round(bal * 100) / 100; });
+  return rows;
+}
+
 // ── MONTH-END POT SWEEP ────────────────────────────────────────────────────
 // Shiva, 2026-10-02: "Help automate the trf entries I make end of each month
 // for the planned expense category. If remaining is positive I transfer to
@@ -12073,6 +12116,59 @@ function renderPayments() {
     </div>`;
   };
 
+// ── Right half: the register ─────────────────────────────────────────────
+  const _LR  = payLedgerRows(R, _P);
+  const _low = _LR.reduce((m, r) => Math.min(m, r.balance), R.cash);
+  const _num = 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap';
+  const _lth = 'padding:6px 8px;text-align:left;font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1';
+  const _ledgerRow = r => {
+    const plan = r.kind === 'plan';
+    const bg   = plan ? (r.auto ? 'color-mix(in srgb,var(--info) 9%,transparent)' : 'color-mix(in srgb,var(--primary) 10%,transparent)') : 'transparent';
+    const tag  = plan
+      ? ` <span class="led-tag" style="font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:${r.auto ? 'var(--info)' : 'var(--primary)'};margin-left:4px">${r.auto ? 'auto' : 'plan'}</span>`
+      : '';
+    const sub = (r.due && r.due !== r.date) ? `<div style="font-size:.6rem;color:var(--text3)">due ${fmtDate(r.due)}</div>` : '';
+    return `<tr style="background:${bg};border-bottom:1px solid var(--border-light)">
+      <td style="padding:5px 8px;font-size:.72rem;color:var(--text2);white-space:nowrap">${fmtDate(r.date)}</td>
+      <td style="padding:5px 8px;font-size:.74rem;color:var(--text)">${esc(r.desc)}${tag}${sub}</td>
+      <td style="padding:5px 8px;${_num};font-size:.74rem;color:${r.debit ? (plan ? 'var(--primary)' : 'var(--text2)') : 'var(--text3)'}">${r.debit ? payFmt2(r.debit) : ''}</td>
+      <td style="padding:5px 8px;${_num};font-size:.74rem;color:${r.credit ? 'var(--ok)' : 'var(--text3)'}">${r.credit ? payFmt2(r.credit) : ''}</td>
+      <td style="padding:5px 8px;${_num};font-size:.74rem;font-weight:600;color:${r.balance < R.floor - 0.005 ? 'var(--danger)' : 'var(--text)'}">${payFmt2(r.balance)}</td>
+    </tr>`;
+  };
+  const ledger = `
+   <div style="${card};overflow:hidden">
+     <div style="padding:11px 14px;border-bottom:1px solid var(--border);display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+       <span style="font-size:.8rem;font-weight:700;color:var(--text)">Next ${PAY_HORIZON} days</span>
+       <span style="font-size:.68rem;color:var(--text3)">what is already committed, with the plan written in</span>
+       <span style="margin-left:auto;font-size:.68rem;color:${_low < R.floor - 0.005 ? 'var(--danger)' : 'var(--ok)'};font-weight:600">
+         low ${payFmt2(_low)}${_low < R.floor - 0.005 ? ` · below the ${payFmt2(R.floor)} floor` : ''}</span>
+     </div>
+     <div style="padding:7px 14px;font-size:.64rem;color:var(--text3);border-bottom:1px solid var(--border);display:flex;gap:14px;flex-wrap:wrap">
+       <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:color-mix(in srgb,var(--primary) 30%,transparent);vertical-align:-1px"></span> what the left pane asks you to send</span>
+       <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:color-mix(in srgb,var(--info) 30%,transparent);vertical-align:-1px"></span> autopay</span>
+       <span>everything else is already committed</span>
+     </div>
+     <div style="max-height:calc(100vh - 230px);overflow:auto">
+       <table style="width:100%;border-collapse:collapse">
+         <thead><tr>
+           <th style="${_lth}">Date</th><th style="${_lth}">Description</th>
+           <th style="${_lth};text-align:right">Debit</th><th style="${_lth};text-align:right">Credit</th>
+           <th style="${_lth};text-align:right">Balance</th>
+         </tr></thead>
+         <tbody>
+           <tr style="border-bottom:1px solid var(--border)">
+             <td style="padding:5px 8px;font-size:.72rem;color:var(--text2);white-space:nowrap">${fmtDate(R.today)}</td>
+             <td style="padding:5px 8px;font-size:.74rem;font-weight:600;color:var(--text)">Balance today — ${esc(payBankLabel())}</td>
+             <td></td><td></td>
+             <td style="padding:5px 8px;${_num};font-size:.74rem;font-weight:700;color:var(--text)">${payFmt2(R.cash)}</td>
+           </tr>
+           ${_LR.map(_ledgerRow).join('')}
+         </tbody>
+       </table>
+     </div>
+   </div>`;
+
   const _wins = _P.wins.filter((w, i) => i === 0 || w.rows.length);
   const payList = `
    <div style="${card};padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
@@ -12204,7 +12300,10 @@ function renderPayments() {
           6. trajectory   — six-month history. It answers "is this working",
                             which is a question for after the payment is made,
                             not a step in making it. Bottom of the page. */''}
-    ${payList}
+    <div class="pay-split">
+      <div style="min-width:0">${payList}</div>
+      <div style="min-width:0">${ledger}</div>
+    </div>
     ${workToggle}
     ${UI.payShowWork
       ? `<div style="display:flex;justify-content:flex-end;margin-bottom:10px">${modeToggle}</div>
