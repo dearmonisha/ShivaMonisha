@@ -9492,8 +9492,9 @@ function payBankAccounts() {
 // raised no warning.
 function paySrcFor(cardId) {
   const P = payDefaults();
-  const chosen = (UI.paySrc || {})[cardId];
-  return (chosen && payBankAccountIds().has(chosen)) ? chosen : P.bankAccountId;
+  const ids = payBankAccountIds();
+  const chosen = (UI.paySrc || {})[cardId] || (P.paySrc || {})[cardId];
+  return (chosen && ids.has(chosen)) ? chosen : P.bankAccountId;
 }
 function paySrcName(cardId) {
   const a = (D.txnAccounts || []).find(x => x.id === paySrcFor(cardId));
@@ -11262,7 +11263,7 @@ function payRecord(cardAcctId, amount, purpose, opts) {
     // Reuses the planner's own routine rather than reimplementing it, so both
     // entry points stay identical — including its guard that only marks a row
     // once `amountDue > 0`, i.e. never before the statement has been issued.
-    try { BA.ccrAutoMarkMonthlyPaid(cardAcctId, month, bankId); }
+    try { BA.ccrAutoMarkMonthlyPaid(cardAcctId, month, bankId, debitId, creditId); }
     catch (e) { console.error('Could not mark the Monthly entry paid', e); }
   }
   return { debitId, creditId, amount: amt };
@@ -12064,6 +12065,11 @@ function renderPayments() {
     const n = payDiffDays(R.today, d);
     return n < 0 ? 'var(--danger)' : n <= 5 ? 'var(--warn)' : 'var(--text2)';
   };
+  // True when the account chosen for this row holds less than the row asks for.
+  const _thin = r => {
+    const b = (D.txnAccounts || []).find(a => a.id === paySrcFor(r.x.id));
+    return !!b && txnCurrentBalance(b) < r.amount - 0.005;
+  };
   const _winRow = (r, wi) => {
     const x = r.x, box = `payq-${x.id}-${wi}`;
     if (r.auto) return `
@@ -12083,18 +12089,34 @@ function renderPayments() {
       <div style="flex:1;min-width:190px">
         <div style="font-size:.92rem;font-weight:600;color:var(--text)">${esc(x.name)}
           ${r.short > 0.005 ? `<span style="font-size:.62rem;font-weight:700;color:var(--danger);background:var(--danger-bg);padding:1px 6px;border-radius:99px;margin-left:6px">${payFmt(r.short)} short</span>` : ''}</div>
-        <div title="${esc(r.detail || '')}" style="font-size:.73rem;color:var(--text3);margin-top:2px;${r.detail ? 'cursor:help' : ''}">${r.why}</div>
+        <div title="${esc(r.detail || '')}" style="font-size:.73rem;color:var(--text3);margin-top:2px;${r.detail ? 'cursor:help' : ''}">${r.why}${
+          _thin(r) ? `<span style="color:var(--danger)"> · ${esc(paySrcName(x.id))} only holds ${payFmt2(txnCurrentBalance((D.txnAccounts||[]).find(a=>a.id===paySrcFor(x.id))))}</span>` : ''}</div>
       </div>
       <div style="width:104px;text-align:right;font-size:.75rem;color:${_dueColorFor(r.due)}">
         ${r.due ? `due ${fmtDate(r.due)}` : ''}</div>
       <div style="display:flex;align-items:center;gap:7px">
+        ${_payBanks.length > 1 ? `<select onchange="BA.paySetSrc('${x.id}',this.value)" title="Which account this payment leaves"
+          style="font-size:.72rem;padding:6px 6px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text2);max-width:118px">
+          ${_payBanks.map(b => `<option value="${b.id}"${b.id === paySrcFor(x.id) ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}
+        </select>` : ''}
         <input type="text" id="${box}" value="${payFmt2(r.amount)}"
-          style="width:104px;font-size:.95rem;font-weight:600;padding:7px 9px;border:1px solid var(--primary);border-radius:7px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
+          style="width:104px;font-size:.95rem;font-weight:600;padding:7px 9px;border:1px solid ${_thin(r) ? 'var(--danger)' : 'var(--primary)'};border-radius:7px;background:var(--surface);color:var(--text);text-align:right;font-variant-numeric:tabular-nums">
         <button onclick="PAY.payOne('${x.acct.id}','${x.id}','${box}')"
           style="font-size:.78rem;font-weight:600;padding:7px 15px;border:1px solid var(--primary);border-radius:7px;background:${wi === 0 ? 'var(--primary)' : 'var(--surface)'};color:${wi === 0 ? '#fff' : 'var(--primary)'};cursor:pointer">Pay</button>
       </div>
     </div>`;
   };
+  // Per account: what today's rows would take out of it, against what is in it.
+  const _srcLoad = {};
+  (_P.wins[0] ? _P.wins[0].rows : []).forEach(r => {
+    if (r.auto) return;
+    const id = paySrcFor(r.x.id);
+    _srcLoad[id] = (_srcLoad[id] || 0) + r.amount;
+  });
+  const _srcShort = _payBanks.map(b => ({ name: b.name, id: b.id,
+      bal: txnCurrentBalance(b), out: _srcLoad[b.id] || 0 }))
+    .filter(b => b.out > 0.005 && b.out > b.bal + 0.005);
+
   const _winCard = (w, wi) => {
     const head = wi === 0
       ? `<span style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text)">Pay now</span>
@@ -12179,11 +12201,15 @@ function renderPayments() {
          _P.autoNow > 0.005 ? ` · ${payFmt2(_P.autoNow)} more goes by autopay` : ''}</div>
      </div>
      <div style="margin-left:auto;text-align:right;font-size:.75rem;color:var(--text2);line-height:1.8">
-       <div><b style="color:var(--text)">${payFmt2(R.cash)}</b> in the bank now</div>
+       <div><b style="color:var(--text)">${payFmt2(R.cash)}</b> in the bank now${
+         _payBanks.length > 1 ? `<div style="font-size:.68rem;color:var(--text3)">${
+           _payBanks.map(b => `${esc(b.name)} ${payFmt2(txnCurrentBalance(b))}`).join(' · ')}</div>` : ''}</div>
        <div style="color:var(--text3)">floor ${payFmt2(R.floor)} · next pay ${R.nextIncome ? payFmt(R.nextIncome.amount) + ' on ' + fmtDate(R.nextIncome.date) : '—'}</div>
        ${_P.shortTotal > 0.005
          ? `<div style="font-weight:600;color:var(--danger)">⚠ ${payFmt(_P.shortTotal)} cannot be covered in time</div>`
          : `<div style="font-weight:600;color:var(--ok)">✓ everything due is covered, on time</div>`}
+       ${_srcShort.length ? `<div style="font-weight:600;color:var(--warn)">⚠ ${
+         _srcShort.map(b => `${esc(b.name)} is asked for ${payFmt(b.out)} and holds ${payFmt(b.bal)}`).join(' · ')}</div>` : ''}
      </div>
    </div>
    ${_wins.map((w, i) => _winCard(w, _P.wins.indexOf(w))).join('')}
@@ -16313,6 +16339,13 @@ const BA = {
   paySetSrc(cardId, acctId) {
     if (!UI.paySrc) UI.paySrc = {};
     UI.paySrc[cardId] = acctId;
+    // Saved, not just remembered for this visit: which account a card is paid
+    // from is a standing decision, and retyping it every session is the kind of
+    // manual step this page exists to remove.
+    const P = payDefaults();
+    if (!P.paySrc) P.paySrc = {};
+    P.paySrc[cardId] = acctId;
+    dirty();
     renderPayments();          // per-account after-balances change with it
   },
 
@@ -23165,14 +23198,58 @@ Object.assign(BA, {
     toast(`↔ Transfer of ${fmtCurrency(amount)} recorded${splitNote}`, 'ok');
   },
   // Delete both legs of a transfer together
+  // Every record that points at a transaction, cleaned up when it is deleted.
+  // Returns what it removed so the undo can put it back.
+  txnUnlinkRefs(ids) {
+    const set = new Set((ids || []).filter(Boolean));
+    if (!set.size) return null;
+    const P = (D.payments = D.payments || {});
+    const undo = { ledger: [], ccrep: [], rows: [] };
+    if (Array.isArray(P.ledger)) {
+      undo.ledger = P.ledger.filter(r => set.has(r.txnId));
+      if (undo.ledger.length) P.ledger = P.ledger.filter(r => !set.has(r.txnId));
+    }
+    if (D.budget && Array.isArray(D.budget.ccRepayments)) {
+      undo.ccrep = D.budget.ccRepayments.filter(r => set.has(r.txnId));
+      if (undo.ccrep.length) D.budget.ccRepayments = D.budget.ccRepayments.filter(r => !set.has(r.txnId));
+    }
+    Object.keys(D.cycles || {}).forEach(ym => {
+      ((D.cycles[ym] || {}).payments || []).forEach(p => {
+        if (!set.has(p.txnId) && !set.has(p.txnPairId) && !set.has(p.oblTxnId)) return;
+        undo.rows.push({ ym, id: p.id, before: {
+          isPaid: p.isPaid, paidDate: p.paidDate, amountPaid: p.amountPaid,
+          txnId: p.txnId, txnPairId: p.txnPairId, txnAuto: p.txnAuto, oblTxnId: p.oblTxnId } });
+        p.isPaid = false; p.paidDate = null; p.amountPaid = null;
+        delete p.txnId; delete p.txnPairId; delete p.txnAuto; delete p.oblTxnId;
+      });
+    });
+    return (undo.ledger.length || undo.ccrep.length || undo.rows.length) ? undo : null;
+  },
+  txnRelinkRefs(undo) {
+    if (!undo) return;
+    const P = (D.payments = D.payments || {});
+    if (undo.ledger.length) P.ledger = [...(P.ledger || []), ...undo.ledger];
+    if (undo.ccrep.length) { D.budget.ccRepayments = [...(D.budget.ccRepayments || []), ...undo.ccrep]; }
+    undo.rows.forEach(r => {
+      const p = ((D.cycles[r.ym] || {}).payments || []).find(x => x.id === r.id);
+      if (!p) return;
+      Object.keys(r.before).forEach(k => {
+        if (r.before[k] === undefined) delete p[k]; else p[k] = r.before[k];
+      });
+    });
+  },
+
   txnDeleteTransferPair(txnId) {
     const txn = (D.transactions||[]).find(t => t.id === txnId);
     if (!txn) return;
     const pairId = txn.transferPairId;
     if (!confirm(`Delete this transfer and its linked transaction?`)) return;
     D.transactions = D.transactions.filter(t => t.id !== txnId && t.id !== pairId);
+    const un = BA.txnUnlinkRefs([txnId, pairId]);
     recomputeTxnActuals(); dirty(); renderTransactions();
-    toast('Transfer deleted','ok');
+    toast(un && un.rows.length
+      ? 'Transfer deleted — the Monthly row is unpaid again'
+      : 'Transfer deleted', 'ok');
   },
 
   // ── Reset to global view ─────────────────────────────────────
@@ -23386,7 +23463,12 @@ Object.assign(BA, {
   // IMPORTANT: only marks paid if amountDue > 0 — if the statement hasn't been generated yet
   // (no Min Amt Due on the Monthly entry), we must NOT mark it as paid since the due amount
   // is unknown and the payment is likely being made before the billing cycle closes.
-  ccrAutoMarkMonthlyPaid(cardId, month, bankAcctId) {
+  // `txnId`/`pairId` link the Monthly row to the transfer that paid it. Without
+  // them the row was a dead end: deleting the transaction left it ticked, and
+  // editing Amount Paid there wrote a SECOND transaction instead of correcting
+  // the first. Shiva, 2026-10-04: "If I go and edit the amount in Monthly tab,
+  // that duplicates the transaction."
+  ccrAutoMarkMonthlyPaid(cardId, month, bankAcctId, txnId, pairId) {
     const txnAcct   = (D.txnAccounts || []).find(a => a.id === cardId);
     if (!txnAcct?.ccCardId) return;
     const linkedTpl = (D.templates || []).find(t => t.ccCardId === txnAcct.ccCardId);
@@ -23401,7 +23483,8 @@ Object.assign(BA, {
     const findEntry = ym => (D.cycles[ym]?.payments || []).find(p => p.templateId === linkedTpl.id);
     const hasAmtDue = p  => p && (+p.amountDue > 0);
     const markPaid  = p  => { p.isPaid = true; p.paidDate = centralToday(); p.amountPaid = totalPaid;
-      if (bankAcctId) { p.paidFromId = bankAcctId; p.paidFrom = bankAcctName; } };
+      if (bankAcctId) { p.paidFromId = bankAcctId; p.paidFrom = bankAcctName; }
+      if (txnId) { p.txnId = txnId; p.txnAuto = 'created'; if (pairId) p.txnPairId = pairId; } };
 
     const cur = findEntry(month);
     // Only auto-mark if a Min Amt Due has been set — otherwise statement hasn't been generated yet
@@ -24407,9 +24490,14 @@ Object.assign(BA, {
     if (!txn) return;
     const snapshot = JSON.parse(JSON.stringify(txn));
     D.transactions = (D.transactions||[]).filter(t => t.id !== txnId);
+    // A card payment is referenced in three other places. Leaving those behind
+    // is what made the Payments page offer the payment again while the Monthly
+    // tab still called it paid.
+    const un = BA.txnUnlinkRefs([txnId, txn.transferPairId]);
     recomputeTxnActuals(); dirty(); renderTransactions();
-    toastUndo(`Deleted: ${snapshot.payee || 'transaction'}`, () => {
+    toastUndo(`Deleted: ${snapshot.payee || 'transaction'}${un && un.rows.length ? ' — Monthly row set back to unpaid' : ''}`, () => {
       D.transactions = [...(D.transactions||[]), snapshot];
+      BA.txnRelinkRefs(un);
       recomputeTxnActuals(); dirty(); renderTransactions();
       toast('Transaction restored ✓', 'ok');
     });
