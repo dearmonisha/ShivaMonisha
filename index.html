@@ -1741,6 +1741,8 @@ function _applyData(raw) {
   oblAutoGenerateTxns();
   // Standing transfers due today or already past, queued the same way
   payTransferGenerate();
+  // Card payments whose transaction was deleted, and Monthly rows left behind
+  payHealLinks();
   // Recompute txn actuals so Budget Grid shows correct values immediately on load
   if (typeof recomputeTxnActuals === "function") recomputeTxnActuals();
 }
@@ -8284,6 +8286,84 @@ function budgetGetEffectivePlan(catId, month, _depth) {
   if (surplus <= 0) return base; // nothing to carry forward — stop recursion
   return base + surplus;
 }
+// ── REPAIRING PAYMENTS THAT LOST THEIR TRANSACTION ─────────────────────────
+// Shiva, 2026-10-04: "the Chase payment that has already been recorded for 316
+// in the payment tab and in the transaction is showing as underpaid in monthly
+// tab… when I tried to record payment again it set the paid amount in monthly
+// tab to be 619 when I was only paying 316."
+//
+// A card payment is written in four places. Before the 2026-10-04 fix, deleting
+// the transaction left the other three behind, and ccrAutoMarkMonthlyPaid adds
+// up EVERY repayment row for the month — so an abandoned attempt kept inflating
+// the Monthly figure. Two repairs, both unambiguous, both on load:
+//   1. a ledger or repayment row whose transaction no longer exists is deleted;
+//      it describes money that is not in the register.
+//   2. a Monthly card row marked paid but linked to nothing is re-read from the
+//      payments that actually credited that card on the day it says it was
+//      paid, and linked to them. Nothing is touched when no such payment
+//      exists — that is a payment made outside the app, and his figure stands.
+const PAY_HEAL_MONTHS = 3;
+function payHealLinks() {
+  const live = new Set((D.transactions || []).map(t => t.id));
+  const P = payDefaults();
+  let dropped = 0, fixed = [];
+
+  if (Array.isArray(P.ledger)) {
+    const n = P.ledger.length;
+    P.ledger = P.ledger.filter(r => !r.txnId || live.has(r.txnId));
+    dropped += n - P.ledger.length;
+  }
+  if (D.budget && Array.isArray(D.budget.ccRepayments)) {
+    const n = D.budget.ccRepayments.length;
+    D.budget.ccRepayments = D.budget.ccRepayments.filter(r => !r.txnId || live.has(r.txnId));
+    dropped += n - D.budget.ccRepayments.length;
+  }
+
+  const cutoff = shiftYM(centralToday().slice(0, 7), -PAY_HEAL_MONTHS);
+  const cardAcctFor = p => {
+    const tpl = (D.templates || []).find(t => t.id === p.templateId);
+    if (!tpl || !tpl.ccCardId) return null;
+    return (D.txnAccounts || []).find(a => a.ccCardId === tpl.ccCardId && a.status !== 'closed') || null;
+  };
+  Object.keys(D.cycles || {}).forEach(ym => {
+    if (ym < cutoff) return;
+    ((D.cycles[ym] || {}).payments || []).forEach(p => {
+      if (p.category !== 'Credit Cards' || !p.isPaid || p.txnId || !p.paidDate) return;
+      const acct = cardAcctFor(p);
+      if (!acct) return;
+      const legs = (D.transactions || []).filter(t =>
+        t.accountId === acct.id && t.isTransfer && (+t.credit || 0) > 0 && t.date === p.paidDate);
+      if (!legs.length) return;                 // paid outside the app — leave it alone
+      const real = Math.round(legs.reduce((s2, t) => s2 + (+t.credit || 0), 0) * 100) / 100;
+      const bank = legs[0].transferPairId
+        ? (D.transactions || []).find(t => t.id === legs[0].transferPairId) : null;
+      if (Math.abs((+p.amountPaid || 0) - real) > 0.005) {
+        fixed.push(`${p.name || 'card'} ${ym}: ${fmtCurrency(+p.amountPaid || 0)} → ${fmtCurrency(real)}`);
+        p.amountPaid = real;
+      }
+      if (legs.length === 1) {                  // one payment, so it can be linked
+        p.txnId = bank ? bank.id : legs[0].id;
+        p.txnPairId = bank ? legs[0].id : legs[0].transferPairId;
+        p.txnAuto = 'created';
+        if (bank) {
+          const b = (D.txnAccounts || []).find(a => a.id === bank.accountId);
+          if (b) { p.paidFromId = b.id; p.paidFrom = b.name; }
+        }
+      }
+    });
+  });
+
+  if (dropped || fixed.length) {
+    dirty();
+    console.info('[payments] repaired:', dropped, 'orphan rows;', fixed.join(' · '));
+    try {
+      toast(`Repaired ${dropped ? dropped + ' payment record' + (dropped !== 1 ? 's' : '') + ' with no transaction' : ''}${
+        dropped && fixed.length ? '; ' : ''}${fixed.length ? fixed.join(', ') : ''}`, 'ok');
+    } catch (e) { /* toast container not mounted yet during early load */ }
+  }
+  return { dropped, fixed };
+}
+
 // ── THE NEXT 45 DAYS, AS A REGISTER ────────────────────────────────────────
 // Shiva, 2026-10-03: "on the right half show me the Cash Runway next 45 days as
 // a table with Date, Description, Debit, Credit, Balance columns. I am used to
@@ -23474,8 +23554,12 @@ Object.assign(BA, {
     const linkedTpl = (D.templates || []).find(t => t.ccCardId === txnAcct.ccCardId);
     if (!linkedTpl) return;
 
+    // Only rows backed by a transaction that still exists. An abandoned attempt
+    // used to stay in this sum and inflate the Monthly figure every retry.
+    const _live = new Set((D.transactions || []).map(t => t.id));
     const totalPaid = (D.budget.ccRepayments || [])
       .filter(r => r.month === month && r.cardAccountId === cardId)
+      .filter(r => !r.txnId || _live.has(r.txnId))
       .reduce((s, r) => s + (parseFloat(r.amountPaid) || 0), 0);
 
     const bankAcctName = acctLabel(bankAcctId, null) || null;
