@@ -10819,6 +10819,77 @@ function payReimbOnCard(x) {
   return Math.round(sum * 100) / 100;
 }
 
+// What the family has actually handed back, and which of their charges that
+// settles. Shiva, 2026-10-05: the Waiting line counted charges only, so it never
+// shrank. Money arriving had to be reasoned about in his head.
+//
+// Three caps, each closing a way of getting this wrong:
+//   credits  - he cannot have been given more than he was given.
+//   charged  - a person's own card charges in the window. Without this, Mama's
+//              $9,000 wire would "settle" the whole family's spending.
+//   standing - a person already in credit (Tanvi and Appa both are, by
+//              thousands) has prepaid. A prepayment settles nothing that has
+//              been charged yet, so it must not release a card.
+// What survives all three is money in hand against spending already on a card:
+// his to put back, and the plan should ask him for it.
+function payFamReleased() {
+  const r = n => Math.round(n * 100) / 100;
+  const ym = centralToday().slice(0, 7), prev = shiftYM(ym, -1);
+  const inWin = d => { const m = (d || '').slice(0, 7); return m === ym || m === prev; };
+  const ccIds = new Set((D.txnAccounts || []).filter(a => a.type === 'Credit Card').map(a => a.id));
+  const aprOf = {};
+  (D.ccTracker && D.ccTracker.cards || []).forEach(c => {
+    if (c.linkedTxnAccountId) aprOf[c.linkedTxnAccountId] = +c.apr || 0; });
+  const byCard = {}, people = [];
+
+  (D.familyAccounts && D.familyAccounts.persons || []).forEach(pr => {
+    const entries = (D.familyAccounts.ledgers && D.familyAccounts.ledgers[pr.id]) || [];
+    if (!entries.length) return;
+    const owesYou = -entries.reduce((t, e) => t + (+e.cr || 0) - (+e.dr || 0), 0);
+    let credits = 0;
+    const charges = {};                       // their card charges inside the window
+    entries.forEach(e => {
+      if (!inWin(e.date)) return;
+      credits += (+e.cr || 0);
+      const dr = +e.dr || 0;
+      if (dr > 0 && e.sourceAcctId && ccIds.has(e.sourceAcctId))
+        charges[e.sourceAcctId] = (charges[e.sourceAcctId] || 0) + dr;
+    });
+    if (credits <= 0.005) return;
+    const charged  = Object.values(charges).reduce((t, v) => t + v, 0);
+    const standing = Math.max(0, owesYou + credits);   // owed before these receipts
+    let settled = Math.min(credits, charged, standing);
+    if (settled <= 0.005) {
+      people.push({ id: pr.id, name: pr.name, credits: r(credits), charged: r(charged),
+                    settled: 0, held: r(Math.min(credits, Math.max(0, -(owesYou)))) });
+      return;
+    }
+    // dearest card first: the release should land where the money costs most
+    const order = Object.keys(charges).sort((a, b) => (aprOf[b] || 0) - (aprOf[a] || 0));
+    let left = settled;
+    order.forEach(acctId => {
+      if (left <= 0.005) return;
+      const take = Math.min(left, charges[acctId]);
+      byCard[acctId] = (byCard[acctId] || 0) + take;
+      left -= take;
+    });
+    people.push({ id: pr.id, name: pr.name, credits: r(credits), charged: r(charged),
+                  settled: r(settled - left), held: r(Math.min(credits, Math.max(0, -(owesYou)))) });
+  });
+
+  Object.keys(byCard).forEach(k => { byCard[k] = r(byCard[k]); });
+  return { byCard, people: people.filter(x => x.credits > 0.005),
+           total: r(Object.values(byCard).reduce((t, v) => t + v, 0)) };
+}
+
+// How much of a card's reimbursable charge the family has now covered, capped at
+// what that card is actually carrying so a release can never exceed the charge.
+function payReleasedOnCard(x, rel) {
+  if (!x || !x.acct) return 0;
+  const raw = (rel && rel.byCard && rel.byCard[x.acct.id]) || 0;
+  return raw <= 0 ? 0 : Math.round(Math.min(raw, payReimbOnCard(x)) * 100) / 100;
+}
+
 // The same figure with its working shown, so a row can say what is in it and
 // what was left out. Shiva, 2026-10-02: "are you including the reimbursable
 // expenses? Those are not something I get money from my family immediately."
@@ -10917,6 +10988,8 @@ function payPlan(R, states) {
 
   // ── what has to be paid, and by when ────────────────────────────────────
   const items = [];
+  const _r2  = n => Math.round(n * 100) / 100;
+  const _rel = payFamReleased();        // family money in hand, by card
   st.forEach(x => {
     const owedStmt = (x.stmtBal != null) ? Math.max(0, x.stmtBal - (x.paid || 0)) : 0;
     const minNeed  = Math.max(0, x.minUnfunded || 0);
@@ -10929,14 +11002,27 @@ function payPlan(R, states) {
                    why: auto ? 'on autopay — the issuer takes the minimum' : 'the minimum' });
     }
     const bp = payUnpaidSpendParts(x);
+    // A reimbursable charge the family has now settled stops being theirs and
+    // becomes his to put back, so it moves out of Waiting and into this target.
+    // Nothing to add on a pay-in-full card: its statement item already asks for
+    // the whole balance, reimbursable or not.
+    const _relAmt = x.role === 'pay-in-full' ? 0 : payReleasedOnCard(x, _rel);
+    if (_relAmt > 0.005) {
+      bp.released = _relAmt;
+      bp.reimb    = Math.max(0, _r2(bp.reimb - _relAmt));
+      bp.charged  = _r2(bp.charged + _relAmt);
+      bp.amount   = Math.max(0, _r2(bp.charged - bp.paid));
+    }
     if (bp.amount > 0.005) {
       // One clause on screen — the exclusion, because that is the one he has to
       // trust — and the whole arithmetic in the tooltip.
       items.push({ x, kind: 'back', amount: bp.amount, due: null, parts: bp,
         why: `${payFmt(bp.amount)} you charged and have not put back`
-             + (bp.reimb > 0.5 ? ` · ${payFmt(bp.reimb)} reimbursable left out` : ''),
+             + (bp.reimb > 0.5 ? ` · ${payFmt(bp.reimb)} reimbursable left out` : '')
+             + (bp.released > 0.5 ? ` · includes ${payFmt(bp.released)} the family has repaid` : ''),
         detail: `Charged over ${bFmtMonth(prevYM)} and ${bFmtMonth(curYM)}: ${payFmt2(bp.charged + bp.reimb)}`
-              + (bp.reimb > 0.005 ? `\nLess reimbursable (${payReimbCatNames()}): −${payFmt2(bp.reimb)}` : '')
+              + (bp.reimb > 0.005 ? `\nLess reimbursable, still owed (${payReimbCatNames()}): −${payFmt2(bp.reimb)}` : '')
+              + (bp.released > 0.005 ? `\nPlus reimbursable the family HAS repaid: +${payFmt2(bp.released)}` : '')
               + `\nYours to put back: ${payFmt2(bp.charged)}`
               + (bp.interest > 0.005 ? `\n  of which interest charged to the card: ${payFmt2(bp.interest)}` : '')
               + `\nAlready paid since ${bFmtMonth(prevYM)}: −${payFmt2(bp.paid)}`
@@ -11003,7 +11089,12 @@ function payPlan(R, states) {
     w.landed = i === 0 ? R.cash : 0;
   });
   const touched = new Set(wins.flatMap(w => w.rows.map(r => r.x.id)));
-  const waiting = st.map(x => ({ name: x.name, apr: x.apr, amount: payReimbOnCard(x) }))
+  const waiting = st.map(x => {
+                      const charged  = payReimbOnCard(x);
+                      const released = payReleasedOnCard(x, _rel);
+                      return { name: x.name, apr: x.apr, charged,
+                               released, amount: Math.max(0, _r2(charged - released)) };
+                    })
                     .filter(r => r.amount > 0.5)
                     .sort((a, b) => b.amount - a.amount);
   return {
@@ -11011,6 +11102,7 @@ function payPlan(R, states) {
     waiting,
     waitingTotal: waiting.reduce((s2, r) => s2 + r.amount, 0),
     waitingCost:  waiting.reduce((s2, r) => s2 + r.amount * r.apr / 1200, 0),
+    famRel: _rel,
     famOwed: (() => { try { return payEarmarks().totalReceivable || 0; } catch (e) { return 0; } })(),
     covered: st.filter(x => !touched.has(x.id) && x.balance > 0.005),
     empty:   st.filter(x => !touched.has(x.id) && x.balance <= 0.005),
@@ -12293,21 +12385,48 @@ function renderPayments() {
      </div>
    </div>
    ${_wins.map((w, i) => _winCard(w, _P.wins.indexOf(w))).join('')}
-   ${_P.waiting.length ? `
+   ${(() => {
+     // Shiva, 2026-10-05: "make that change to Waiting on the family". The line
+     // used to count charges only, so it never moved when the family paid him.
+     // Now it has two halves: what has come in, which the plan above has already
+     // spent, and what is still outstanding.
+     const _fr   = _P.famRel || { people: [], total: 0 };
+     const _got  = (_fr.people || []).filter(pp => pp.settled > 0.5)
+                                     .sort((a, b) => b.settled - a.settled);
+     const _held = (_fr.people || []).filter(pp => pp.held > 0.5 && pp.settled <= 0.5)
+                                     .sort((a, b) => b.held - a.held);
+     if (!_P.waiting.length && !(_fr.total > 0.5) && !_held.length) return '';
+     return `
    <div style="${card};overflow:hidden;margin-bottom:12px;border-style:dashed">
      <div style="padding:11px 16px;background:var(--surface2);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
        <span style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text2)">Waiting on the family</span>
        <span style="font-size:.73rem;color:var(--text3)">charged for them, not yours to put back</span>
        <span style="margin-left:auto;font-size:.95rem;font-weight:700;color:var(--text2);font-variant-numeric:tabular-nums">${payFmt2(_P.waitingTotal)}</span>
      </div>
+     ${_fr.total > 0.5 ? `
+     <div style="padding:10px 16px;background:color-mix(in srgb,var(--ok) 7%,transparent);border-bottom:1px solid var(--border);font-size:.78rem;color:var(--text2);line-height:1.7">
+       <span style="font-weight:700;color:var(--ok)">✓ ${payFmt2(_fr.total)} has come in</span>
+       <span style="color:var(--text3)"> and is already inside the payments above</span>
+       <div style="margin-top:3px">${_got.map(pp => `<b style="color:var(--text)">${esc(pp.name)} ${payFmt2(pp.settled)}</b>${
+         pp.credits - pp.settled > 0.5 ? `<span style="color:var(--text3)"> of ${payFmt2(pp.credits)}</span>` : ''}`).join(' · ')}</div>
+       <div style="font-size:.73rem;color:var(--text3);margin-top:3px">Money in hand against spending already on a card is yours to put back, so it is no longer left out.</div>
+     </div>` : ''}
+     ${_P.waiting.length ? `
      <div style="padding:12px 16px;font-size:.78rem;color:var(--text2);line-height:1.8">
        ${_P.waiting.map(r => `<b style="color:var(--text)">${esc(r.name)} ${payFmt2(r.amount)}</b>${
+         r.released > 0.5 ? `<span style="color:var(--text3)"> (was ${payFmt2(r.charged)}, ${payFmt2(r.released)} repaid)</span>` : ''}${
          r.apr > 0.005 ? `<span style="color:var(--text3)"> at ${r.apr.toFixed(2)}%</span>` : ''}`).join(' · ')}
        <div style="font-size:.73rem;color:var(--text3);margin-top:4px">
-         Left out of every payment above. It stays on the card${_P.waitingCost > 0.005 ? `, costing about ${payFmt2(_P.waitingCost)}/mo` : ''} until the money comes in.${
+         Still left out of every payment above. It stays on the card${_P.waitingCost > 0.005 ? `, costing about ${payFmt2(_P.waitingCost)}/mo` : ''} until the money comes in.${
          _P.famOwed > 0.5 ? ` The Family tab has ${payFmt2(_P.famOwed)} owed to you.` : ''}</div>
-     </div>
-   </div>` : ''}
+     </div>` : `
+     <div style="padding:12px 16px;font-size:.78rem;color:var(--ok);font-weight:600">Nothing outstanding — every reimbursable charge on the cards has been settled.</div>`}
+     ${_held.length ? `
+     <div style="padding:9px 16px;border-top:1px solid var(--border);font-size:.74rem;color:var(--text3);line-height:1.6">
+       Held, not a repayment: ${_held.map(pp => `<b style="color:var(--text2)">${esc(pp.name)} ${payFmt2(pp.held)}</b>`).join(' · ')}.
+       Given ahead of spending that has not happened yet, so it funds nothing on the cards today.
+     </div>` : ''}
+   </div>`; })()}
    ${_P.covered.length ? `<div style="font-size:.72rem;color:var(--text3);padding:2px 4px 6px">Nothing to send: ${
      _P.covered.map(x => esc(x.name) + (x.paid > 0.005 ? ' (' + payFmt(x.paid) + ' paid this cycle)' : '')).join(' · ')}.</div>` : ''}
    ${_P.empty.length ? `<div style="font-size:.72rem;color:var(--text3);padding:0 4px 12px">No balance: ${_P.empty.map(x => esc(x.name)).join(' · ')}.</div>` : ''}`;
@@ -19539,7 +19658,7 @@ function _renderAllAccountsView(panel) {
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
-      <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
+      <td style="font-size:.78rem;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)} — click to open this row in its account register"><span style="color:var(--primary);font-weight:500;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" onclick="BA.txnSearchEdit('${t.id}','${t.accountId}')">${esc(acctName)}</span></td>
       <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span>${_mobBadge}</td>
       <td style="overflow:hidden">${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.notes||'')}">${esc(t.notes||'')}</td>
@@ -19908,7 +20027,7 @@ function txnSearchInlineRow(t, acct) {
   } else {
     const _needsCat = ['Bank','Credit Card','Savings','Cash'].includes(acct?.type || '');
     catInput = `<div style="display:flex;align-items:center;gap:3px">
-      <select id="ti-cat" class="finput" style="${iS}min-width:140px" onchange="UI._txnCatUserChanged=true">
+      <select id="ti-cat" class="finput" style="${iS}width:200px;max-width:200px" onchange="UI._txnCatUserChanged=true">
         ${_needsCat ? '<option value="">— Expense Type —</option>' : '<option value="">— None —</option>'}
         ${txnCatOptions(t?.categoryId || null)}
       </select>
@@ -19917,13 +20036,13 @@ function txnSearchInlineRow(t, acct) {
   }
 
   return `<tr id="txn-inline-row" style="background:color-mix(in srgb,var(--primary) 8%,transparent)">
-    <td colspan="9" style="padding:6px 10px;border-top:2px solid color-mix(in srgb,var(--primary) 40%,transparent)">
+    <td colspan="10" style="padding:6px 10px;border-top:2px solid color-mix(in srgb,var(--primary) 40%,transparent)">
       <div style="display:flex;align-items:flex-start;gap:6px;flex-wrap:wrap">
         <span style="font-size:.71rem;font-weight:600;color:var(--primary);padding-top:8px;white-space:nowrap">✏ ${esc(acctName)}</span>
         <input type="date" id="ti-date" class="finput" style="${iS}width:132px" value="${t ? t.date : today}">
         <input type="text" id="ti-payee" class="finput" list="${_isXfer ? '' : 'txn-payee-list'}" style="${iS}width:155px${_isXfer ? ';background:var(--surface2);color:var(--text3)' : ''}" value="${t ? esc(t.payee||'') : ''}" ${_isXfer ? 'readonly' : ''} oninput="BA.txnPayeeInput(this.value)" onchange="BA.txnPayeeInput(this.value)" placeholder="Payee" autocomplete="off">
         ${catInput}
-        <input type="text" id="ti-notes" class="finput" style="${iS}${_fw}" value="${t ? esc(t.notes||'') : ''}" placeholder="Notes">
+        <input type="text" id="ti-notes" class="finput" style="${iS}width:170px" value="${t ? esc(t.notes||'') : ''}" placeholder="Notes">
         <input type="number" id="ti-debit"  class="finput r" style="${iS}width:82px;text-align:right" step="0.01" min="0" value="${debitVal}"  placeholder="Dr" oninput="BA.txnSplitAmtInput()">
         <input type="number" id="ti-credit" class="finput r" style="${iS}width:82px;text-align:right" step="0.01" min="0" value="${creditVal}" placeholder="Cr" oninput="BA.txnSplitAmtInput()">
         <label style="display:flex;align-items:center;gap:3px;font-size:.76rem;color:var(--text3);padding-top:7px;white-space:nowrap;cursor:pointer">
@@ -20004,7 +20123,7 @@ function _renderTxnSearchResults(panel, query) {
     return `<tr style="${_isSel?'background:color-mix(in srgb,var(--primary) 6%,transparent)':''}">
       <td style="text-align:center;padding:0 4px"><input type="checkbox" class="txn-row-chk" onchange="BA.txnToggleSelect('${t.id}',this.checked)" ${_isSel?'checked':''}></td>
       <td style="color:var(--text3);font-size:.78rem;white-space:nowrap">${fmtDate(t.date)}</td>
-      <td style="font-size:.78rem;color:var(--primary);font-weight:500;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)}">${esc(acctName)}</td>
+      <td style="font-size:.78rem;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acctName)} — click to open this row in its account register"><span style="color:var(--primary);font-weight:500;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" onclick="BA.txnSearchEdit('${t.id}','${t.accountId}')">${esc(acctName)}</span></td>
       <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${esc(t.payee||'')} — click to filter by payee"><span style="cursor:pointer;border-radius:3px;padding:0 2px;transition:background .12s" onmouseover="this.style.background='color-mix(in srgb,var(--primary) 10%,transparent)'" onmouseout="this.style.background=''" onclick="BA.txnSetPayeeFilter(${JSON.stringify(t.payee||'')})">${esc(t.payee||'')}</span>${_mobBadge}</td>
       <td style="overflow:hidden">${catBadge}</td>
       <td style="font-size:.75rem;color:var(--text3);max-width:110px;overflow:hidden;text-overflow:ellipsis">${esc(t.notes||'')}</td>
