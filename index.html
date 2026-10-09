@@ -16070,14 +16070,17 @@ function renderMobileView() {
     const txnAccts   = (D.txnAccounts || []).filter(a => a.active !== false && (a.status !== 'closed' || a.id === selAcctId));
     const selAcct    = selAcctId ? txnAccts.find(a => a.id === selAcctId) : null;
 
-    // Account selector
-    const acctOpts = txnAccts.map(a =>
-      `<option value="${esc(a.id)}"${a.id === selAcctId ? ' selected' : ''}>${esc(a.name)}</option>`
-    ).join('');
+    // Account selector. Shiva, 2026-10-08: this used to be a flat list in raw
+    // D.txnAccounts order, so the phone and the desktop disagreed about where an
+    // account was — 55 rows with no headings, scrolled with a thumb. It now goes
+    // through acctOptions(), the ONE dropdown builder, which groups by type and
+    // sorts type then name. That is not a copy of the desktop order, it IS the
+    // desktop order: change it there and the phone follows. acctOptions also
+    // owns the closed-account rule (hidden, except one already selected), which
+    // this call site used to have to remember on its own.
     const selectorHTML = `<select onchange="BA.setMobileTxnAcct(this.value)"
       style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r1);background:var(--surface);color:var(--text);font-size:.85rem;margin-bottom:8px">
-      <option value="">All Accounts</option>
-      ${acctOpts}
+      ${acctOptions(selAcctId, null, { blank: 'All Accounts' })}
     </select>`;
 
     // Search input
