@@ -10844,6 +10844,18 @@ function payFamReleased() {
   const aprOf = {};
   (D.ccTracker && D.ccTracker.cards || []).forEach(c => {
     if (c.linkedTxnAccountId) aprOf[c.linkedTxnAccountId] = +c.apr || 0; });
+  // What each card is actually carrying in reimbursable charges over the window —
+  // the ceiling on what any receipt can release there. This is the SAME measure
+  // the Waiting line shows, so the two can never disagree.
+  const capOf = {};
+  (D.transactions || []).forEach(t => {
+    if (!ccIds.has(t.accountId) || t.isTransfer || !txnCounts(t)) return;
+    if (!inWin(t.date)) return;
+    // Net, not positives-only: a refund on a reimbursable charge reduces what
+    // the card is carrying, exactly as payReimbOnCard counts it.
+    capOf[t.accountId] = (capOf[t.accountId] || 0) + payReimbPortion(t);
+  });
+  Object.keys(capOf).forEach(k => { capOf[k] = Math.max(0, r(capOf[k])); });
   const byCard = {}, people = [];
 
   (D.familyAccounts && D.familyAccounts.persons || []).forEach(pr => {
@@ -10862,23 +10874,28 @@ function payFamReleased() {
     if (credits <= 0.005) return;
     const charged  = Object.values(charges).reduce((t, v) => t + v, 0);
     const standing = Math.max(0, owesYou + credits);   // owed before these receipts
-    let settled = Math.min(credits, charged, standing);
+    const settled = Math.min(credits, charged, standing);
+    const held    = r(Math.min(credits, Math.max(0, -(owesYou))));
     if (settled <= 0.005) {
       people.push({ id: pr.id, name: pr.name, credits: r(credits), charged: r(charged),
-                    settled: 0, held: r(Math.min(credits, Math.max(0, -(owesYou)))) });
+                    settled: 0, held });
       return;
     }
-    // dearest card first: the release should land where the money costs most
+    // dearest card first: the release should land where the money costs most.
+    // A card can only give back what it is actually carrying, so what it cannot
+    // take spills to the next card rather than being announced and never applied.
     const order = Object.keys(charges).sort((a, b) => (aprOf[b] || 0) - (aprOf[a] || 0));
     let left = settled;
     order.forEach(acctId => {
       if (left <= 0.005) return;
-      const take = Math.min(left, charges[acctId]);
+      const room = Math.max(0, (capOf[acctId] || 0) - (byCard[acctId] || 0));
+      const take = Math.min(left, charges[acctId], room);
+      if (take <= 0.005) return;
       byCard[acctId] = (byCard[acctId] || 0) + take;
       left -= take;
     });
     people.push({ id: pr.id, name: pr.name, credits: r(credits), charged: r(charged),
-                  settled: r(settled - left), held: r(Math.min(credits, Math.max(0, -(owesYou)))) });
+                  settled: r(settled - left), held });
   });
 
   Object.keys(byCard).forEach(k => { byCard[k] = r(byCard[k]); });
@@ -20894,7 +20911,28 @@ const FIN_LIABILITY_TYPES = ['Credit Card','Loans','Loan'];
 // between your own accounts — not real cash income (dividends, salary, interest, refunds).
 // Shared by the Balance Sheet's cash-flow lens and the Income & Expenditure statement so
 // both agree on what counts as "income."
-const FIN_NON_CASHFLOW_PAYEES = /adjustment|starting balance|vested|correction|reconciliation|contribution/i;
+// "Change in Value" is how Shiva marks an investment or loan account to its
+// current statement figure. It was not in this list, so every such entry read as
+// real money: Sep 2026 showed $297,668 of household expenditure, $272,345 of it
+// one ESOP writedown; Mar 2023 showed $146,975 of "income" and Dec 2024 $91,703,
+// all of it market movement. Phrases are anchored, never bare words: "value",
+// "market", "gain" and "loss" on their own would swallow Market Street, 99 Ranch
+// Market, Edugain and Nuvo Fatloss.
+const FIN_NON_CASHFLOW_PAYEES = /adjustment|starting balance|vested|correction|reconciliation|contribution|change in value|market value|revaluation|unrealized|tax withheld for withdrawal/i;
+// Credits that land on an asset account but are not household income. The picker
+// labels Family Deposits "(not counted as income)"; this is the code that makes
+// that true on the statements. A pot withdrawal is his own money coming back.
+const FIN_NON_INCOME_CATS = ['__family_deposits__', '__pot_withdrawal__'];
+// The one test for "is this credit income?", so the Income & Expenditure page,
+// the debt-to-income ratio and anything else added later cannot drift apart.
+// A credit on a card or loan is a repayment reducing what is owed, not income.
+function finIncomeCredit(t, acct) {
+  const cr = parseFloat(t && t.credit) || 0;
+  if (cr <= 0) return 0;
+  if (acct && FIN_LIABILITY_TYPES.includes(acct.type)) return 0;
+  if (FIN_NON_INCOME_CATS.includes(t.categoryId)) return 0;
+  return cr;
+}
 // Categories that represent a real cost of holding the liability itself (annual/membership
 // fees, service fees) — counted alongside interest in the liability cost estimate. Matched by
 // category name rather than id since ids are data-specific and names are what you'd recognize.
@@ -21040,10 +21078,10 @@ function renderBalanceSheet(c) {
   const monthlyIncomeFor = (acct) => {
     const txns = (D.transactions||[]).filter(t =>
       t.accountId === acct.id && !t.isTransfer && (t.date||'') >= last12Start && (t.date||'') <= asOf &&
-      txnCounts(t) && (parseFloat(t.credit)||0) > 0 &&
+      txnCounts(t) && finIncomeCredit(t, acct) > 0 &&
       !FIN_NON_CASHFLOW_PAYEES.test(t.payee||'')
     );
-    return txns.reduce((s,t) => s + (parseFloat(t.credit)||0), 0) / 12;
+    return txns.reduce((s,t) => s + finIncomeCredit(t, acct), 0) / 12;
   };
   const finLast12MonthKeys = (endYm) => {
     const [y,m] = endYm.split('-').map(Number);
@@ -21450,10 +21488,10 @@ function renderIncomeExpenditure(c) {
   txns.forEach(t => {
     const credit = parseFloat(t.credit)||0, debit = parseFloat(t.debit)||0;
     const acct = acctById[t.accountId];
-    // A credit posted to a Credit Card or Loan account is a payment/repayment reducing
-    // what you owe — not income. Only count credits on asset-side accounts as income.
-    const isLiabilityAcct = acct && FIN_LIABILITY_TYPES.includes(acct.type);
-    if (!isLiabilityAcct && (t.categoryId === '__income__' || credit > 0)) income += credit;
+    income += finIncomeCredit(t, acct);
+    // Symmetric with the income side: money held for the family is not his to
+    // spend either, so returning it is not household expenditure.
+    if (FIN_NON_INCOME_CATS.includes(t.categoryId)) return;
     if (t.splits && t.splits.length) {
       // Split transaction: the parent's own categoryId/debit is just a shell —
       // only the split lines represent real spend, so count those and skip the parent
