@@ -2394,6 +2394,11 @@ function oblMigrate() {
     }
     if (obj.autoPost === undefined)       { obj.autoPost = true; changed++; }
     if (obj.trackInMonthly === undefined) { obj.trackInMonthly = false; changed++; }
+    // An obligation is, by definition, a recurring charge with a payment method
+    // already on file: a subscription bills the card, an EMI debits the bank.
+    // So the default is automatic, and anything he actually pays by hand gets
+    // the tick cleared in the editor or on the row.
+    if (obj.isAutomatic === undefined) { obj.isAutomatic = true; changed++; }
     if (obj.amountType === undefined)     { obj.amountType = 'fixed'; changed++; }
     if (obj.splitTemplate === undefined)  { obj.splitTemplate = []; changed++; }
     if (obj.endDate === undefined)        { obj.endDate = ''; changed++; }
@@ -3594,6 +3599,34 @@ function sortAndFilter(payments) {
   return list;
 }
 
+// Is this Monthly row paid automatically? Shiva, 2026-10-13: "why are some of
+// the autopay flags not showing up". Four rows built from OBLIGATIONS — All
+// State Home, All State Auto, T-Mobile, Ford Lightning, all four genuinely on
+// autopay from PNC — showed no tick, because generateCycle wrote
+// `isAutomatic: false` into every obligation-built row regardless.
+//
+// Read it from the thing that owns the answer instead of from a copy taken the
+// day the row was generated. That also closes the older, quieter version of the
+// same bug: flip a template to autopay and its already-generated rows kept
+// saying manual for ever. The stored flag stays as the fallback, so a row typed
+// in by hand (Add Payment) still reports what was typed.
+//
+// autoPost is NOT this flag. It means "post a pending transaction on the due
+// date", it is true on all 35 subscriptions, and reusing it would mark every
+// obligation automatic. An obligation's own isAutomatic is the answer.
+function mtxIsAuto(p) {
+  if (!p) return false;
+  if (p.obligationId) {
+    const found = (typeof oblFind === 'function') ? oblFind(p.obligationId) : null;
+    if (found && found.obj && found.obj.isAutomatic !== undefined) return !!found.obj.isAutomatic;
+  }
+  if (p.templateId) {
+    const t = (D.templates || []).find(x => x.id === p.templateId);
+    if (t) return !!t.isAutomatic;
+  }
+  return !!p.isAutomatic;
+}
+
 function rowHTML(p, idx) {
   const dl = p.isPaid ? null : (p.dueDate ? daysLeft(p.dueDate) : null);
   const rowCls = p.isPaid ? 'paid' : (dl!==null&&dl<0 ? 'overdue' : '');
@@ -3603,18 +3636,20 @@ function rowHTML(p, idx) {
   else if (dl!==null&&dl<0) dotCls = 'overdue';
   else if (dl!==null&&dl<=7) dotCls = 'soon';
 
+
   const amtFmt  = fmtCurrency(p.amountDue);
   const balFmt  = fmtCurrency(p.outstandingBalance);
   const paidFmt = fmtCurrency(p.amountPaid);
   const pfrom   = acctLabel(p.paidFromId, p.paidFrom);
 
+  const _isAuto = mtxIsAuto(p);
   // Paid From: editable only for non-automatic payments
-  const paidFromCell = p.isAutomatic
+  const paidFromCell = _isAuto
     ? `<div class="cell"><span class="truncate" style="color:var(--text2)">${esc(pfrom) || '<span style="color:var(--text3)">—</span>'}</span></div>`
     : `<div class="cell ed" onclick="editPaidFrom(this,'${p.id}')"><span class="truncate">${esc(pfrom) || '<span style="color:var(--text3)">—</span>'}</span></div>`;
 
   // Auto: simple checkmark or blank
-  const autoCell = p.isAutomatic
+  const autoCell = _isAuto
     ? '<span style="color:var(--ok);font-size:15px;font-weight:700">&#10003;</span>'
     : '';
 
@@ -4180,7 +4215,7 @@ function generateCycle() {
       paidFromId: (acctByName(obj.paymentMethod)||{}).id || null,
       paidFromId: (acctByName(obj.paymentMethod)||{}).id || null,
       paidFrom: obj.paymentMethod || null,
-      isAutomatic: false,
+      isAutomatic: obj.isAutomatic !== false,
       notes: dues.length > 1 ? `${dues.length} charges this month` : (obj.amountType === 'variable' ? 'variable — estimate' : '')
     });
     added++;
@@ -10561,7 +10596,7 @@ function payOutflowEvents(from, to, meta) {
       out.push({
         date: p.dueDate, label: p.name, amount: amt,
         kind: p.category === 'Credit Cards' ? 'cc-min' : 'committed',
-        cat: p.category || '', auto: !!p.isAutomatic, paidFrom: p.paidFrom || null
+        cat: p.category || '', auto: mtxIsAuto(p), paidFrom: p.paidFrom || null
       });
     });
   });
@@ -10952,7 +10987,7 @@ function payCardIsAuto(x) {
   const ym = (x.dueDate || '').slice(0, 7);
   const rows = (D.cycles && D.cycles[ym] && D.cycles[ym].payments) || [];
   const nm = (x.name || '').trim().toLowerCase();
-  return rows.some(p => p.isAutomatic && p.category === 'Credit Cards' &&
+  return rows.some(p => mtxIsAuto(p) && p.category === 'Credit Cards' &&
                         (p.ccCardId === x.id || (p.name || '').trim().toLowerCase() === nm));
 }
 
@@ -14338,10 +14373,13 @@ function oblShowsUpCell(o) {
   return `<div style="display:flex;gap:5px;flex-wrap:wrap">
     ${chip(!!o.autoPost, 'Txns',
       o.autoPost ? 'Auto-posts a pending transaction on each due date — click to stop'
-                 : 'Not auto-posted; you record it by hand — click to auto-post')}
+                 : 'Not auto-posted; you record it by hand — click to auto-post', 'auto')}
     ${chip(!!o.trackInMonthly, 'Monthly',
       o.trackInMonthly ? 'Also builds a Monthly tab payment row — click to stop'
-                       : 'Not in the Monthly tab — click to add it')}
+                       : 'Not in the Monthly tab — click to add it', 'month')}
+    ${chip(o.isAutomatic !== false, 'Auto',
+      o.isAutomatic !== false ? 'The biller takes it automatically — click if you pay this one by hand'
+                              : 'You pay this one by hand — click if the biller takes it automatically', 'paidauto')}
   </div>`;
 }
 
@@ -14367,6 +14405,7 @@ function oblPayAcctMismatch(paymentMethod) {
 function oblPostingFields(o) {
   const auto  = !o || o.autoPost !== false;
   const month = !!(o && o.trackInMonthly);
+  const paidAuto = !o || o.isAutomatic !== false;
   const box = (idAttr, on, title, body) => `
     <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);user-select:none">
       <input type="checkbox" id="${idAttr}" style="margin-top:2px;width:16px;height:16px;cursor:pointer;accent-color:var(--primary)" ${on?'checked':''}>
@@ -14383,6 +14422,8 @@ function oblPostingFields(o) {
               'Creates a pending transaction on each due date for you to approve. Turn off for anything you record by hand.')}
         ${box('obl-trackmonthly', month, 'Also track in the Monthly tab',
               'Adds a payment row to Generate from Templates each month, built from this obligation — so the amount, due day and paying account live in one place instead of two.')}
+        ${box('obl-paidauto', paidAuto, 'Paid automatically',
+              'The biller takes it without you doing anything — a card on file or a direct debit. This is what the Monthly tab\u2019s Auto column shows, and what the Payments page uses to stop asking you to send money that is already leaving. Not the same as auto-posting above, which is about the transaction record.')}
         ${box('obl-duenext', !!(o && o.dueNextMonth), 'Paid from the previous month\u2019s pay',
               'For a charge that falls in the first days of a month but is funded by the month before — due the 2nd, planned and paid out of the previous month\u2019s salary. This is the “due next month” setting the Payment Templates carried.')}
       </div>
@@ -14754,6 +14795,7 @@ function oblSaveSub(editId) {
     splitTemplate: _splitTpl,
     autoPost: _autoPost,
     trackInMonthly: !!id('obl-trackmonthly')?.checked,
+    isAutomatic:    !!id('obl-paidauto')?.checked,
     dueNextMonth: !!id('obl-duenext')?.checked,
     notes: id('osub-notes').value.trim(),
     dateAdded: editId ? undefined : ymNow() + '-01'
@@ -14945,6 +14987,7 @@ function oblSaveEmi(editId) {
     notes: id('oemi-notes').value.trim(),
     autoPost: _autoPost,
     trackInMonthly: !!id('obl-trackmonthly')?.checked,
+    isAutomatic:    !!id('obl-paidauto')?.checked,
     dueNextMonth: !!id('obl-duenext')?.checked,
   };
   if (editId) {
@@ -15115,6 +15158,7 @@ function oblSaveSplit(editId) {
     status: paid >= count ? 'Completed' : 'Active',
     autoPost: _autoPost,
     trackInMonthly: !!id('obl-trackmonthly')?.checked,
+    isAutomatic:    !!id('obl-paidauto')?.checked,
     dueNextMonth: !!id('obl-duenext')?.checked,
   };
   if (editId) {
@@ -17404,6 +17448,10 @@ const BA = {
       o.autoPost = !o.autoPost;
       toast(o.autoPost ? `${oblName(o)} will auto-post on each due date`
                        : `${oblName(o)} will no longer auto-post`, 'ok');
+    } else if (kind === 'paidauto') {
+      o.isAutomatic = (o.isAutomatic === false);
+      toast(o.isAutomatic ? `${oblName(o)} is paid automatically`
+                          : `${oblName(o)} is paid by hand`, 'ok');
     } else {
       o.trackInMonthly = !o.trackInMonthly;
       toast(o.trackInMonthly ? `${oblName(o)} added to the Monthly tab`
