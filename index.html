@@ -8426,7 +8426,13 @@ function payLedgerRows(R, P) {
     // Card minimums and statements are the plan's job; adding the forecast too
     // would count the same payment twice.
     if (o.kind === 'cc-min' || o.kind === 'cc-full') return;
-    rows.push({ date: o.riskDate || o.date, due: o.date, desc: o.label || 'Payment',
+    // An overdue bill belongs at the top of the register, dated today, with the
+    // date it was actually due underneath. Sorting it by its risk date would
+    // file it before "Balance today" and read as history rather than a claim on
+    // the money sitting there now.
+    rows.push({ date: o.overdue ? R.today : (o.riskDate || o.date),
+                due: o.overdue ? o.overdueSince : o.date,
+                desc: o.label || 'Payment', overdue: !!o.overdue,
                 debit: +o.amount || 0, kind: o.kind === 'transfer' ? 'transfer' : 'bill' });
   });
   (P.wins || []).forEach((w, i) => w.rows.forEach(r => rows.push({
@@ -9630,6 +9636,9 @@ function payBankLabel() {
 function payRiskDate(ev) {
   if (!ev) return null;
   if (ev.kind === 'income') return ev.date;
+  // Already due and still unpaid: the money has either gone or goes today, so
+  // it is at risk from the day it fell due, whatever the usual lead time.
+  if (ev.overdue) return ev.overdueSince || ev.date;
   if (PAY_EARLY_DEBIT_EXEMPT.has(ev.cat)) return ev.date;
   return payAddDays(ev.date, -PAY_EARLY_DEBIT_DAYS);
 }
@@ -10565,9 +10574,27 @@ function paySaveRT(editId) {
   toast(`Standing transfer ${editId ? 'updated' : 'added'} ✓`, 'ok');
 }
 
+// How far back an unpaid bill is still believed. Shiva, 2026-10-21: "when
+// transactions are not approved yet and it is gone past due, the payment tab
+// ignores that and assumes the current balance is after the payments have been
+// made". It did, twice over. An unpaid Monthly row was dropped the day after it
+// fell due (`p.dueDate < from`), and the pending transaction standing for it was
+// never in the balance either, because txnCounts() excludes pending. So on
+// 21 October All State Home ($974.28) and All State Auto ($3,651.82), both due
+// the 20th and both still pending, were invisible on BOTH sides: $4,626.10 of
+// PNC's $4,710.13 was spoken for and the page offered it as free cash.
+//
+// Past this many days an unticked row is stale bookkeeping rather than money
+// about to move, and resurrecting it would be its own kind of wrong.
+const PAY_OVERDUE_LOOKBACK = 60;
+
 function payOutflowEvents(from, to, meta) {
   const P = payDefaults();
   const out = [];
+  const overdueFloor = payAddDays(from, -PAY_OVERDUE_LOOKBACK);
+  // Anything already emitted for an obligation in a given cycle month, so the
+  // pending-transaction pass below cannot count the same bill a second time.
+  const seenObl = new Set();
   const _payBankIds = payBankAccountIds();
   // A template's "Pay From Account" is free text, so match it against EVERY
   // included account's name — otherwise a bill paid from New Spend looked like
@@ -10586,18 +10613,49 @@ function payOutflowEvents(from, to, meta) {
     return _bankIds.has(acct.id);
   };
 
-  Object.values(D.cycles || {}).forEach(cy => {
+  Object.entries(D.cycles || {}).forEach(([ym, cy]) => {
     (cy.payments || []).forEach(p => {
-      if (!p.dueDate || p.dueDate < from || p.dueDate > to) return;
+      if (!p.dueDate || p.dueDate > to) return;
       if (p.isPaid) return;
+      const overdue = p.dueDate < from;
+      if (overdue && p.dueDate < overdueFloor) return;   // too old to still be real
       const amt = +p.amountDue || 0;
       if (amt <= 0) return;
       if (!leavesBank(p)) { skipped.push({ label: p.name, amount: amt, from: p.paidFrom }); return; }
+      if (p.obligationId) seenObl.add(p.obligationId + '::' + ym);
       out.push({
-        date: p.dueDate, label: p.name, amount: amt,
+        // An overdue bill sits at TODAY in the ledger, with its real due date
+        // kept so the row can say how late it is.
+        date: overdue ? from : p.dueDate, label: p.name, amount: amt,
+        overdue, overdueSince: overdue ? p.dueDate : null, dueDate: p.dueDate,
         kind: p.category === 'Credit Cards' ? 'cc-min' : 'committed',
         cat: p.category || '', auto: mtxIsAuto(p), paidFrom: p.paidFrom || null
       });
+    });
+  });
+
+  // ── pending bank transactions that are already due ─────────────────────────
+  // The other half of the same hole. A bill can reach the register as a pending
+  // transaction without ever having a Monthly row (an obligation with "Also
+  // track in the Monthly tab" off), and pending rows are outside the balance.
+  // Deduped against the pass above, so a bill that has both is counted once.
+  const _bankIdSet = new Set(payBankAccounts().map(a => a.id));
+  (D.transactions || []).forEach(t => {
+    if (t.status !== 'pending') return;
+    if (t.isTransfer || !_bankIdSet.has(t.accountId)) return;
+    const amt = (+t.debit || 0) - (+t.credit || 0);
+    if (amt <= 0.005) return;
+    const when = t.date || '';
+    if (!when || when >= from) return;                 // not yet due: not this pass
+    if (when < overdueFloor) return;                   // too old to still be real
+    const key = t.obligationId ? t.obligationId + '::' + (t.oblMonth || when.slice(0, 7)) : null;
+    if (key && seenObl.has(key)) return;               // already counted as a Monthly row
+    if (key) seenObl.add(key);
+    out.push({
+      date: from, label: (t.payee || 'Pending payment'), amount: amt,
+      overdue: true, overdueSince: when, dueDate: when,
+      kind: 'committed', cat: 'Dated ahead',
+      paidFrom: (acctResolve(t.accountId, null) || {}).name || null, fromPending: true
     });
   });
   if (meta) { meta.skipped = skipped; meta.unknown = unknown; }
@@ -12373,11 +12431,14 @@ function renderPayments() {
   const _lth = 'padding:6px 8px;text-align:left;font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1';
   const _ledgerRow = r => {
     const plan = r.kind === 'plan';
-    const bg   = plan ? (r.auto ? 'color-mix(in srgb,var(--info) 9%,transparent)' : 'color-mix(in srgb,var(--primary) 10%,transparent)') : 'transparent';
+    const bg   = r.overdue ? 'color-mix(in srgb,var(--danger) 9%,transparent)'
+               : plan ? (r.auto ? 'color-mix(in srgb,var(--info) 9%,transparent)' : 'color-mix(in srgb,var(--primary) 10%,transparent)') : 'transparent';
     const tag  = plan
       ? ` <span class="led-tag" style="font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:${r.auto ? 'var(--info)' : 'var(--primary)'};margin-left:4px">${r.auto ? 'auto' : 'plan'}</span>`
       : '';
-    const sub = (r.due && r.due !== r.date) ? `<div style="font-size:.6rem;color:var(--text3)">due ${fmtDate(r.due)}</div>` : '';
+    const sub = r.overdue
+      ? `<div style="font-size:.6rem;color:var(--danger);font-weight:600">overdue \u00b7 was due ${fmtDate(r.due)}, still not approved</div>`
+      : (r.due && r.due !== r.date) ? `<div style="font-size:.6rem;color:var(--text3)">due ${fmtDate(r.due)}</div>` : '';
     return `<tr style="background:${bg};border-bottom:1px solid var(--border-light)">
       <td style="padding:5px 8px;font-size:.72rem;color:var(--text2);white-space:nowrap">${fmtDate(r.date)}</td>
       <td style="padding:5px 8px;font-size:.74rem;color:var(--text)">${esc(r.desc)}${tag}${sub}</td>
@@ -12433,6 +12494,13 @@ function renderPayments() {
          _payBanks.length > 1 ? `<div style="font-size:.68rem;color:var(--text3)">${
            _payBanks.map(b => `${esc(b.name)} ${payFmt2(txnCurrentBalance(b))}`).join(' · ')}</div>` : ''}</div>
        <div style="color:var(--text3)">floor ${payFmt2(R.floor)} · next pay ${R.nextIncome ? payFmt(R.nextIncome.amount) + ' on ' + fmtDate(R.nextIncome.date) : '—'}</div>
+       ${(() => {
+         const od = (R.outs || []).filter(o => o.overdue);
+         if (!od.length) return '';
+         const t = od.reduce((s2, o) => s2 + (+o.amount || 0), 0);
+         return `<div style="font-weight:600;color:var(--danger)">\u26a0 ${payFmt(t)} already due and still pending \u2014 ${
+           od.map(o => esc(o.label)).join(', ')}. Held back from what you can send.</div>`;
+       })()}
        ${_P.shortTotal > 0.005
          ? `<div style="font-weight:600;color:var(--danger)">⚠ ${payFmt(_P.shortTotal)} cannot be covered in time</div>`
          : `<div style="font-weight:600;color:var(--ok)">✓ everything due is covered, on time</div>`}
@@ -16685,9 +16753,9 @@ const BA = {
     const curType = editing ? ((parseFloat(txn.credit) || 0) > 0 && !(parseFloat(txn.debit) || 0) ? 'credit' : 'debit') : 'debit';
     const curAmt  = editing ? (Math.abs((parseFloat(txn.debit) || 0) - (parseFloat(txn.credit) || 0)) || '') : '';
 
-    // Build options as arrays to avoid any HTML injection issues
-    let acctOptsHtml = '<option value="">Select account…</option>';
-    accts.forEach(a => { acctOptsHtml += `<option value="${esc(a.id)}"${a.id === curAcct ? ' selected' : ''}>${esc(a.name)}</option>`; });
+    // Through acctOptions, so the phone shows the same grouping and the same
+    // order as the Transactions sidebar instead of raw file order.
+    const acctOptsHtml = acctOptions(curAcct, null, { blank: 'Select account…' });
 
     // ── 💰 Income must be selectable here ──────────────────────────────────
     // The Type dropdown says "Income (money in +)", but that only sets `credit`
@@ -17108,8 +17176,7 @@ const BA = {
           <button onclick="BA.mobFastFlip()" style="background:none;border:none;color:var(--primary);font-weight:700;font-size:.74rem;min-height:36px;cursor:pointer">switch</button></div>
         <div class="mob-guess"><span>${inb ? 'Into' : 'Card'} &nbsp;
           <select onchange="BA.mobFastSetAcct(this.value)" style="border:none;background:none;font-weight:700;color:var(--text);font-size:.82rem;max-width:170px">
-            <option value="">Select…</option>
-            ${accts.map(a => `<option value="${esc(a.id)}"${a.id === f.acctId ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
+            ${acctOptions(f.acctId, null, { blank: 'Select…' })}
           </select></span></div>
         <div class="mob-guess"><span>Category &nbsp;<b>${f.catId ? esc(catName(f.catId)) : '—'}</b></span></div>
         ${f.alts.length ? `<div class="mob-chips" style="margin-bottom:7px">${
@@ -20759,13 +20826,39 @@ function acctLabel(aid, nm)   { const a = acctResolve(aid, nm); return a ? a.nam
 //   flat     — skip the per-type <optgroup> headings
 // An account that is already selected is always offered even when closed, so
 // opening a form never silently changes a setting you had saved.
+// The order accounts appear in, everywhere. Shiva, 2026-10-21: the mobile add
+// sheet listed them "in random fashion" — it was raw file order, ungrouped.
+//
+// The fix is upstream of that. acctOptions used to sort type then name
+// alphabetically, which threw away the order he had already set by DRAGGING the
+// Transactions sidebar: PNC first, then Citi, Chase, Amazon, his biggest cards
+// first. Alphabetical opened every dropdown on "Amazon Card, Apple, Best Buy"
+// and buried PNC six rows down.
+//
+// So there is now one order and it is the sidebar's: TXN_GROUP_ORDER for the
+// groups, his own arrangement within each. Drag an account in Transactions and
+// every picker in the app follows, desktop and phone.
+function acctSortCmp(a, b) {
+  const list = D.txnAccounts || [];
+  const gi = t => { const i = TXN_GROUP_ORDER.indexOf(t || ''); return i < 0 ? TXN_GROUP_ORDER.length : i; };
+  const ga = gi(a.type), gb = gi(b.type);
+  if (ga !== gb) return ga - gb;
+  // two types that are both outside the known order: keep them side by side
+  if (ga === TXN_GROUP_ORDER.length && a.type !== b.type)
+    return (a.type || '').localeCompare(b.type || '');
+  return list.indexOf(a) - list.indexOf(b);
+}
+function acctGroupCmp(ta, tb) {
+  const gi = t => { const i = TXN_GROUP_ORDER.indexOf(t || ''); return i < 0 ? TXN_GROUP_ORDER.length : i; };
+  return gi(ta) - gi(tb) || (ta || '').localeCompare(tb || '');
+}
 function acctOptions(selectedId, selectedName, opts) {
   const o    = opts || {};
   const cur  = acctResolve(selectedId, selectedName);
   const list = (D.txnAccounts||[])
     .filter(a => a.status !== 'closed' || (cur && a.id === cur.id))
     .filter(a => !o.types || o.types.includes(a.type))
-    .sort((a,b) => (a.type||'').localeCompare(b.type||'') || (a.name||'').localeCompare(b.name||''));
+    .sort(acctSortCmp);
   const val = a => o.valueBy === 'name' ? esc(a.name||'') : a.id;
   const lab = a => o.label ? o.label(a) : esc(a.name);
   const opt = a => `<option value="${val(a)}"${cur && a.id === cur.id ? ' selected' : ''}>${lab(a)}</option>`;
@@ -20773,7 +20866,7 @@ function acctOptions(selectedId, selectedName, opts) {
   if (o.flat) return html + list.map(opt).join('');
   const byType = {};
   list.forEach(a => { (byType[a.type||'Other'] = byType[a.type||'Other'] || []).push(a); });
-  Object.keys(byType).sort().forEach(t => {
+  Object.keys(byType).sort(acctGroupCmp).forEach(t => {
     html += `<optgroup label="${esc(t)}">` + byType[t].map(opt).join('') + `</optgroup>`;
   });
   return html;
