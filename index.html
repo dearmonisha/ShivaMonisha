@@ -965,6 +965,91 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
 #mob-ptr{position:fixed;top:0;left:0;right:0;z-index:400;display:flex;align-items:center;justify-content:center;
   height:0;overflow:hidden;background:var(--surface);color:var(--text2);font-size:.78rem;font-weight:700;
   border-bottom:1px solid var(--border);transition:height .18s ease;pointer-events:none}
+/* ══ PHONE IN LANDSCAPE ═══════════════════════════════════════════════════
+   Shiva, 2026-10-23: turning the iPhone sideways gives him the full app rather
+   than the mobile view, and he prefers it. iPhone 17 Pro Max landscape is
+   956 x 440 CSS px, about 388 of which survives Safari's bars.
+
+   Two things were wrong at that size. The HEADER alone measured 1,338px, so
+   every single view scrolled sideways: logo 188 + pills 744 + save 89 + two
+   buttons 159, against 956. And with viewport-fit=cover the Dynamic Island
+   overlays roughly 59px at each end, so the first pill and the Exit button sat
+   underneath it.
+
+   Short AND not very wide AND landscape: a phone on its side, or a desktop
+   window squashed to the same shape, both of which want the same thing. An
+   iPad in landscape is over 800px tall and is deliberately not caught. */
+@media (orientation:landscape) and (max-height:520px) and (max-width:1200px) {
+
+  /* ── the header, inside the island ──────────────────────────────────── */
+  .hdr{height:40px;gap:6px;
+       padding-left:max(8px,env(safe-area-inset-left));
+       padding-right:max(8px,env(safe-area-inset-right))}
+  .logo{font-size:0;gap:0}                    /* the mark stays, the wordmark goes */
+  .logo svg{width:20px;height:20px;flex:0 0 20px}
+  .logo span{display:none}                    /* "ONLINE" */
+  /* The pills are the long pole. Smaller, tighter, and allowed to scroll on
+     their own so a future tab can never push the PAGE sideways again. */
+  .nav-pills{flex:0 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;
+             padding:2px;gap:1px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .nav-pills::-webkit-scrollbar{display:none}
+  .np{padding:3px 7px;font-size:11.5px;white-space:nowrap}
+  .hdr-space{flex:1 1 0;min-width:0}
+  .save-info{display:none}                    /* the button already says it */
+  .save-btn,.exit-btn{padding:4px 7px;font-size:11.5px;margin-left:0;flex:0 0 auto}
+  .save-btn-label,.exit-btn span{display:none}/* icon only */
+
+  /* ── vertical space is the scarce one: 388px, less a 40px header ────── */
+  #view-payments,#view-financials,#view-cat-trends,#view-mindfulness,
+  #view-ratios,#view-home-cost,#view-savings-pots,#view-reserve-pots,
+  #view-debt-payoff{
+    padding:8px 12px!important;
+    padding-left:max(12px,env(safe-area-inset-left))!important;
+    padding-right:max(12px,env(safe-area-inset-right))!important;
+    max-height:calc(100vh - 42px)!important}
+  main>div{padding-left:max(10px,env(safe-area-inset-left));
+           padding-right:max(10px,env(safe-area-inset-right))}
+  .fam-table-wrap{max-height:calc(100vh - 150px)}
+  .cc-grid-wrap{max-height:calc(100vh - 150px)}
+  .txn-layout{min-height:0}
+  .txn-left{width:150px;min-width:150px}
+  .txn-left.slim{width:118px;min-width:118px}
+
+  /* ── 388px of height is the whole budget, so the furniture shrinks ─── */
+  .pay-titlebar{margin-bottom:7px!important}
+  .pay-title{font-size:.9rem!important}
+  .pay-hero{padding:9px 12px!important;gap:10px!important;margin-bottom:9px!important}
+  .pay-hero-l > div:nth-child(2){font-size:1.3rem!important}
+  .pay-hero-r{line-height:1.4!important;font-size:.7rem!important}
+
+  /* ── density: 388px of screen, and the ledger was getting 95 of it ──── */
+  /* Measured on the Transactions tab before this block: header 40, sticky
+     title+search+pills 80, ledger header 41, filter bar 41, pager 39 — leaving
+     two visible rows. Nothing is hidden here, it is all padding and type. */
+  .tab-sticky-top{top:40px;padding-bottom:3px;margin-bottom:2px}
+  .txn-ledger-hdr{padding:5px 10px 4px;gap:5px}
+  .txn-tbl th{padding:3px 7px;font-size:.62rem}
+  .txn-tbl td{padding:3px 7px;font-size:.72rem}
+  .txn-acct-item{padding:5px 9px}
+  .fam-pager{padding:4px 8px!important;font-size:.7rem}
+  .kpi-pill{padding:3px 8px!important;font-size:.66rem!important}
+  .pgrid th,.pgrid td{padding:4px 7px!important;font-size:.72rem!important}
+  .fam-table-wrap table th,.fam-table-wrap table td{padding:4px 7px!important}
+  .sum-card{padding:7px 10px!important}
+  .sum-val{font-size:1rem!important}
+  .stabs .stab{padding:4px 9px!important;font-size:.74rem!important}
+
+  /* ── Payments keeps both panes ─────────────────────────────────────── */
+  /* Seeing the plan beside the 45-day register IS the reason to turn the
+     phone, so the 1100px one-column rule is overridden rather than inherited.
+     Below 880px there is genuinely not room for a five-column table, so it
+     falls back to stacking. */
+  .pay-split > div:last-child{position:static}
+  .pay-split{gap:10px}
+}
+@media (orientation:landscape) and (max-height:520px) and (min-width:880px) and (max-width:1200px) {
+  .pay-split{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+}
 @media(max-width:767px){
   .nav-pills{display:none!important}
   .hdr-space{display:none!important}
@@ -12482,14 +12567,14 @@ function renderPayments() {
 
   const _wins = _P.wins.filter((w, i) => i === 0 || w.rows.length);
   const payList = `
-   <div style="${card};padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-     <div>
+   <div class="pay-hero" style="${card};padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+     <div class="pay-hero-l">
        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)">Send today</div>
        <div style="font-size:1.75rem;font-weight:700;color:var(--text);line-height:1.15;font-variant-numeric:tabular-nums">${payFmt2(_P.now)}</div>
        <div style="font-size:.73rem;color:var(--text3);margin-top:2px">leaves ${payFmt2(R.cash - _P.now)} in the bank · the rest comes out of your next paycheques${
          _P.autoNow > 0.005 ? ` · ${payFmt2(_P.autoNow)} more goes by autopay` : ''}</div>
      </div>
-     <div style="margin-left:auto;text-align:right;font-size:.75rem;color:var(--text2);line-height:1.8">
+     <div class="pay-hero-r" style="margin-left:auto;text-align:right;font-size:.75rem;color:var(--text2);line-height:1.8">
        <div><b style="color:var(--text)">${payFmt2(R.cash)}</b> in the bank now${
          _payBanks.length > 1 ? `<div style="font-size:.68rem;color:var(--text3)">${
            _payBanks.map(b => `${esc(b.name)} ${payFmt2(txnCurrentBalance(b))}`).join(' · ')}</div>` : ''}</div>
@@ -12626,9 +12711,9 @@ function renderPayments() {
    </div>`;
 
   wrap.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    <div class="pay-titlebar" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
       <div>
-        <div style="font-size:1.05rem;font-weight:700;color:var(--text)">Payments</div>
+        <div class="pay-title" style="font-size:1.05rem;font-weight:700;color:var(--text)">Payments</div>
         <div style="font-size:.72rem;color:var(--text3)">${fmtDate(R.today)}</div>
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -19297,7 +19382,11 @@ function txnSizeLayout() {
   if (!lay || !lay.offsetParent) return;
   const top = lay.getBoundingClientRect().top;
   const h   = Math.round(window.innerHeight - top - TXN_LAYOUT_BOTTOM_GAP);
-  lay.style.height = Math.max(320, h) + 'px';
+  // A 320px floor is right on a desktop and wrong on a phone held sideways,
+  // where the whole viewport is ~388px: it forced the pane taller than the
+  // screen and put the page into vertical scroll on top of its own.
+  const minH = window.innerHeight < 520 ? 160 : 320;
+  lay.style.height = Math.max(minH, h) + 'px';
 }
 
 function renderTransactions() {
