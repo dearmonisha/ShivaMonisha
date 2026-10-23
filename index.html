@@ -1039,6 +1039,24 @@ tr.btable-drop-over td:first-child{border-left:3px solid var(--primary)}
   .sum-val{font-size:1rem!important}
   .stabs .stab{padding:4px 9px!important;font-size:.74rem!important}
 
+  /* ── the two blocks that were eating the grid ───────────────────────── */
+  /* His screenshot, 2026-10-23: the KPI pills wrapped to three rows and the
+     filter bar to three more, so roughly 200 of 388px was spent before the
+     first transaction. The pills lose their sub-text (the figure stays), and
+     the filter bar collapses to its own label until tapped. */
+  #txn-kpi-row .kpi-s{display:none}
+  #txn-kpi-row .kpi-pill{padding:2px 7px!important}
+  #txn-kpi-row .kpi-k{font-size:.6rem}
+  #txn-kpi-row .kpi-v{font-size:.74rem}
+  #txn-sticky-hdr > div{gap:7px!important;padding:3px 0 4px!important}
+  #txn-sticky-hdr input#txn-search-input{font-size:.76rem!important}
+  #txn-sticky-hdr > div > div:nth-child(2){flex:0 1 190px!important;min-width:120px!important}
+  .txn-filter-bar{padding:3px 8px!important;gap:6px!important}
+  .txn-filter-bar:not(.open) > *{display:none!important}
+  .txn-filter-bar:not(.open) > .txn-filter-toggle{display:inline!important}
+  .txn-filter-toggle::after{content:' tap to filter';font-weight:400;opacity:.7}
+  .txn-filter-bar.open .txn-filter-toggle::after{content:' tap to hide'}
+
   /* ── Payments keeps both panes ─────────────────────────────────────── */
   /* Seeing the plan beside the 45-day register IS the reason to turn the
      phone, so the 1100px one-column rule is overridden rather than inherited.
@@ -1440,6 +1458,7 @@ let UI = {
   txnDateTo:     '',
   txnCatFilter:   '',    // expense type filter for ledger
   txnReimbFilter: false, // true = show only reimbursable/reimbursement transactions
+  txnFilterOpen:  false, // landscape only: is the filter bar expanded?
   txnPayeeFilter: '',    // payee name filter — click a payee cell to set
   // Financial Statements module
   financialsSubview: 'balance-sheet',  // 'balance-sheet' | 'income-expenditure'
@@ -19903,8 +19922,8 @@ function _renderAllAccountsView(panel) {
     ? `background:var(--info);color:#fff;border:1px solid var(--info);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap`
     : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:500;cursor:pointer;white-space:nowrap`;
   const filterBar = `
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
-      <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
+    <div class="txn-filter-bar${(UI.txnFilterOpen || anyFilterActive) ? ' open' : ''}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
+      <span class="txn-filter-toggle" onclick="BA.txnToggleFilterBar()" style="color:var(--text3);white-space:nowrap;font-weight:600;cursor:pointer">🔽 Filter:</span>
       <input type="date" id="txn-all-df-from" value="${_df||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-all-df-from','txn-all-df-to','txnAllPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date — press Enter or click Search to apply">
       <span style="color:var(--text3)">to</span>
       <input type="date" id="txn-all-df-to" value="${_dt||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-all-df-from','txn-all-df-to','txnAllPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date — press Enter or click Search to apply">
@@ -20756,8 +20775,8 @@ function renderTxnRight() {
     ? `background:var(--info);color:#fff;border:1px solid var(--info);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap`
     : `background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:3px 11px;font-size:.72rem;font-weight:500;cursor:pointer;white-space:nowrap`;
   const filterBar = `
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
-      <span style="color:var(--text3);white-space:nowrap;font-weight:600">🔽 Filter:</span>
+    <div class="txn-filter-bar${(UI.txnFilterOpen || anyFilterActive) ? ' open' : ''}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:${anyFilterActive?'color-mix(in srgb,var(--primary) 6%,var(--surface2))':'var(--surface2)'};border-bottom:1px solid var(--border);font-size:.78rem">
+      <span class="txn-filter-toggle" onclick="BA.txnToggleFilterBar()" style="color:var(--text3);white-space:nowrap;font-weight:600;cursor:pointer">🔽 Filter:</span>
       <input type="date" id="txn-df-from" value="${_df||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-df-from','txn-df-to','txnPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="From date — press Enter or click Search to apply">
       <span style="color:var(--text3)">to</span>
       <input type="date" id="txn-df-to" value="${_dt||''}" onkeydown="if(event.key==='Enter')BA.txnApplyDateFilter('txn-df-from','txn-df-to','txnPage')" style="font-size:.76rem;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);width:130px" title="To date — press Enter or click Search to apply">
@@ -23764,6 +23783,11 @@ Object.assign(BA, {
     if (clr) clr.style.display = 'none';
     renderTxnRight();
   },
+  // Landscape only: the filter bar wraps to three rows on a 956px screen, which
+  // is most of the grid. Collapsed it is one short line; this opens it. It is
+  // forced open whenever a filter is actually set, so a filtered view can never
+  // hide the thing doing the filtering.
+  txnToggleFilterBar() { UI.txnFilterOpen = !UI.txnFilterOpen; renderTxnRight(); },
   txnSetPayeeFilter(payee) {
     UI.txnPayeeFilter = payee;
     renderTxnRight();
